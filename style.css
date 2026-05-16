@@ -631,34 +631,63 @@ canvas{
    =========================== */
 
 .autoTunerCard{
-  width:min(1180px, calc(100vw - 36px));
-  max-height:min(860px, calc(100vh - 36px));
+  width:calc(100vw - 28px);
+  height:calc(100vh - 28px);
+  max-width:none;
+  max-height:none;
 }
-.autoTunerScroll{ padding:16px; }
+.autoTunerCard .modalTop{
+  padding:14px 18px 12px 18px;
+}
+.autoTunerScroll{
+  min-height:0;
+  padding:10px 14px;
+  overflow:hidden;
+}
 .autoTunerLayout{
   display:grid;
-  grid-template-columns:minmax(300px, 430px) 1fr;
-  gap:14px;
+  grid-template-columns:minmax(250px, .72fr) minmax(390px, 1.12fr) minmax(390px, 1.12fr);
+  grid-template-rows:auto auto minmax(0, 1fr);
+  grid-template-areas:
+    "preset targets targets"
+    "allowed run run"
+    "safety progress progress";
+  gap:10px;
+  height:100%;
+  min-height:0;
 }
 .atSection{
   border:1px solid rgba(255,255,255,.12);
   border-radius:12px;
   background:rgba(0,0,0,.14);
-  padding:12px;
+  padding:10px;
+  min-width:0;
+  min-height:0;
 }
-.atProgressSection{ grid-row:span 3; }
+.autoTunerLayout > .atSection:nth-child(1){ grid-area:preset; }
+.autoTunerLayout > .atSection:nth-child(2){ grid-area:targets; }
+.autoTunerLayout > .atSection:nth-child(3){ grid-area:allowed; }
+.autoTunerLayout > .atSection:nth-child(4){ grid-area:run; }
+.autoTunerLayout > .atSection:nth-child(5){ grid-area:safety; }
+.autoTunerLayout > .atSection:nth-child(6){ grid-area:progress; }
+.atProgressSection{
+  display:flex;
+  flex-direction:column;
+  grid-row:auto;
+  min-height:0;
+}
 .atSectionTitle{
   font-size:12px;
   font-weight:800;
   letter-spacing:.2px;
   text-transform:uppercase;
   color:rgba(255,255,255,.76);
-  margin-bottom:10px;
+  margin-bottom:8px;
 }
 .atGrid{
   display:grid;
   grid-template-columns:1fr 1fr;
-  gap:10px;
+  gap:8px 10px;
   align-items:end;
 }
 .atGrid .btn{ width:100%; }
@@ -677,23 +706,23 @@ canvas{
 .atToggle{
   flex-direction:row;
   align-items:center;
-  min-height:38px;
+  min-height:30px;
 }
 .atGoalGrid{
   display:grid;
   grid-template-columns:1fr;
-  gap:8px;
+  gap:7px;
 }
 .atGoal{
   display:grid;
-  grid-template-columns:24px minmax(110px, 1fr) 82px minmax(90px, 150px) 32px;
+  grid-template-columns:24px minmax(130px, 1fr) 96px minmax(140px, 190px) 32px;
   gap:8px;
   align-items:center;
   font-size:12px;
   color:rgba(255,255,255,.76);
 }
 .atGoalNoNumber{
-  grid-template-columns:24px minmax(110px, 1fr) minmax(90px, 150px) 32px;
+  grid-template-columns:24px minmax(130px, 1fr) minmax(140px, 190px) 32px;
 }
 .atGoal input[type="number"]{
   min-width:0;
@@ -705,7 +734,7 @@ canvas{
 .atChecks{
   display:grid;
   grid-template-columns:1fr 1fr;
-  gap:8px 10px;
+  gap:7px 10px;
 }
 .atChecks label{
   display:flex;
@@ -716,12 +745,13 @@ canvas{
 }
 .atSafetyGrid{ align-items:start; }
 .atProgressBar{
-  height:10px;
+  height:9px;
   border-radius:999px;
   border:1px solid rgba(255,255,255,.14);
   background:rgba(0,0,0,.35);
   overflow:hidden;
-  margin-bottom:12px;
+  margin-bottom:10px;
+  flex:0 0 auto;
 }
 #atProgressFill{
   width:0%;
@@ -731,14 +761,15 @@ canvas{
 }
 .atMetrics{
   display:grid;
-  grid-template-columns:repeat(2, minmax(120px, 1fr));
-  gap:8px;
+  grid-template-columns:repeat(5, minmax(112px, 1fr));
+  gap:7px;
+  flex:0 0 auto;
 }
 .atMetrics div{
   border:1px solid rgba(255,255,255,.10);
   border-radius:10px;
   background:rgba(255,255,255,.025);
-  padding:8px;
+  padding:7px 8px;
   min-width:0;
 }
 .atMetrics span{
@@ -757,15 +788,20 @@ canvas{
   white-space:nowrap;
 }
 .atStatus{
-  margin-top:10px;
-  min-height:34px;
+  margin-top:8px;
+  min-height:30px;
+  max-height:44px;
+  overflow:hidden;
   font-size:12px;
   line-height:1.35;
   color:rgba(255,255,255,.72);
+  flex:0 0 auto;
 }
 .atHistoryWrap{
-  margin-top:10px;
-  max-height:180px;
+  margin-top:8px;
+  max-height:none;
+  flex:1 1 auto;
+  min-height:0;
   overflow:auto;
   border:1px solid rgba(255,255,255,.10);
   border-radius:10px;
@@ -790,16 +826,34 @@ canvas{
 }
 .autoTunerActions{
   justify-content:flex-start;
-  gap:10px;
+  gap:8px;
   flex-wrap:wrap;
+  padding:10px 14px;
+  flex:0 0 auto;
 }
 
-@media (max-width: 760px){
+@media (max-width: 1100px), (max-height: 780px){
   .modal{ padding:12px; align-items:stretch; }
   .modalCard{ width:100%; max-height:calc(100vh - 24px); }
   .modalGrid{ grid-template-columns:1fr; }
   .fieldFull{ grid-column:auto; }
-  .autoTunerLayout{ grid-template-columns:1fr; }
+  .autoTunerCard{
+    width:100%;
+    height:calc(100vh - 24px);
+  }
+  .autoTunerScroll{ overflow:auto; }
+  .autoTunerLayout{
+    grid-template-columns:1fr;
+    grid-template-rows:auto;
+    grid-template-areas:
+      "preset"
+      "targets"
+      "allowed"
+      "run"
+      "safety"
+      "progress";
+    height:auto;
+  }
   .atGrid{ grid-template-columns:1fr; }
   .atWide{ grid-column:auto; }
   .atGoal,
@@ -812,6 +866,11 @@ canvas{
     grid-column:2;
   }
   .atChecks{ grid-template-columns:1fr; }
+  .atMetrics{ grid-template-columns:1fr 1fr; }
+  .atHistoryWrap{ max-height:180px; }
+}
+
+@media (max-width: 760px){
   .atMetrics{ grid-template-columns:1fr; }
 }
 
