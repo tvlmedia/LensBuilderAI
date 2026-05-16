@@ -172,7 +172,9 @@
     btnMoveUp: $("#btnMoveUp"),
     btnMoveDown: $("#btnMoveDown"),
     btnRemove: $("#btnRemove"),
+    btnCopyJson: $("#btnCopyJson"),
     btnSave: $("#btnSave"),
+    btnPasteJson: $("#btnPasteJson"),
     btnPasteZmx: $("#btnPasteZmx"),
     fileLoad: $("#fileLoad"),
     btnAutoFocus: $("#btnAutoFocus"),
@@ -289,6 +291,12 @@
     zmxPasteCancel: $("#zmxPasteCancel"),
     zmxPasteClear: $("#zmxPasteClear"),
     zmxPasteClose: $("#zmxPasteClose"),
+    jsonPasteModal: $("#jsonPasteModal"),
+    jsonPasteText: $("#jsonPasteText"),
+    jsonPasteImport: $("#jsonPasteImport"),
+    jsonPasteCancel: $("#jsonPasteCancel"),
+    jsonPasteClear: $("#jsonPasteClear"),
+    jsonPasteClose: $("#jsonPasteClose"),
 
     verifyPanel: $("#verifyPanel"),
     verifyControls: $("#verifyControls"),
@@ -10314,6 +10322,66 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
   }
 
+  function isJsonPasteModalOpen() {
+    return !!(ui.jsonPasteModal && !ui.jsonPasteModal.classList.contains("hidden"));
+  }
+
+  function openJsonPasteModal() {
+    if (!ui.jsonPasteModal) return;
+    ui.jsonPasteModal.classList.remove("hidden");
+    ui.jsonPasteModal.setAttribute("aria-hidden", "false");
+    setTimeout(() => {
+      if (ui.jsonPasteText) ui.jsonPasteText.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function closeJsonPasteModal() {
+    if (!ui.jsonPasteModal) return;
+    ui.jsonPasteModal.classList.add("hidden");
+    ui.jsonPasteModal.setAttribute("aria-hidden", "true");
+  }
+
+  function clearJsonPasteText() {
+    if (!ui.jsonPasteText) return;
+    ui.jsonPasteText.value = "";
+    ui.jsonPasteText.focus({ preventScroll: true });
+  }
+
+  function importLensJsonText(rawText, sourceName = "pasted_json") {
+    const text = String(rawText ?? "").trim();
+    if (!text) throw new Error("Paste lens JSON first.");
+
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`Invalid JSON (${e?.message || e})`);
+    }
+
+    const obj = parsed?.lens ?? parsed;
+    if (!obj || typeof obj !== "object" || !Array.isArray(obj.surfaces) || !obj.surfaces.length) {
+      throw new Error("JSON must contain a lens object with a non-empty surfaces array.");
+    }
+
+    loadLens(obj);
+    toast(`Loaded lens JSON${sourceName ? `: ${sourceName}` : ""}`);
+    return obj;
+  }
+
+  async function importFromJsonPasteModal() {
+    const raw = String(ui.jsonPasteText?.value || "");
+    try {
+      importLensJsonText(raw, "pasted JSON");
+      closeJsonPasteModal();
+      return true;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (ui.footerWarn) ui.footerWarn.textContent = `JSON paste import failed: ${msg}`;
+      toast(`JSON import failed: ${msg}`);
+      return false;
+    }
+  }
+
   // -------------------- preview source + image load --------------------
   function syncPreviewFitUI() {
     if (!ui.prevObjH || !ui.prevObjW || !ui.previewAutoFit) return;
@@ -11112,48 +11180,83 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
   }
 
- function loadLensFromFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const txt = String(reader.result || "");
-      const name = String(file?.name || "");
-      const lower = name.toLowerCase();
+  function loadLensFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const txt = String(reader.result || "");
+        const name = String(file?.name || "");
+        const lower = name.toLowerCase();
 
-      const parseAttempts = [];
-      const tryJson = () => {
-        const obj = JSON.parse(txt);
-        loadLens(obj);
-        toast("Loaded lens JSON (file)");
-        return true;
-      };
-      const tryZemax = () => {
-        if (!isLikelyZemaxSequentialText(txt) && !/\.(zmx|seq|txt)$/i.test(lower)) {
-          throw new Error("Not Zemax sequential text");
+        const parseAttempts = [];
+        const tryJson = () => {
+          const obj = JSON.parse(txt);
+          loadLens(obj);
+          toast("Loaded lens JSON (file)");
+          return true;
+        };
+        const tryZemax = () => {
+          if (!isLikelyZemaxSequentialText(txt) && !/\.(zmx|seq|txt)$/i.test(lower)) {
+            throw new Error("Not Zemax sequential text");
+          }
+          importZemaxText(txt, name || "Zemax import", { importSource: "zmx_file" });
+          return true;
+        };
+
+        const order = /\.(zmx|seq)$/i.test(lower) ? [tryZemax, tryJson] : [tryJson, tryZemax];
+        for (const fn of order) {
+          try {
+            fn();
+            resolve(true);
+            return;
+          } catch (e) {
+            parseAttempts.push(e?.message || String(e));
+          }
         }
-        importZemaxText(txt, name || "Zemax import", { importSource: "zmx_file" });
-        return true;
+
+        const msg = `Lens parse failed (${parseAttempts.join(" | ")})`;
+        if (ui.footerWarn) ui.footerWarn.textContent = msg;
+        reject(new Error(msg));
       };
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
 
-      const order = /\.(zmx|seq)$/i.test(lower) ? [tryZemax, tryJson] : [tryJson, tryZemax];
-      for (const fn of order) {
-        try {
-          fn();
-          resolve(true);
-          return;
-        } catch (e) {
-          parseAttempts.push(e?.message || String(e));
-        }
-      }
+  async function copyTextToClipboard(text) {
+    const value = String(text ?? "");
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch (_) {}
+    }
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+    return true;
+  }
 
-      const msg = `Lens parse failed (${parseAttempts.join(" | ")})`;
-      if (ui.footerWarn) ui.footerWarn.textContent = msg;
-      reject(new Error(msg));
-    };
-    reader.onerror = reject;
-    reader.readAsText(file);
-  });
-}
+  async function copyLensJsonToClipboard() {
+    try {
+      const text = JSON.stringify(clone(lens), null, 2);
+      await copyTextToClipboard(text);
+      toast("Copied lens JSON");
+      return true;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (ui.footerWarn) ui.footerWarn.textContent = `Copy JSON failed: ${msg}`;
+      toast(`Copy JSON failed: ${msg}`);
+      return false;
+    }
+  }
 
   // -------------------- save lens JSON --------------------
   function saveLensToFile() {
@@ -11286,6 +11389,8 @@ function wireUI() {
   on("#btnNew", "click", newClearLens);
   on("#btnLoadOmit", "click", () => loadLens(omit50ConceptV1()));
   on("#btnLoadDemo", "click", () => loadLens(demoLensSimple()));
+  on("#btnCopyJson", "click", copyLensJsonToClipboard);
+  on("#btnPasteJson", "click", openJsonPasteModal);
   on("#btnPasteZmx", "click", openZmxPasteModal);
 
   on("#btnAdd", "click", addSurface);
@@ -11357,6 +11462,44 @@ function wireUI() {
   if (ui.zmxPasteModal) {
     ui.zmxPasteModal.addEventListener("mousedown", (e) => {
       if (e.target === ui.zmxPasteModal) closeZmxPasteModal();
+    });
+  }
+
+  if (ui.jsonPasteImport) {
+    ui.jsonPasteImport.addEventListener("click", (e) => {
+      e.preventDefault();
+      importFromJsonPasteModal();
+    });
+  }
+  if (ui.jsonPasteCancel) {
+    ui.jsonPasteCancel.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeJsonPasteModal();
+    });
+  }
+  if (ui.jsonPasteClose) {
+    ui.jsonPasteClose.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeJsonPasteModal();
+    });
+  }
+  if (ui.jsonPasteClear) {
+    ui.jsonPasteClear.addEventListener("click", (e) => {
+      e.preventDefault();
+      clearJsonPasteText();
+    });
+  }
+  if (ui.jsonPasteText) {
+    ui.jsonPasteText.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        importFromJsonPasteModal();
+      }
+    });
+  }
+  if (ui.jsonPasteModal) {
+    ui.jsonPasteModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.jsonPasteModal) closeJsonPasteModal();
     });
   }
 

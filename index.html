@@ -46,7 +46,9 @@
 
       <div class="sep" aria-hidden="true"></div>
 
+      <button id="btnCopyJson" class="btn" type="button">Copy JSON</button>
       <button id="btnSave" class="btn" type="button">Save JSON</button>
+      <button id="btnPasteJson" class="btn" type="button">Paste JSON</button>
       <button id="btnPasteZmx" class="btn" type="button">Paste ZMX</button>
       <label class="fileBtn btn" role="button" tabindex="0">
         Load Lens
@@ -789,6 +791,34 @@
         <button id="zmxPasteClear" class="btn" type="button">Clear</button>
         <button id="zmxPasteCancel" class="btn" type="button">Cancel</button>
         <button id="zmxPasteImport" class="btn btnPrimary" type="button">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="jsonPasteModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard" role="dialog" aria-modal="true" aria-labelledby="jsonPasteTitle">
+      <div class="modalTop">
+        <div>
+          <div id="jsonPasteTitle" class="modalTitle">Import Lens JSON</div>
+          <div class="modalSub">Paste a full Lens Builder JSON object with a surfaces array.</div>
+        </div>
+        <button id="jsonPasteClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modalScroll">
+        <div class="field fieldFull">
+          <label for="jsonPasteText">Lens JSON</label>
+          <textarea
+            id="jsonPasteText"
+            class="glassNote zmxPasteArea"
+            spellcheck="false"
+            placeholder="{&#10;  &quot;name&quot;: &quot;My lens&quot;,&#10;  &quot;surfaces&quot;: [...]&#10;}"
+          ></textarea>
+        </div>
+      </div>
+      <div class="modalBottom zmxPasteBottom">
+        <button id="jsonPasteClear" class="btn" type="button">Clear</button>
+        <button id="jsonPasteCancel" class="btn" type="button">Cancel</button>
+        <button id="jsonPasteImport" class="btn btnPrimary" type="button">Import JSON</button>
       </div>
     </div>
   </div>
