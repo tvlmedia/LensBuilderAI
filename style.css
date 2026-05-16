@@ -721,11 +721,27 @@ canvas{
   font-size:12px;
   color:rgba(255,255,255,.76);
 }
+.atGoalHard{
+  grid-template-columns:24px minmax(120px, 1fr) 92px minmax(120px, 170px) 32px 70px 72px;
+}
 .atGoalNoNumber{
   grid-template-columns:24px minmax(130px, 1fr) minmax(140px, 190px) 32px;
 }
 .atGoal input[type="number"]{
   min-width:0;
+}
+.atHardToggle{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  color:rgba(255,255,255,.68);
+}
+.atHardToggle input{
+  margin:0;
+}
+.atHardInput{
+  width:100%;
 }
 .atGoal output{
   font-family:var(--mono);
@@ -857,12 +873,15 @@ canvas{
   .atGrid{ grid-template-columns:1fr; }
   .atWide{ grid-column:auto; }
   .atGoal,
-  .atGoalNoNumber{
+  .atGoalNoNumber,
+  .atGoalHard{
     grid-template-columns:22px 1fr;
   }
   .atGoal input[type="number"],
   .atGoal input[type="range"],
-  .atGoal output{
+  .atGoal output,
+  .atHardToggle,
+  .atHardInput{
     grid-column:2;
   }
   .atChecks{ grid-template-columns:1fr; }

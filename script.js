@@ -188,14 +188,20 @@
     atTargetFL: $("#atTargetFL"),
     atWeightFL: $("#atWeightFL"),
     atWeightFLValue: $("#atWeightFLValue"),
+    atHardFL: $("#atHardFL"),
+    atTolFL: $("#atTolFL"),
     atGoalT: $("#atGoalT"),
     atTargetT: $("#atTargetT"),
     atWeightT: $("#atWeightT"),
     atWeightTValue: $("#atWeightTValue"),
+    atHardT: $("#atHardT"),
+    atTolT: $("#atTolT"),
     atGoalIC: $("#atGoalIC"),
     atTargetIC: $("#atTargetIC"),
     atWeightIC: $("#atWeightIC"),
     atWeightICValue: $("#atWeightICValue"),
+    atHardIC: $("#atHardIC"),
+    atMinIC: $("#atMinIC"),
     atGoalCenter: $("#atGoalCenter"),
     atWeightCenter: $("#atWeightCenter"),
     atWeightCenterValue: $("#atWeightCenterValue"),
@@ -238,12 +244,19 @@
     atAllowSensorShift: $("#atAllowSensorShift"),
     atAllowIMSAp: $("#atAllowIMSAp"),
     atAllowRSignFlip: $("#atAllowRSignFlip"),
+    atStrictFLTLock: $("#atStrictFLTLock"),
     atStrictValidation: $("#atStrictValidation"),
     atProgressFill: $("#atProgressFill"),
     atMetricIteration: $("#atMetricIteration"),
     atMetricBestScore: $("#atMetricBestScore"),
     atMetricCurrentScore: $("#atMetricCurrentScore"),
     atMetricImprovement: $("#atMetricImprovement"),
+    atMetricAccepted: $("#atMetricAccepted"),
+    atMetricRejected: $("#atMetricRejected"),
+    atMetricInvalid: $("#atMetricInvalid"),
+    atMetricHardFL: $("#atMetricHardFL"),
+    atMetricHardT: $("#atMetricHardT"),
+    atMetricHardIC: $("#atMetricHardIC"),
     atMetricEFL: $("#atMetricEFL"),
     atMetricT: $("#atMetricT"),
     atMetricIC: $("#atMetricIC"),
@@ -8363,6 +8376,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     acceptedMoves: 0,
     rejectedMoves: 0,
     invalidMoves: 0,
+    hardRejectedFL: 0,
+    hardRejectedT: 0,
+    hardRejectedIC: 0,
     stepScale: 1,
     stopReason: "",
     diagnostics: "",
@@ -8395,6 +8411,72 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function tText(value) {
     const n = Number(value);
     return Number.isFinite(n) ? `T${n.toFixed(2)}` : "—";
+  }
+
+  function compactAutoTunerNumber(value, digits = 2) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return n.toFixed(digits).replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "");
+  }
+
+  function checkAutoTunerHardConstraints(merit, config = {}) {
+    if (!merit || merit.invalidPenalty > 0) return { ok: true };
+    const hard = config?.hardConstraints || {};
+    const metrics = merit?.metrics || {};
+    const strictFLT = hard.strictFLTLock !== false;
+    const eps = 1e-9;
+
+    const flHard = hard.focalLength || {};
+    if (strictFLT && flHard.enabled) {
+      const efl = Number(metrics.efl);
+      const target = Number(flHard.target);
+      const tolerance = Math.max(0, Number(flHard.tolerance));
+      if (!Number.isFinite(efl) || !Number.isFinite(target) || !Number.isFinite(tolerance)) {
+        return { ok: false, category: "fl", reason: "Rejected: EFL unavailable for hard focal length lock" };
+      }
+      if (Math.abs(efl - target) > tolerance + eps) {
+        return {
+          ok: false,
+          category: "fl",
+          reason: `Rejected: EFL ${compactAutoTunerNumber(efl)}mm outside ${compactAutoTunerNumber(target)} ±${compactAutoTunerNumber(tolerance)}mm`,
+        };
+      }
+    }
+
+    const tHard = hard.tStop || {};
+    if (strictFLT && tHard.enabled) {
+      const tStop = Number(metrics.T);
+      const target = Number(tHard.target);
+      const tolerance = Math.max(0, Number(tHard.tolerance));
+      if (!Number.isFinite(tStop) || !Number.isFinite(target) || !Number.isFinite(tolerance)) {
+        return { ok: false, category: "t", reason: "Rejected: T-stop unavailable for hard T lock" };
+      }
+      if (Math.abs(tStop - target) > tolerance + eps) {
+        return {
+          ok: false,
+          category: "t",
+          reason: `Rejected: T${compactAutoTunerNumber(tStop)} outside T${compactAutoTunerNumber(target)} ±${compactAutoTunerNumber(tolerance)}`,
+        };
+      }
+    }
+
+    const icHard = hard.imageCircle || {};
+    if (icHard.enabled) {
+      const imageCircle = Number(metrics.imageCircleMm);
+      const minimum = Math.max(0, Number(icHard.minimum));
+      if (!Number.isFinite(imageCircle) || !Number.isFinite(minimum)) {
+        return { ok: false, category: "ic", reason: "Rejected: image circle unavailable for hard minimum" };
+      }
+      if (imageCircle + eps < minimum) {
+        return {
+          ok: false,
+          category: "ic",
+          reason: `Rejected: IC ${compactAutoTunerNumber(imageCircle, 1)}mm below ${compactAutoTunerNumber(minimum, 1)}mm minimum`,
+        };
+      }
+    }
+
+    return { ok: true };
   }
 
   function goalConfig(targets, weights, key, defaultTarget = null) {
@@ -9295,6 +9377,24 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       rearClearance: num(ui.atWeightRear?.value, 4),
       compactness: num(ui.atWeightCompact?.value, 3),
     };
+    const strictFLTLock = ui.atStrictFLTLock ? !!ui.atStrictFLTLock.checked : true;
+    const hardConstraints = {
+      strictFLTLock,
+      focalLength: {
+        enabled: strictFLTLock && !!ui.atGoalFL?.checked && !!ui.atHardFL?.checked,
+        target: targets.focalLength.target,
+        tolerance: Math.max(0, num(ui.atTolFL?.value, 1.0)),
+      },
+      tStop: {
+        enabled: strictFLTLock && !!ui.atGoalT?.checked && !!ui.atHardT?.checked,
+        target: targets.tStop.target,
+        tolerance: Math.max(0, num(ui.atTolT?.value, 0.15)),
+      },
+      imageCircle: {
+        enabled: !!ui.atGoalIC?.checked && !!ui.atHardIC?.checked,
+        minimum: Math.max(0, num(ui.atMinIC?.value, targets.imageCircle.target || 45)),
+      },
+    };
     return {
       iterations,
       stopIfStuck,
@@ -9323,6 +9423,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       locks: (lens.surfaces || []).map((_, i) => getAutoTunerSurfaceLock(i)),
       targets,
       weights,
+      hardConstraints,
       stepScale: 1,
     };
   }
@@ -9397,6 +9498,12 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.atMetricBestScore) ui.atMetricBestScore.textContent = scoreText(bestScore);
     if (ui.atMetricCurrentScore) ui.atMetricCurrentScore.textContent = scoreText(cur?.totalScore);
     if (ui.atMetricImprovement) ui.atMetricImprovement.textContent = Number.isFinite(improvement) ? `${improvement.toFixed(2)}%` : "—";
+    if (ui.atMetricAccepted) ui.atMetricAccepted.textContent = String(autoTunerState.acceptedMoves || 0);
+    if (ui.atMetricRejected) ui.atMetricRejected.textContent = String(autoTunerState.rejectedMoves || 0);
+    if (ui.atMetricInvalid) ui.atMetricInvalid.textContent = String(autoTunerState.invalidMoves || 0);
+    if (ui.atMetricHardFL) ui.atMetricHardFL.textContent = String(autoTunerState.hardRejectedFL || 0);
+    if (ui.atMetricHardT) ui.atMetricHardT.textContent = String(autoTunerState.hardRejectedT || 0);
+    if (ui.atMetricHardIC) ui.atMetricHardIC.textContent = String(autoTunerState.hardRejectedIC || 0);
     if (ui.atMetricEFL) ui.atMetricEFL.textContent = mmText(best?.metrics?.efl);
     if (ui.atMetricT) ui.atMetricT.textContent = tText(best?.metrics?.T);
     if (ui.atMetricIC) ui.atMetricIC.textContent = mmText(best?.metrics?.imageCircleMm, 1);
@@ -9411,6 +9518,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     statusBits.push(`accepted ${autoTunerState.acceptedMoves}`);
     statusBits.push(`rejected ${autoTunerState.rejectedMoves}`);
     if (autoTunerState.invalidMoves) statusBits.push(`invalid ${autoTunerState.invalidMoves}`);
+    if (autoTunerState.hardRejectedFL) statusBits.push(`hard FL ${autoTunerState.hardRejectedFL}`);
+    if (autoTunerState.hardRejectedT) statusBits.push(`hard T ${autoTunerState.hardRejectedT}`);
+    if (autoTunerState.hardRejectedIC) statusBits.push(`hard IC ${autoTunerState.hardRejectedIC}`);
     if (autoTunerState.noImprove) statusBits.push(`stuck ${autoTunerState.noImprove}`);
     if (ui.atStatus) ui.atStatus.textContent = statusBits.join(" • ");
     renderAutoTunerHistory();
@@ -9476,6 +9586,23 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
   }
 
+  function recordAutoTunerHardReject(op, hardCheck, merit) {
+    const category = hardCheck?.category || "";
+    autoTunerState.rejectedMoves++;
+    autoTunerState.noImprove++;
+    autoTunerState.consecutiveInvalid = 0;
+    if (category === "fl") autoTunerState.hardRejectedFL++;
+    else if (category === "t") autoTunerState.hardRejectedT++;
+    else if (category === "ic") autoTunerState.hardRejectedIC++;
+    const reason = hardCheck?.reason || "Rejected by hard Auto Tuner constraint";
+    autoTunerState.lastMessage = reason;
+    autoTunerState.diagnostics = createAutoTunerDiagnostics(
+      `${reason} (${autoTunerOpCategory(op)})`,
+      null,
+      merit?.metrics || autoTunerState.acceptedMerit?.metrics || null
+    );
+  }
+
   function autoTunerIteration() {
     const cfg = autoTunerState.config;
     autoTunerState.iteration++;
@@ -9491,6 +9618,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     let merit = null;
     let selectedOp = null;
     let lastInvalidReason = "";
+    let lastRejectReason = "";
+    let candidatePassesHardConstraints = false;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       selectedOp = ops[Math.floor(autoTunerState.rng() * ops.length)];
@@ -9514,13 +9643,27 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         recordAutoTunerInvalidCandidate(selectedOp, lastInvalidReason);
         continue;
       }
+      const hardCheck = checkAutoTunerHardConstraints(merit, cfg);
+      if (!hardCheck.ok) {
+        lastRejectReason = hardCheck.reason;
+        recordAutoTunerHardReject(selectedOp, hardCheck, merit);
+        continue;
+      }
+      candidatePassesHardConstraints = true;
       break;
     }
 
-    if (!candidate || !merit || merit.invalidPenalty > 0 || !Number.isFinite(Number(merit.totalScore))) {
-      autoTunerState.lastMessage = lastInvalidReason
+    if (!candidate || !merit || !candidatePassesHardConstraints || merit.invalidPenalty > 0 || !Number.isFinite(Number(merit.totalScore))) {
+      autoTunerState.lastMessage = lastRejectReason || (lastInvalidReason
         ? `Rejected invalid candidate: ${lastInvalidReason}`
-        : autoTunerState.lastMessage;
+        : autoTunerState.lastMessage);
+      return true;
+    }
+
+    const finalHardCheck = checkAutoTunerHardConstraints(merit, cfg);
+    if (!finalHardCheck.ok) {
+      recordAutoTunerHardReject(selectedOp, finalHardCheck, merit);
+      autoTunerState.lastMessage = finalHardCheck.reason || autoTunerState.lastMessage;
       return true;
     }
 
@@ -9636,6 +9779,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       cfg.targets.originalLens = original;
       cfg.disabledMutationGroups = new Set();
       const originalMerit = evaluateLensMerit(original, cfg.targets, cfg.weights);
+      const baselineHardCheck = checkAutoTunerHardConstraints(originalMerit, cfg);
       const baselineInvalid = originalMerit.invalidPenalty > 0 || !Number.isFinite(Number(originalMerit.totalScore));
       if (baselineInvalid) {
         const validation = validateAutoTunerLensState(original, {
@@ -9660,6 +9804,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         autoTunerState.acceptedMoves = 0;
         autoTunerState.rejectedMoves = 0;
         autoTunerState.invalidMoves = 0;
+        autoTunerState.hardRejectedFL = 0;
+        autoTunerState.hardRejectedT = 0;
+        autoTunerState.hardRejectedIC = 0;
         autoTunerState.stepScale = 1;
         autoTunerState.baselineInvalid = true;
         autoTunerState.consecutiveInvalid = 0;
@@ -9685,27 +9832,36 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       autoTunerState.lastUiIteration = -1;
       autoTunerState.originalLens = original;
       autoTunerState.acceptedLens = clone(original);
-      autoTunerState.bestLens = clone(original);
+      autoTunerState.bestLens = baselineHardCheck.ok ? clone(original) : null;
       autoTunerState.config = cfg;
       autoTunerState.rng = makeAutoTunerRng(cfg.seed);
       autoTunerState.originalMerit = originalMerit;
       autoTunerState.acceptedMerit = originalMerit;
       autoTunerState.currentMerit = originalMerit;
-      autoTunerState.bestMerit = originalMerit;
+      autoTunerState.bestMerit = baselineHardCheck.ok ? originalMerit : null;
       autoTunerState.history = [];
       autoTunerState.noImprove = 0;
       autoTunerState.acceptedMoves = 0;
       autoTunerState.rejectedMoves = 0;
       autoTunerState.invalidMoves = 0;
+      autoTunerState.hardRejectedFL = 0;
+      autoTunerState.hardRejectedT = 0;
+      autoTunerState.hardRejectedIC = 0;
       autoTunerState.stepScale = 1;
       autoTunerState.baselineInvalid = false;
       autoTunerState.consecutiveInvalid = 0;
       autoTunerState.invalidByCategory = {};
       autoTunerState.disabledMutationGroups = new Set();
-      autoTunerState.diagnostics = createAutoTunerDiagnostics("Baseline OK", null, originalMerit.metrics);
-      autoTunerState.lastMessage = "";
+      autoTunerState.diagnostics = createAutoTunerDiagnostics(
+        baselineHardCheck.ok ? "Baseline OK" : baselineHardCheck.reason,
+        null,
+        originalMerit.metrics
+      );
+      autoTunerState.lastMessage = baselineHardCheck.ok
+        ? ""
+        : `${baselineHardCheck.reason}; candidates must enter the hard target window before becoming best`;
       autoTunerState.stopReason = "Running";
-      pushAutoTunerHistory(0, originalMerit);
+      if (baselineHardCheck.ok) pushAutoTunerHistory(0, originalMerit);
       updateAutoTunerProgress(true);
       scheduleAutoTunerChunk();
     } catch (e) {
@@ -9822,6 +9978,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (el) el.value = String(value);
   }
 
+  function setAutoTunerHard(id, checked) {
+    const el = ui[id];
+    if (el) el.checked = !!checked;
+  }
+
   function applyAutoTunerPreset(name) {
     const metrics = getAutoTunerMetrics(lens, { wavePreset: ui.wavePreset?.value || "d" });
     const curFL = metrics.efl || 50;
@@ -9830,16 +9991,26 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     [
       "atGoalFL","atGoalT","atGoalIC","atGoalCenter","atGoalCorner","atGoalVig","atGoalRear","atGoalCompact",
     ].forEach((id) => setAutoTunerGoal(id, false));
+    if (ui.atStrictFLTLock) ui.atStrictFLTLock.checked = true;
+    setAutoTunerHard("atHardFL", false);
+    setAutoTunerHard("atHardT", false);
+    setAutoTunerHard("atHardIC", false);
+    if (ui.atTolFL) ui.atTolFL.value = "1.0";
+    if (ui.atTolT) ui.atTolT.value = "0.15";
+    if (ui.atMinIC) ui.atMinIC.value = "45";
 
     if (name === "flOnly") {
       setAutoTunerGoal("atGoalFL", true);
       if (ui.atTargetFL) ui.atTargetFL.value = curFL.toFixed(2);
+      setAutoTunerHard("atHardFL", true);
       setAutoTunerWeight("atWeightFL", 8);
     } else if (name === "corners") {
       setAutoTunerGoal("atGoalCorner", true);
       setAutoTunerGoal("atGoalIC", true);
       setAutoTunerGoal("atGoalVig", true);
       if (ui.atTargetIC) ui.atTargetIC.value = "45";
+      if (ui.atMinIC) ui.atMinIC.value = "45";
+      setAutoTunerHard("atHardIC", true);
       setAutoTunerWeight("atWeightCorner", 9);
       setAutoTunerWeight("atWeightIC", 8);
       setAutoTunerWeight("atWeightVig", 8);
@@ -9857,6 +10028,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       if (ui.atTargetFL) ui.atTargetFL.value = curFL.toFixed(2);
       if (ui.atTargetT) ui.atTargetT.value = curT.toFixed(2);
       if (ui.atTargetIC) ui.atTargetIC.value = Math.max(45, metrics.sensorDiag || 45).toFixed(1);
+      if (ui.atMinIC) ui.atMinIC.value = Math.max(45, metrics.sensorDiag || 45).toFixed(1);
+      setAutoTunerHard("atHardFL", true);
+      setAutoTunerHard("atHardT", true);
+      setAutoTunerHard("atHardIC", true);
       setAutoTunerWeight("atWeightFL", 4);
       setAutoTunerWeight("atWeightT", 3);
       setAutoTunerWeight("atWeightCenter", 5);
@@ -9874,7 +10049,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       if (ui.atTargetFL) ui.atTargetFL.value = "50";
       if (ui.atTargetT) ui.atTargetT.value = "2.00";
       if (ui.atTargetIC) ui.atTargetIC.value = "45";
+      if (ui.atMinIC) ui.atMinIC.value = "45";
       if (ui.atTargetRear) ui.atTargetRear.value = curRear.toFixed(2);
+      setAutoTunerHard("atHardFL", true);
+      setAutoTunerHard("atHardT", true);
+      setAutoTunerHard("atHardIC", true);
       setAutoTunerWeight("atWeightFL", 5);
       setAutoTunerWeight("atWeightT", 4);
       setAutoTunerWeight("atWeightIC", 8);
@@ -9898,6 +10077,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
     if (ui.atTargetIC && (!Number.isFinite(num(ui.atTargetIC.value, NaN)) || num(ui.atTargetIC.value, 0) <= 0)) {
       ui.atTargetIC.value = "45";
+    }
+    if (ui.atTolFL && (!Number.isFinite(num(ui.atTolFL.value, NaN)) || num(ui.atTolFL.value, 0) < 0)) ui.atTolFL.value = "1.0";
+    if (ui.atTolT && (!Number.isFinite(num(ui.atTolT.value, NaN)) || num(ui.atTolT.value, 0) < 0)) ui.atTolT.value = "0.15";
+    if (ui.atMinIC && (!Number.isFinite(num(ui.atMinIC.value, NaN)) || num(ui.atMinIC.value, 0) <= 0)) {
+      ui.atMinIC.value = ui.atTargetIC?.value || "45";
     }
   }
 
