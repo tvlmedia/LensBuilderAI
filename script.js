@@ -251,6 +251,8 @@
     atProgressFill: $("#atProgressFill"),
     atMetricIteration: $("#atMetricIteration"),
     atMetricBestScore: $("#atMetricBestScore"),
+    atMetricBestIter: $("#atMetricBestIter"),
+    atMetricSinceBest: $("#atMetricSinceBest"),
     atMetricCurrentScore: $("#atMetricCurrentScore"),
     atMetricImprovement: $("#atMetricImprovement"),
     atMetricAccepted: $("#atMetricAccepted"),
@@ -8379,6 +8381,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     acceptedMerit: null,
     currentMerit: null,
     bestMerit: null,
+    bestIteration: null,
     history: [],
     noImprove: 0,
     acceptedMoves: 0,
@@ -9539,6 +9542,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const cur = autoTunerState.currentMerit || autoTunerState.acceptedMerit;
     const origScore = Number(autoTunerState.originalMerit?.totalScore);
     const bestScore = Number(best?.totalScore);
+    const bestIterRaw = Number(autoTunerState.bestIteration);
+    const hasBestIter = !!autoTunerState.bestLens && Number.isFinite(bestIterRaw);
+    const bestIter = hasBestIter ? Math.max(0, Math.floor(bestIterRaw)) : null;
+    const sinceBest = hasBestIter ? Math.max(0, iter - bestIter) : null;
     const progressPct = totalIter > 0 ? clamp((iter / totalIter) * 100, 0, 100) : 0;
     const improvement = Number.isFinite(origScore) && Number.isFinite(bestScore) && Math.abs(origScore) > 1e-12
       ? ((origScore - bestScore) / Math.abs(origScore)) * 100
@@ -9549,6 +9556,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.atProgressFill) ui.atProgressFill.style.width = `${progressPct.toFixed(1)}%`;
     if (ui.atMetricIteration) ui.atMetricIteration.textContent = `${iter} / ${totalIter || 0}`;
     if (ui.atMetricBestScore) ui.atMetricBestScore.textContent = scoreText(bestScore);
+    if (ui.atMetricBestIter) ui.atMetricBestIter.textContent = hasBestIter ? String(bestIter) : "—";
+    if (ui.atMetricSinceBest) ui.atMetricSinceBest.textContent = hasBestIter ? String(sinceBest) : "—";
     if (ui.atMetricCurrentScore) ui.atMetricCurrentScore.textContent = scoreText(cur?.totalScore);
     if (ui.atMetricImprovement) ui.atMetricImprovement.textContent = Number.isFinite(improvement) ? `${improvement.toFixed(2)}%` : "—";
     if (ui.atMetricAccepted) ui.atMetricAccepted.textContent = String(autoTunerState.acceptedMoves || 0);
@@ -9567,6 +9576,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const statusBits = [];
     if (autoTunerState.running) statusBits.push(autoTunerState.paused ? "Paused" : "Running");
     else statusBits.push(autoTunerState.stopReason || "Ready");
+    if (hasBestIter) {
+      statusBits.push(`best iter ${bestIter}`);
+      statusBits.push(`since best ${sinceBest}`);
+    }
     if (autoTunerState.lastMessage) statusBits.push(autoTunerState.lastMessage);
     statusBits.push(`accepted ${autoTunerState.acceptedMoves}`);
     statusBits.push(`rejected ${autoTunerState.rejectedMoves}`);
@@ -9574,6 +9587,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (autoTunerState.hardRejectedFL) statusBits.push(`hard FL ${autoTunerState.hardRejectedFL}`);
     if (autoTunerState.hardRejectedT) statusBits.push(`hard T ${autoTunerState.hardRejectedT}`);
     if (autoTunerState.hardRejectedIC) statusBits.push(`hard IC ${autoTunerState.hardRejectedIC}`);
+    if (hasBestIter && Number(cfg.stopIfStuck) > 0 && sinceBest > Number(cfg.stopIfStuck) * 0.75) {
+      statusBits.push(`No improvement for ${sinceBest} iterations — probably safe to stop.`);
+    }
     if (autoTunerState.noImprove) statusBits.push(`stuck ${autoTunerState.noImprove}`);
     if (ui.atStatus) ui.atStatus.textContent = statusBits.join(" • ");
     renderAutoTunerHistory();
@@ -9734,6 +9750,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (!Number.isFinite(bestScore) || Number(merit.totalScore) < bestScore) {
       autoTunerState.bestLens = clone(candidate);
       autoTunerState.bestMerit = merit;
+      autoTunerState.bestIteration = autoTunerState.iteration;
       autoTunerState.noImprove = 0;
       pushAutoTunerHistory(autoTunerState.iteration, merit);
     } else {
@@ -9852,6 +9869,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         autoTunerState.acceptedMerit = originalMerit;
         autoTunerState.currentMerit = originalMerit;
         autoTunerState.bestMerit = originalMerit;
+        autoTunerState.bestIteration = null;
         autoTunerState.history = [];
         autoTunerState.noImprove = 0;
         autoTunerState.acceptedMoves = 0;
@@ -9886,6 +9904,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         autoTunerState.acceptedMerit = originalMerit;
         autoTunerState.currentMerit = originalMerit;
         autoTunerState.bestMerit = null;
+        autoTunerState.bestIteration = null;
         autoTunerState.history = [];
         autoTunerState.noImprove = 0;
         autoTunerState.acceptedMoves = 0;
@@ -9930,6 +9949,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       autoTunerState.acceptedMerit = originalMerit;
       autoTunerState.currentMerit = originalMerit;
       autoTunerState.bestMerit = baselineHardCheck.ok ? originalMerit : null;
+      autoTunerState.bestIteration = baselineHardCheck.ok ? 0 : null;
       autoTunerState.history = [];
       autoTunerState.noImprove = 0;
       autoTunerState.acceptedMoves = 0;
@@ -9994,9 +10014,27 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     updateAutoTunerButtons();
   }
 
+  function cloneAutoTunerBestLensForJson() {
+    if (!autoTunerState.bestLens) return null;
+    const out = clone(autoTunerState.bestLens);
+    const iter = Number(autoTunerState.bestIteration);
+    const score = Number(autoTunerState.bestMerit?.totalScore);
+    if (Number.isFinite(iter) && Number.isFinite(score)) {
+      const note = `Auto Tuner best result found at iteration ${Math.max(0, Math.floor(iter))}, score ${scoreText(score, 5)}`;
+      if (Array.isArray(out.notes)) {
+        if (!out.notes.includes(note)) out.notes.push(note);
+      } else if (out.notes == null || out.notes === "") {
+        out.notes = [note];
+      } else {
+        out.notes = [String(out.notes), note];
+      }
+    }
+    return out;
+  }
+
   async function copyAutoTunerBestJson() {
     if (!autoTunerState.bestLens) return;
-    const text = JSON.stringify(autoTunerState.bestLens, null, 2);
+    const text = JSON.stringify(cloneAutoTunerBestLensForJson(), null, 2);
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
@@ -10041,10 +10079,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function saveAutoTunerBestJson() {
     if (!autoTunerState.bestLens) return;
     try {
-      const blob = new Blob([JSON.stringify(autoTunerState.bestLens, null, 2)], { type: "application/json" });
+      const bestJson = cloneAutoTunerBestLensForJson();
+      const blob = new Blob([JSON.stringify(bestJson, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       const url = URL.createObjectURL(blob);
-      const safeName = String(autoTunerState.bestLens?.name || lens?.name || "lens").replace(/[^\w\-]+/g, "_");
+      const safeName = String(bestJson?.name || lens?.name || "lens").replace(/[^\w\-]+/g, "_");
       a.href = url;
       a.download = `${safeName}_auto_tuned.json`;
       document.body.appendChild(a);
