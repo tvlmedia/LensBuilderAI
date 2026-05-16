@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="theme-color" content="#0b0f16" />
+  <title>Meridional Raytracer (2D) — TVL Lens Builder</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+
+<body>
+  <a class="skipLink" href="#appMain">Skip to main</a>
+
+  <header class="topbar" role="banner">
+    <div class="brand" aria-label="TVL Lens Builder">
+      <div class="dot" aria-hidden="true"></div>
+      <div class="brandText">
+        <div class="title">Meridional Raytracer (2D)</div>
+        <div class="subtitle">OSLO-ish doorsnede • stop-aware • element builder • sanity check tool</div>
+      </div>
+    </div>
+
+    <div class="toolbar" role="toolbar" aria-label="Main toolbar">
+      <button id="btnNew" class="btn" type="button">New / Clear</button>
+      <button id="btnLoadOmit" class="btn" type="button">Load OMIT 50 preset</button>
+      <button id="btnLoadDemo" class="btn" type="button">Load demo lens</button>
+
+      <div class="sep" aria-hidden="true"></div>
+
+      <button id="btnAdd" class="btn" type="button">+ Surface</button>
+      <button id="btnAddElement" class="btn" type="button">+ Element</button>
+      <button id="btnDuplicate" class="btn" type="button">Duplicate</button>
+      <button id="btnMoveUp" class="btn" type="button">↑</button>
+      <button id="btnMoveDown" class="btn" type="button">↓</button>
+      <button id="btnRemove" class="btn btnDanger" type="button">Delete</button>
+
+      <div class="sep" aria-hidden="true"></div>
+
+      <button id="btnScaleToFocal" class="btn" type="button">Scale → FL</button>
+      <button id="btnSetTStop" class="btn" type="button">Set T</button>
+      <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
+      <button id="btnRenderEngine" class="btn btnPrimary" type="button" aria-pressed="true">Preview: ON</button>
+      <button id="btnDebugOverlay" class="btn" type="button" aria-pressed="false">Outline Debug: OFF</button>
+
+      <div class="sep" aria-hidden="true"></div>
+
+      <button id="btnSave" class="btn" type="button">Save JSON</button>
+      <button id="btnPasteZmx" class="btn" type="button">Paste ZMX</button>
+      <label class="fileBtn btn" role="button" tabindex="0">
+        Load Lens
+        <input id="fileLoad" type="file" accept=".json,.zmx,.seq,.txt,application/json,text/plain" />
+      </label>
+    </div>
+  </header>
+
+  <main id="appMain" class="layout" role="main">
+    <!-- LEFT -->
+    <aside class="panel left" aria-label="Controls and surface table">
+      <section class="panelHeader">
+        <div class="h1">Surface Data</div>
+        <div class="hint">
+          Klik een rij om te selecteren. R=0 is plane. Glass = medium ná surface. Stop = 1 surface. IMS ap = sensor half-height.
+        </div>
+      </section>
+
+      <div class="leftScroll">
+        <section class="controls" aria-label="Lens and render controls">
+          <div class="controlGrid">
+            <div class="ctrl">
+              <label for="sensorPreset">Sensor preset</label>
+              <select id="sensorPreset"></select>
+            </div>
+
+            <div class="ctrl two">
+              <label for="sensorW">Sensor W (mm)</label>
+              <input id="sensorW" type="number" step="0.01" />
+            </div>
+
+            <div class="ctrl two">
+              <label for="sensorH">Sensor H (mm)</label>
+              <input id="sensorH" type="number" step="0.01" />
+            </div>
+
+            <div class="ctrl">
+              <label for="fieldAngle">Field angle (deg)</label>
+              <input id="fieldAngle" type="number" step="0.1" value="0" />
+            </div>
+
+            <div id="zoomConfigWrap" class="ctrl two hidden">
+              <label for="zoomConfigSelect">Zoom config</label>
+              <select id="zoomConfigSelect" aria-label="Zemax zoom configuration"></select>
+            </div>
+
+            <div class="ctrl">
+              <label for="useZemaxFields">Field source</label>
+              <label class="hint" style="display:flex; gap:10px; align-items:center;">
+                <input id="useZemaxFields" type="checkbox" />
+                <span>Use Zemax fields</span>
+              </label>
+            </div>
+
+            <div class="ctrl">
+              <label for="rayCount"># Rays</label>
+              <input id="rayCount" type="number" step="1" value="31" min="3" max="101" />
+            </div>
+
+            <div class="ctrl">
+              <label for="wavePreset">Wavelength</label>
+              <select id="wavePreset">
+                <option value="d">d-line (587.6nm) — visible default</option>
+                <option value="g">g-line (435.8nm) — blue</option>
+                <option value="c">c-line (656.3nm) — red</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="focusMode">Focus mode</label>
+              <select id="focusMode">
+                <option value="manual">manual</option>
+                <option value="auto" selected>auto</option>
+                <option value="fixed">fixed</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="focusMechanism">Focus mechanism</label>
+              <select id="focusMechanism">
+                <option value="move-lens" selected>move-lens</option>
+                <option value="move-ims">move-ims</option>
+                <option value="move-focus-group">move-focus-group (future)</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="lensFocus">Focus shift (mm)</label>
+              <input id="lensFocus" type="number" step="0.05" value="0" />
+            </div>
+
+            <div class="ctrl">
+              <label for="focusShiftSlider">Focus shift slider</label>
+              <input id="focusShiftSlider" type="range" min="-40" max="40" step="0.01" value="0" />
+            </div>
+
+            <div class="ctrl two">
+              <label for="autoRefocusOnDistanceChange">Auto refocus on distance change</label>
+              <label class="hint" style="display:flex; gap:10px; align-items:center;">
+                <input id="autoRefocusOnDistanceChange" type="checkbox" checked />
+                <span>Re-run autofocus when object distance changes</span>
+              </label>
+            </div>
+
+            <div class="ctrl">
+              <label for="autoFocusMode">Refocus target</label>
+              <select id="autoFocusMode">
+                <option value="chart-center" selected>Center</option>
+                <option value="chart-mid">Mid-field</option>
+                <option value="chart-edge">Edge / corners</option>
+                <option value="chart-grid">Grid average</option>
+              </select>
+            </div>
+
+            <div class="ctrl two">
+              <label>Active focus shift</label>
+              <div id="focusShiftActive" class="hint">0.000 mm • mode auto • mechanism move-lens</div>
+            </div>
+
+            <div class="ctrl">
+              <label for="renderScale">Render scale</label>
+              <input id="renderScale" type="range" min="0.6" max="2.6" step="0.05" value="1.25" />
+            </div>
+
+            <div class="ctrl two">
+              <label for="previewSourceMode">Preview source</label>
+              <select id="previewSourceMode">
+                <option value="chart" selected>Focus chart</option>
+                <option value="custom">Custom image</option>
+              </select>
+            </div>
+
+            <div class="ctrl two">
+              <label for="prevImg">Preview image</label>
+              <input id="prevImg" type="file" accept="image/*" />
+            </div>
+
+            <div class="ctrl two">
+              <label for="previewAutoFit">Preview fit</label>
+              <label class="hint" style="display:flex; gap:10px; align-items:center;">
+                <input id="previewAutoFit" type="checkbox" checked />
+                <span>Always fill sensor</span>
+              </label>
+            </div>
+
+            <div class="ctrl">
+              <label for="prevObjDist">Object distance (mm)</label>
+              <input id="prevObjDist" type="number" step="1" value="2000" />
+            </div>
+
+            <div class="ctrl">
+              <label for="prevObjH">Object height (mm)</label>
+              <input id="prevObjH" type="number" step="1" value="1650" />
+            </div>
+
+            <div class="ctrl">
+              <label for="prevObjW">Object width (mm)</label>
+              <input id="prevObjW" type="number" step="1" value="2933" />
+            </div>
+
+            <div class="ctrl">
+              <label for="prevRes">Preview res</label>
+              <select id="prevRes">
+                <option value="256">256 px (fast)</option>
+                <option value="384">384 px</option>
+                <option value="512">512 px</option>
+                <option value="768">768 px (slow)</option>
+                <option value="1920" selected>1920 px (HQ)</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="optDOF">Depth of Field</label>
+              <label class="hint" style="display:flex; gap:10px; align-items:center;">
+                <input id="optDOF" type="checkbox" />
+                <span>Enable DOF (slower)</span>
+              </label>
+            </div>
+
+            <div class="ctrl">
+              <label for="optCA">Chromatic Aberration</label>
+              <label class="hint" style="display:flex; gap:10px; align-items:center;">
+                <input id="optCA" type="checkbox" />
+                <span>Enable CA (slower)</span>
+              </label>
+            </div>
+
+            <div class="ctrl">
+              <label for="renderQuality">Quality / speed</label>
+              <select id="renderQuality">
+                <option value="draft">Draft (fast)</option>
+                <option value="normal" selected>Normal</option>
+                <option value="hq">High (slow)</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="previewRenderMode">Preview mode</label>
+              <select id="previewRenderMode">
+                <option value="fast" selected>Fast preview (LUT)</option>
+                <option value="quality">Quality preview (raytrace)</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="pupilSamples">Pupil samples</label>
+              <select id="pupilSamples">
+                <option value="8">8</option>
+                <option value="16" selected>16</option>
+                <option value="32">32</option>
+                <option value="64">64</option>
+                <option value="128">128</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="previewOrientation">Preview orientation</label>
+              <select id="previewOrientation">
+                <option value="upright" selected>Upright</option>
+                <option value="sensor-real">Sensor-real (inverted)</option>
+              </select>
+            </div>
+
+            <div class="ctrl two">
+              <label>&nbsp;</label>
+              <button id="btnRenderPreview" class="btn btnPrimary" type="button">Render Preview</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="tableWrap" aria-label="Surface table">
+          <table class="tbl" aria-describedby="surfaceTableHelp">
+            <thead>
+              <tr>
+                <th style="width:42px">#</th>
+                <th style="width:86px">Type</th>
+                <th style="width:110px">Radius R</th>
+                <th style="width:110px">Thickness</th>
+                <th style="width:110px">Aperture</th>
+                <th style="width:170px">Glass</th>
+                <th style="width:70px">Stop?</th>
+              </tr>
+            </thead>
+            <tbody id="surfTbody"></tbody>
+          </table>
+          <div id="surfaceTableHelp" class="srOnly">
+            Gebruik pijltjes/duplicate/delete buttons om geselecteerde surface te beheren.
+          </div>
+        </section>
+      </div>
+
+      <section class="status" aria-label="Status">
+        <div id="statusText" class="statusLine">—</div>
+
+        <div class="badges">
+          <div id="badgeEfl" class="badge">EFL: —</div>
+          <div id="badgeBfl" class="badge">BFL: —</div>
+          <div id="badgeT" class="badge">T≈ —</div>
+          <div id="badgeVig" class="badge">Vignette: —</div>
+        </div>
+
+        <div class="badges">
+          <div id="badgeFov" class="badge badgeWide">FOV: —</div>
+          <div id="badgeCov" class="badge">COV: —</div>
+          <div id="badgeIC" class="badge badgeWide">Image Circle: —</div>
+        </div>
+
+        <div class="footerRow">
+          <div id="metaInfo" class="meta">sensor —</div>
+          <div id="footerWarn" class="warn"></div>
+        </div>
+
+        <div id="verifyControls" class="verifyControls hidden" aria-label="Zemax verify controls">
+          <button id="btnToggleVerifyPanel" class="btn verifyBtn" type="button" aria-expanded="false">
+            Show Zemax Verify
+          </button>
+        </div>
+
+        <div id="verifyPanel" class="verifyPanel hidden" aria-label="Zemax verify panel">
+          <div class="verifyTitle">Zemax Verify</div>
+          <label class="verifyToggle" for="verifyMatchZemaxWave">
+            <input id="verifyMatchZemaxWave" type="checkbox" />
+            <span>Match Zemax wavelength</span>
+          </label>
+          <div id="verifyWaveHelp" class="verifyHelp">
+            Unchecked: use current dropdown wavelength (normal visible workflow). Checked: verify exactly at Zemax primary wavelength.
+          </div>
+          <div id="verifySummary" class="verifyLine">—</div>
+          <div id="verifyWave" class="verifyLine">—</div>
+          <div id="verifyFields" class="verifyLine">—</div>
+          <div id="verifyWeights" class="verifyLine">—</div>
+          <div id="verifyVig" class="verifyLine">—</div>
+          <div id="verifyPupil" class="verifyLine">—</div>
+          <div id="verifyZoom" class="verifyLine">—</div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- RIGHT -->
+    <section class="panel right" aria-label="Canvas views">
+      <div class="canvasHeader">
+        <div class="canvasTitle">
+          <div class="h1">Autodraw</div>
+          <div class="hint">drag = pan • wheel = zoom • dblclick = reset view</div>
+        </div>
+
+        <div class="topBadges" aria-label="Top badges">
+          <div id="badgeEflTop" class="pill">EFL: —</div>
+          <div id="badgeBflTop" class="pill">BFL: —</div>
+          <div id="badgeTTop" class="pill">T≈ —</div>
+          <div id="badgeFovTop" class="pill">FOV: —</div>
+          <div id="badgeCovTop" class="pill">COV: —</div>
+          <div id="badgeICTop" class="pill">IC: —</div>
+        </div>
+      </div>
+
+      <div class="canvasFrame">
+        <div class="canvasSplit" id="tvlCanvasSplit">
+          <div class="pane" id="raysPane">
+            <div class="paneTag">Rays</div>
+            <button id="btnRaysFS" class="fsBtn" type="button" title="Full Screen (R)">Full Screen (R)</button>
+            <canvas id="canvas"></canvas>
+          </div>
+
+          <div class="pane" id="previewPane">
+            <div class="paneTag">Preview</div>
+            <button id="btnPreviewFS" class="fsBtn" type="button" title="Full Screen (P)">Full Screen (P)</button>
+            <button id="btnPreviewRuler" class="fsBtn rulerBtn" type="button" title="Toggle diagonal ruler">Ruler</button>
+            <canvas id="previewCanvas"></canvas>
+
+            <!-- progress overlay -->
+            <div id="previewProgress" aria-hidden="true">
+              <div id="previewProgressBar"></div>
+              <div id="previewProgressText">0%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="canvasOverlay">
+          <div class="overlayHelp" id="overlayHelp">
+            Tips: zet stop op “STOP” surface • IMS ap = sensor half-height • “Scale → FL” fixeert focal drift
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODALS (jouw modals blijven hetzelfde, maar script ondersteunt ze al) -->
+  <div id="newLensModal" class="modal hidden" aria-hidden="true"></div>
+  <div id="elementModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard" role="dialog" aria-modal="true" aria-labelledby="elModalTitle">
+      <div class="modalTop modalHead">
+        <div>
+          <div id="elModalTitle" class="modalTitle">Add optical element</div>
+          <div class="modalSub">Create a singlet, achromat, stop, or air gap after the selected surface.</div>
+        </div>
+        <button id="elClose" class="btn" type="button">Close</button>
+      </div>
+
+      <div class="modalScroll">
+        <div class="modalGrid">
+          <div class="field">
+            <label for="elType">Element type</label>
+            <select id="elType">
+              <option value="singlet">Singlet</option>
+              <option value="achromat_cemented">Cemented achromat</option>
+              <option value="achromat">Air-spaced achromat</option>
+              <option value="stop">Stop</option>
+              <option value="airgap">Air gap</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="elMode">Mode</label>
+            <select id="elMode">
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="elForm">Form</label>
+            <select id="elForm">
+              <option value="biconvex">Biconvex / biconcave</option>
+              <option value="plano_front">Plano front</option>
+              <option value="plano_rear">Plano rear</option>
+              <option value="meniscus_front">Meniscus front</option>
+              <option value="meniscus_rear">Meniscus rear</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="elF">Power / focal length target (mm)</label>
+            <input id="elF" class="cellInput" type="number" step="0.1" value="50">
+          </div>
+
+          <div class="field">
+            <label for="elAp">Semi-aperture (mm)</label>
+            <input id="elAp" class="cellInput" type="number" step="0.1" value="12">
+          </div>
+
+          <div class="field">
+            <label for="elCt">Center thickness (mm)</label>
+            <input id="elCt" class="cellInput" type="number" step="0.1" value="3">
+          </div>
+
+          <div class="field">
+            <label for="elGap">Internal air gap (mm)</label>
+            <input id="elGap" class="cellInput" type="number" step="0.01" value="0.2">
+          </div>
+
+          <div class="field">
+            <label for="elAir">Rear air after element (mm)</label>
+            <input id="elAir" class="cellInput" type="number" step="0.1" value="1">
+          </div>
+
+          <div class="field">
+            <label for="elGlass1">Glass 1</label>
+            <select id="elGlass1">
+              <option value="N-BK7HT">N-BK7HT</option>
+              <option value="N-SK16">N-SK16</option>
+              <option value="N-LAK9">N-LAK9</option>
+              <option value="N-LAF21">N-LAF21</option>
+              <option value="N-F2">N-F2</option>
+              <option value="N-SF5">N-SF5</option>
+              <option value="N-SF11">N-SF11</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="elGlass2">Glass 2</label>
+            <select id="elGlass2">
+              <option value="N-F2">N-F2</option>
+              <option value="N-SF5">N-SF5</option>
+              <option value="N-SF11">N-SF11</option>
+              <option value="N-LASF9">N-LASF9</option>
+              <option value="N-BK7HT">N-BK7HT</option>
+              <option value="N-SK16">N-SK16</option>
+            </select>
+          </div>
+
+          <div class="field fieldWide fieldFull">
+            <label for="elGlassNote">Note</label>
+            <textarea id="elGlassNote" class="glassNote" readonly rows="4"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="modalBottom modalActions">
+        <button id="elAdd" class="btn btnPrimary" type="button">Insert element</button>
+      </div>
+    </div>
+  </div>
+  <div id="zmxPasteModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard" role="dialog" aria-modal="true" aria-labelledby="zmxPasteTitle">
+      <div class="modalTop">
+        <div>
+          <div id="zmxPasteTitle" class="modalTitle">Import ZMX Text</div>
+          <div class="modalSub">Paste raw Zemax sequential text (`VERS`, `MODE SEQ`, `SURF`...)</div>
+        </div>
+        <button id="zmxPasteClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modalScroll">
+        <div class="field fieldFull">
+          <label for="zmxPasteText">Zemax text</label>
+          <textarea
+            id="zmxPasteText"
+            class="glassNote zmxPasteArea"
+            spellcheck="false"
+            placeholder="Paste Zemax text here..."
+          ></textarea>
+        </div>
+      </div>
+      <div class="modalBottom zmxPasteBottom">
+        <button id="zmxPasteClear" class="btn" type="button">Clear</button>
+        <button id="zmxPasteCancel" class="btn" type="button">Cancel</button>
+        <button id="zmxPasteImport" class="btn btnPrimary" type="button">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastHost" class="toastHost" aria-live="polite" aria-atomic="true"></div>
+  <script src="./script.js"></script>
+</body>
+</html>

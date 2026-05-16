@@ -1,0 +1,9566 @@
+/* Meridional Raytracer (2D) — TVL Lens Builder (split-view build)
+   - Matches your current index.html + style.css (no tabs required)
+   - Element modal: achromats + optional FRONT AIR injection
+   - Reverse tracing: IMS aperture does NOT vignette
+   - Preview: radial mapping (rotational symmetry) with r->obj LUT
+   - OSLO-ish convention: glass = medium AFTER surface
+   - Added: Scale → FL, Set T, New Lens modal, Preview fullscreen button
+*/
+
+(() => {
+  // -------------------- tiny helpers --------------------
+  const $ = (sel) => document.querySelector(sel);
+  const on = (sel, ev, fn, opts) => {
+    const el = $(sel);
+    if (el) el.addEventListener(ev, fn, opts);
+    return el;
+  };
+
+  const clone = (obj) =>
+    typeof structuredClone === "function" ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
+
+  function num(v, fallback = 0) {
+    const s = String(v ?? "").trim().replace(",", ".");
+    const x = parseFloat(s);
+    return Number.isFinite(x) ? x : fallback;
+  }
+  function clamp01(x){ return x < 0 ? 0 : (x > 1 ? 1 : x); }
+  function smoothstep(a, b, x){
+    const t = clamp01((x - a) / (b - a));
+    return t * t * (3 - 2 * t);
+  }
+
+  // -------------------- canvases --------------------
+  const canvas = $("#canvas");
+  const ctx = canvas?.getContext("2d");
+
+  const previewCanvasEl = $("#previewCanvas");
+  const pctx = previewCanvasEl?.getContext("2d");
+
+  // -------------------- preview state --------------------
+  const preview = {
+    img: null,
+    imgCanvas: document.createElement("canvas"),
+    imgCtx: null,
+    ready: false,
+
+    imgData: null, // cached pixels
+
+    worldCanvas: document.createElement("canvas"),
+    worldCtx: null,
+    worldReady: false,
+    dirtyKey: "",
+
+    view: { panX: 0, panY: 0, zoom: 1.0, dragging: false, lastX: 0, lastY: 0 },
+
+    // overlay
+    rulerOn: false,
+    sourceMode: "chart",
+    sourceUrls: {
+      chart: null,
+      custom: null,
+    },
+
+    // auto-detected usable image circle (based on vignette falloff)
+    usableCircle: {
+      valid: false,
+      radiusMm: 0,
+      diameterMm: 0,
+      thresholdRel: 0.35,
+      relAtCutoff: 0,
+      source: "",
+    },
+    focusAssist: {
+      cacheKey: "",
+      sensorX: 0,
+      metrics: null,
+      mode: "chart-center",
+      debugKey: "",
+    },
+    debug: {
+      focusDeltaMm: null,
+      spotRmsMm: null,
+      spotRmsPx: null,
+      kernelPx: null,
+      mmPerPx: null,
+      method: "",
+      centerRmsMm: null,
+      centerRmsPx: null,
+      centerHitRate: null,
+      midRmsMm: null,
+      midRmsPx: null,
+      midHitRate: null,
+      cornerRmsMm: null,
+      cornerRmsPx: null,
+      cornerHitRate: null,
+      bestFocusCenterShiftMm: null,
+      bestFocusCornerShiftMm: null,
+      fieldCurvatureDeltaMm: null,
+    },
+  };
+  preview.imgCtx = preview.imgCanvas.getContext("2d");
+  preview.worldCtx = preview.worldCanvas.getContext("2d");
+
+  // -------------------- UI --------------------
+  const ui = {
+    tbody: $("#surfTbody"),
+    status: $("#statusText"),
+
+    efl: $("#badgeEfl"),
+    bfl: $("#badgeBfl"),
+    tstop: $("#badgeT"),
+    vig: $("#badgeVig"),
+    fov: $("#badgeFov"),
+    cov: $("#badgeCov"),
+    ic: $("#badgeIC"),
+
+    footerWarn: $("#footerWarn"),
+    metaInfo: $("#metaInfo"),
+
+    eflTop: $("#badgeEflTop"),
+    bflTop: $("#badgeBflTop"),
+    tstopTop: $("#badgeTTop"),
+    fovTop: $("#badgeFovTop"),
+    covTop: $("#badgeCovTop"),
+    icTop: $("#badgeICTop"),
+
+    sensorPreset: $("#sensorPreset"),
+    sensorW: $("#sensorW"),
+    sensorH: $("#sensorH"),
+    zoomConfigWrap: $("#zoomConfigWrap"),
+    zoomConfigSelect: $("#zoomConfigSelect"),
+
+    fieldAngle: $("#fieldAngle"),
+    useZemaxFields: $("#useZemaxFields"),
+    rayCount: $("#rayCount"),
+    wavePreset: $("#wavePreset"),
+    focusMode: $("#focusMode"),
+    focusMechanism: $("#focusMechanism"),
+    lensFocus: $("#lensFocus"),
+    focusShiftSlider: $("#focusShiftSlider"),
+    autoRefocusOnDistanceChange: $("#autoRefocusOnDistanceChange"),
+    focusShiftActive: $("#focusShiftActive"),
+    renderScale: $("#renderScale"),
+
+    prevImg: $("#prevImg"),
+    previewSourceMode: $("#previewSourceMode"),
+    previewAutoFit: $("#previewAutoFit"),
+    prevObjDist: $("#prevObjDist"),
+    prevObjH: $("#prevObjH"),
+    prevObjW: $("#prevObjW"),
+    prevRes: $("#prevRes"),
+    previewRenderMode: $("#previewRenderMode"),
+    pupilSamples: $("#pupilSamples"),
+    previewOrientation: $("#previewOrientation"),
+    autoFocusMode: $("#autoFocusMode"),
+    btnRenderPreview: $("#btnRenderPreview"),
+    btnPreviewFS: $("#btnPreviewFS"),
+    btnPreviewRuler: $("#btnPreviewRuler"),
+    previewPane: $("#previewPane"),
+
+    raysPane: $("#raysPane"),
+    btnRaysFS: $("#btnRaysFS"),
+
+    btnScaleToFocal: $("#btnScaleToFocal"),
+    btnSetTStop: $("#btnSetTStop"),
+    btnNew: $("#btnNew"),
+    btnLoadOmit: $("#btnLoadOmit"),
+    btnLoadDemo: $("#btnLoadDemo"),
+    btnAdd: $("#btnAdd"),
+    btnAddElement: $("#btnAddElement"),
+    btnDuplicate: $("#btnDuplicate"),
+    btnMoveUp: $("#btnMoveUp"),
+    btnMoveDown: $("#btnMoveDown"),
+    btnRemove: $("#btnRemove"),
+    btnSave: $("#btnSave"),
+    btnPasteZmx: $("#btnPasteZmx"),
+    fileLoad: $("#fileLoad"),
+    btnAutoFocus: $("#btnAutoFocus"),
+    btnRenderEngine: $("#btnRenderEngine"),
+    btnDebugOverlay: $("#btnDebugOverlay"),
+
+    newLensModal: $("#newLensModal"),
+    nlClose: $("#nlClose"),
+    nlCreate: $("#nlCreate"),
+    nlTemplate: $("#nlTemplate"),
+    nlFocal: $("#nlFocal"),
+    nlT: $("#nlT"),
+    nlStopPos: $("#nlStopPos"),
+    nlName: $("#nlName"),
+
+    zmxPasteModal: $("#zmxPasteModal"),
+    zmxPasteText: $("#zmxPasteText"),
+    zmxPasteImport: $("#zmxPasteImport"),
+    zmxPasteCancel: $("#zmxPasteCancel"),
+    zmxPasteClear: $("#zmxPasteClear"),
+    zmxPasteClose: $("#zmxPasteClose"),
+
+    verifyPanel: $("#verifyPanel"),
+    verifyControls: $("#verifyControls"),
+    btnToggleVerifyPanel: $("#btnToggleVerifyPanel"),
+    verifySummary: $("#verifySummary"),
+    verifyWave: $("#verifyWave"),
+    verifyWaveHelp: $("#verifyWaveHelp"),
+    verifyFields: $("#verifyFields"),
+    verifyWeights: $("#verifyWeights"),
+    verifyVig: $("#verifyVig"),
+    verifyPupil: $("#verifyPupil"),
+    verifyZoom: $("#verifyZoom"),
+    verifyMatchZemaxWave: $("#verifyMatchZemaxWave"),
+
+    toastHost: $("#toastHost"),
+  };
+
+  function toast(msg, ms = 2200) {
+    if (!ui.toastHost) return;
+    const d = document.createElement("div");
+    d.className = "toast";
+    d.textContent = String(msg || "");
+    ui.toastHost.appendChild(d);
+    setTimeout(() => {
+      d.style.opacity = "0";
+      d.style.transform = "translateY(6px)";
+      setTimeout(() => d.remove(), 250);
+    }, ms);
+  }
+
+  let selectedIndex = 0;
+
+  // -------------------- sensor presets --------------------
+ // -------------------- sensor presets --------------------
+const SENSOR_PRESETS = {
+  "ARRI Alexa Mini (S35)": { w: 28.25, h: 18.17 },
+  "ARRI Alexa Mini LF (LF)": { w: 36.7, h: 25.54 },
+  "Sony VENICE (FF)": { w: 36.0, h: 24.0 },
+  "Fuji GFX (MF)": { w: 43.8, h: 32.9 },
+
+  // ✅ NEW
+  "IMAX 15/70 (70mm)": { w: 70.41, h: 56.62 },
+  "65mm Analoog (5-perf)": { w: 52.15, h: 23.07 },
+  "ARRI ALEXA 265": { w: 54.12, h: 25.58 },
+};
+  const DEFAULT_SENSOR_PRESET = "ARRI Alexa Mini LF (LF)";
+
+  function populateSensorPresetsSelect() {
+    if (!ui.sensorPreset) return;
+    const prev = String(ui.sensorPreset.value || "").trim();
+    const keys = Object.keys(SENSOR_PRESETS);
+    ui.sensorPreset.innerHTML = keys.map((k) => `<option value="${k}">${k}</option>`).join("");
+    if (SENSOR_PRESETS[prev]) {
+      ui.sensorPreset.value = prev;
+    } else if (SENSOR_PRESETS[DEFAULT_SENSOR_PRESET]) {
+      ui.sensorPreset.value = DEFAULT_SENSOR_PRESET;
+    } else if (keys.length) {
+      ui.sensorPreset.value = keys[0];
+    }
+  }
+
+  function getSensorWH() {
+    const wRaw = Number(ui.sensorW?.value || 36.7);
+    const hRaw = Number(ui.sensorH?.value || 25.54);
+    const w = Number.isFinite(wRaw) && wRaw > 0 ? wRaw : 36.7;
+    const h = Number.isFinite(hRaw) && hRaw > 0 ? hRaw : 25.54;
+    return { w, h, halfH: Math.max(0.1, h * 0.5), halfW: Math.max(0.1, w * 0.5) };
+  }
+
+  const OV_DEFAULT = 1.0; // 1.0 keeps preview framing sensor-filled
+  const USABLE_CIRCLE_THRESHOLD_REL = 0.35; // 35% of center illumination
+
+  function updateUsableCircleBadges() {
+    const uc = preview.usableCircle;
+    if (!uc?.valid) {
+      if (ui.ic) ui.ic.textContent = "Image Circle: —";
+      if (ui.icTop) ui.icTop.textContent = "IC: —";
+      return;
+    }
+    const leftTxt = `Image Circle: Ø${uc.diameterMm.toFixed(1)}mm`;
+    const topTxt = `IC: Ø${uc.diameterMm.toFixed(1)}mm`;
+    if (ui.ic) ui.ic.textContent = leftTxt;
+    if (ui.icTop) ui.icTop.textContent = topTxt;
+  }
+
+  // -------------------- default preview chart (GitHub) --------------------
+  const DEFAULT_PREVIEW_URL = "./TVL_Focus_Distortion_Chart_3x2_6000x4000.png";
+  const DEFAULT_LENS_URL = "./bijna-goed.json";
+  const LAST_LENS_STORAGE_KEY = "tvl_lensbuilder:last_lens:v1";
+  preview.sourceUrls.chart = DEFAULT_PREVIEW_URL;
+
+  function syncIMSCellApertureToUI() {
+    if (!ui.tbody || !lens?.surfaces?.length) return;
+    const i = lens.surfaces.length - 1;
+    const s = lens.surfaces[i];
+    if (!s || String(s.type).toUpperCase() !== "IMS") return;
+    const apInput = ui.tbody.querySelector(`input.cellInput[data-k="ap"][data-i="${i}"]`);
+    if (apInput) apInput.value = Number(s.ap || 0).toFixed(2);
+  }
+
+  function shouldPreserveIMSAperture() {
+    return !!(lens?.import_options?.preserve_ims_aperture);
+  }
+
+  function applySensorToIMS(opts = {}) {
+    const force = !!opts.force;
+    if (!force && shouldPreserveIMSAperture()) return;
+    const { halfH } = getSensorWH();
+    const ims = lens?.surfaces?.[lens.surfaces.length - 1];
+    if (ims && String(ims.type).toUpperCase() === "IMS") {
+      ims.ap = halfH;
+      ims.ap_optical = halfH;
+      if (ims.ap_mech == null) ims.ap_mech = halfH;
+      syncIMSCellApertureToUI();
+    }
+  }
+
+  function applyPreset(name) {
+    const p = SENSOR_PRESETS[name] || SENSOR_PRESETS[DEFAULT_SENSOR_PRESET];
+    if (ui.sensorW) ui.sensorW.value = p.w.toFixed(2);
+    if (ui.sensorH) ui.sensorH.value = p.h.toFixed(2);
+    applySensorToIMS();
+  }
+
+  // -------------------- glass db --------------------
+  const GLASS_DB = {
+  // --- baseline ---
+  AIR: { nd: 1.0, Vd: 999.0 },
+
+  // --- SCHOTT (heel gangbaar in foto/cine) ---
+  "N-BK7HT":   { nd: 1.5168,  Vd: 64.17 },
+  "N-BK10":    { nd: 1.49782, Vd: 66.95 },
+
+  "N-K5":      { nd: 1.52249, Vd: 59.48 },
+  "N-KF9":     { nd: 1.52346, Vd: 51.54 },
+  "N-PK52A":   { nd: 1.49700, Vd: 81.61 },
+  "N-ZK7A":    { nd: 1.508054, Vd: 61.04 },
+
+  // Borosilicate / barium crowns
+  "N-BAK1":    { nd: 1.5725,  Vd: 57.55 },
+  "N-BAK2":    { nd: 1.53996, Vd: 59.71 },
+  "N-BAK4":    { nd: 1.56883, Vd: 55.98 },
+
+  // Barium / “BALF”
+  "N-BALF4":   { nd: 1.57956, Vd: 53.87 },
+  "N-BALF5":   { nd: 1.54739, Vd: 53.63 },
+
+  // Barium flints / special flints
+  "N-BAF4":    { nd: 1.60568, Vd: 43.72 },
+  "N-BAF10":   { nd: 1.67003, Vd: 47.11 },
+  "N-BAF51":   { nd: 1.65224, Vd: 44.96 },
+  "N-BAF52":   { nd: 1.60863, Vd: 46.6 },
+  "N-BASF2":   { nd: 1.66446, Vd: 36.0 },
+
+  // Dense crowns / short flints / “SK”
+  "N-SK2":     { nd: 1.60738, Vd: 56.65 },
+  "N-SK4":     { nd: 1.61272, Vd: 58.63 },
+  "N-SK5":     { nd: 1.58913, Vd: 61.27 },
+  "N-SK11":    { nd: 1.56384, Vd: 60.8 },
+  "N-SK14":    { nd: 1.60311, Vd: 60.6 },
+  "N-SK16":    { nd: 1.62041, Vd: 60.32 },
+
+  // “SSK” (veel gebruikt als partner in correctiegroepen)
+  "N-SSK2":    { nd: 1.62229, Vd: 53.27 },
+  "N-SSK5":    { nd: 1.65844, Vd: 50.88 },
+  "N-SSK8":    { nd: 1.61773, Vd: 49.83 },
+
+  // “PSK”
+  "N-PSK3":    { nd: 1.55232, Vd: 63.46 },
+  "N-PSK53A":  { nd: 1.61800, Vd: 63.39 },
+
+  // “KZFS” (correctie / high performance partners)
+  "N-KZFS2":   { nd: 1.55836, Vd: 54.01 },
+  "N-KZFS4":   { nd: 1.61336, Vd: 44.49 },
+  "N-KZFS5":   { nd: 1.65412, Vd: 39.7 },
+  "N-KZFS8":   { nd: 1.72047, Vd: 34.7 },
+
+  // “LAK” (lanthanum crowns — super cinema-typisch)
+  "N-LAK9":    { nd: 1.69100, Vd: 54.71 },
+  "N-LAK10":   { nd: 1.72003, Vd: 50.62 },
+  "N-LAK22":   { nd: 1.65113, Vd: 55.89 },
+  "N-LAK28":   { nd: 1.74429, Vd: 50.77 },
+  "N-LAK34":   { nd: 1.72916, Vd: 54.5 },
+
+  // “LAF” (lanthanum flints)
+  "N-LAF2":    { nd: 1.74397, Vd: 44.85 },
+  "N-LAF7":    { nd: 1.7495,  Vd: 34.82 },
+  "N-LAF21":   { nd: 1.7880,  Vd: 47.49 },
+  "N-LAF34":   { nd: 1.7725,  Vd: 49.62 },
+
+  // “LASF” (high-index lanthanum flints — heel veel cinema correctie)
+  "N-LASF9":   { nd: 1.85025, Vd: 32.17 },
+  "N-LASF40":  { nd: 1.83404, Vd: 37.3 },
+  "N-LASF41":  { nd: 1.83501, Vd: 43.13 },
+  "N-LASF43":  { nd: 1.8061,  Vd: 40.61 },
+  "N-LASF44":  { nd: 1.8042,  Vd: 46.5 },
+  "N-LASF45":  { nd: 1.80107, Vd: 34.97 },
+
+  // Classic “F” / “SF” families (flints) — ook super common
+  "N-F2":      { nd: 1.62005, Vd: 36.43 },
+  "N-FK5":     { nd: 1.48749, Vd: 70.41 },
+  "N-FK58":    { nd: 1.45600, Vd: 90.9 },
+
+  "N-SF1":     { nd: 1.71736, Vd: 29.62 },
+  "N-SF2":     { nd: 1.64769, Vd: 33.82 },
+  "N-SF4":     { nd: 1.75513, Vd: 27.38 },
+  "N-SF5":     { nd: 1.67271, Vd: 32.25 },
+  "N-SF6":     { nd: 1.80518, Vd: 25.36 },
+  "N-SF8":     { nd: 1.68894, Vd: 31.31 },
+  "N-SF10":    { nd: 1.72828, Vd: 28.53 },
+  "N-SF11":    { nd: 1.78472, Vd: 25.68 },
+  "N-SF15":    { nd: 1.69892, Vd: 30.2 },
+  "N-SF57":    { nd: 1.84666, Vd: 23.78 },
+  "N-SF66":    { nd: 1.92286, Vd: 20.88 }
+};
+  // Wavelengths (Fraunhofer + Hg g) nm
+  const WL = {
+    C: 656.2725,
+    d: 587.5618,
+    F: 486.1327,
+    g: 435.8343,
+  };
+
+  // --- Sellmeier + Cauchy dispersion ---
+  function sellmeierN_um(glass, lambda_um){
+    const s = glass.sellmeier;
+    const L2 = lambda_um * lambda_um;
+    let n2 = 1.0;
+    for (let i=0;i<3;i++){
+      n2 += (s.B[i] * L2) / (L2 - s.C[i]);
+    }
+    return Math.sqrt(n2);
+  }
+
+  function fitCauchyFrom3(nC, nd, nF){
+    const lC = WL.C / 1000, ld = WL.d / 1000, lF = WL.F / 1000;
+    const M = [
+      [1, 1/(lC*lC), 1/(lC*lC*lC*lC)],
+      [1, 1/(ld*ld), 1/(ld*ld*ld*ld)],
+      [1, 1/(lF*lF), 1/(lF*lF*lF*lF)],
+    ];
+    const y = [nC, nd, nF];
+
+    const A = M.map(r=>r.slice());
+    const b = y.slice();
+
+    for (let i=0;i<3;i++){
+      let piv=i;
+      for (let r=i+1;r<3;r++) if (Math.abs(A[r][i]) > Math.abs(A[piv][i])) piv=r;
+      if (piv!==i){ [A[i],A[piv]]=[A[piv],A[i]]; [b[i],b[piv]]=[b[piv],b[i]]; }
+
+      const div = A[i][i] || 1e-12;
+      for (let j=i;j<3;j++) A[i][j] /= div;
+      b[i] /= div;
+
+      for (let r=0;r<3;r++){
+        if (r===i) continue;
+        const f = A[r][i];
+        for (let j=i;j<3;j++) A[r][j] -= f*A[i][j];
+        b[r] -= f*b[i];
+      }
+    }
+    return { A:b[0], B:b[1], C:b[2] };
+  }
+
+  function cauchyN_um(cfit, lambda_um){
+    const L2 = lambda_um*lambda_um;
+    return cfit.A + cfit.B/L2 + cfit.C/(L2*L2);
+  }
+
+  const _cauchyCache = new Map();
+
+  function glassN_fromNdVd(ndRaw, vdRaw, lambdaNm) {
+    const nd = Number(ndRaw);
+    if (!Number.isFinite(nd) || nd <= 1) return 1.0;
+    const Vd = (Number.isFinite(Number(vdRaw)) && Number(vdRaw) > 0) ? Number(vdRaw) : 999;
+
+    const key = `custom_ndvd::${nd.toFixed(8)}::${Vd.toFixed(8)}`;
+    let fit = _cauchyCache.get(key);
+    if (!fit) {
+      const dN = (nd - 1) / Math.max(10, Vd);
+      const nF = nd + 0.6 * dN;
+      const nC = nd - 0.4 * dN;
+      fit = fitCauchyFrom3(nC, nd, nF);
+      _cauchyCache.set(key, fit);
+    }
+    return cauchyN_um(fit, lambdaNm / 1000);
+  }
+
+  function getSurfaceCustomGlass(surface) {
+    if (!surface || typeof surface !== "object") return null;
+    const nd = Number(surface.nd ?? surface.glass_nd);
+    if (!Number.isFinite(nd) || nd <= 1) return null;
+    const vdRaw = Number(surface.vd ?? surface.glass_vd);
+    const Vd = (Number.isFinite(vdRaw) && vdRaw > 0) ? vdRaw : 999;
+    return { nd, Vd };
+  }
+
+  function glassN_lambda(glassName, lambdaNm){
+    const g = GLASS_DB[glassName] || GLASS_DB.AIR;
+    if (glassName === "AIR") return 1.0;
+
+    const lambda_um = lambdaNm / 1000;
+
+    if (g.sellmeier && g.sellmeier.B && g.sellmeier.C){
+      return sellmeierN_um(g, lambda_um);
+    }
+
+    const key = glassName + "::cauchy";
+    let fit = _cauchyCache.get(key);
+    if (!fit){
+      const nd = Number(g.nd || 1.5168);
+      const Vd = Math.max(10, Number(g.Vd || 50));
+      const dN = (nd - 1) / Vd; // nF - nC
+      const nF = nd + 0.6 * dN;
+      const nC = nd - 0.4 * dN;
+      fit = fitCauchyFrom3(nC, nd, nF);
+      _cauchyCache.set(key, fit);
+    }
+    return cauchyN_um(fit, lambda_um);
+  }
+
+  function wavePresetToLambdaNm(w){
+    const ww = String(w || "d");
+    if (ww === "zemax_pwav") {
+      const z = Number(lens?.zemax?.primaryWavelengthNm);
+      if (Number.isFinite(z) && z > 0) return z;
+      return WL.d;
+    }
+    const mNm = ww.match(/^nm:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$/i);
+    if (mNm) {
+      const nm = Number(mNm[1]);
+      if (Number.isFinite(nm) && nm > 0) return nm;
+    }
+    const asNum = Number(ww);
+    if (Number.isFinite(asNum) && asNum > 0) return asNum;
+    if (ww === "c" || ww === "C") return WL.C;
+    if (ww === "F") return WL.F;
+    if (ww === "g") return WL.g;
+    return WL.d;
+  }
+
+  function getActiveAnalysisLambdaNm({ preferZemax = false } = {}) {
+    if (preferZemax === true) {
+      const z = Number(lens?.zemax?.primaryWavelengthNm);
+      if (Number.isFinite(z) && z > 0) return z;
+    }
+    const preset = ui.wavePreset?.value || "d";
+    return wavePresetToLambdaNm(preset);
+  }
+
+  function ensureWavePresetOptionForNm(nm, labelPrefix = "Custom") {
+    if (!ui.wavePreset) return null;
+    const n = Number(nm);
+    if (!Number.isFinite(n) || n <= 0) return null;
+
+    const value = `nm:${n.toFixed(3)}`;
+    let opt = Array.from(ui.wavePreset.options).find((o) => String(o.value) === value);
+    if (!opt) {
+      opt = document.createElement("option");
+      opt.value = value;
+      ui.wavePreset.appendChild(opt);
+    }
+    opt.textContent = `${labelPrefix} (${n.toFixed(1)}nm)`;
+    return value;
+  }
+
+  function ensureZemaxPrimaryWaveOption() {
+    if (!ui.wavePreset) return;
+    const nm = Number(lens?.zemax?.primaryWavelengthNm);
+    const value = "zemax_pwav";
+    const existing = Array.from(ui.wavePreset.options).find((o) => String(o.value) === value);
+    if (!(Number.isFinite(nm) && nm > 0)) {
+      if (existing) existing.remove();
+      if (ui.wavePreset.value === value) ui.wavePreset.value = "d";
+      return;
+    }
+    let opt = existing;
+    if (!opt) {
+      opt = document.createElement("option");
+      opt.value = value;
+      ui.wavePreset.appendChild(opt);
+    }
+    opt.textContent = `Zemax PWAV (${nm.toFixed(1)}nm) — imported primary wavelength`;
+  }
+
+  function setVisibleDefaultWavePresetAfterZemaxImport() {
+    if (!ui.wavePreset) return;
+    const pwavNm = Number(lens?.zemax?.primaryWavelengthNm);
+    // Keep visible-light default for preview/sanity; Zemax PWAV remains selectable.
+    if (Number.isFinite(pwavNm) && Math.abs(pwavNm - WL.d) < 1.0) {
+      ui.wavePreset.value = "d";
+      return;
+    }
+    ui.wavePreset.value = "d";
+  }
+
+  function setWavePresetFromNm(nm, labelPrefix = "Custom") {
+    if (!ui.wavePreset) return;
+    const n = Number(nm);
+    if (!Number.isFinite(n) || n <= 0) return;
+
+    if (Math.abs(n - WL.d) < 1.0) { ui.wavePreset.value = "d"; return; }
+    if (Math.abs(n - WL.g) < 1.0) { ui.wavePreset.value = "g"; return; }
+    if (Math.abs(n - WL.C) < 1.0) { ui.wavePreset.value = "c"; return; }
+    if (Math.abs(n - WL.F) < 1.0) { ui.wavePreset.value = "F"; return; }
+
+    const v = ensureWavePresetOptionForNm(n, labelPrefix);
+    if (v) ui.wavePreset.value = v;
+  }
+
+function glassN(glassName, wavePresetOrNm = "d") {
+  // accepteer zowel "d"/"c"/"F"/"g" ALS lambdaNm als number
+  const lambdaNm =
+    (typeof wavePresetOrNm === "number" && Number.isFinite(wavePresetOrNm))
+      ? wavePresetOrNm
+      : wavePresetToLambdaNm(wavePresetOrNm);
+
+  if (glassName && typeof glassName === "object") {
+    const custom = getSurfaceCustomGlass(glassName);
+    if (custom) return glassN_fromNdVd(custom.nd, custom.Vd, lambdaNm);
+
+    const fallbackName = String(glassName.glass ?? "AIR");
+    const key = resolveGlassName(fallbackName);
+    if (key === "AIR" && fallbackName !== "AIR") warnMissingGlass(fallbackName);
+    return glassN_lambda(key, lambdaNm);
+  }
+
+  // resolve aliases + waarschuwing als onbekend
+  const key = resolveGlassName(String(glassName ?? "AIR"));
+  if (key === "AIR" && glassName !== "AIR") warnMissingGlass(glassName);
+
+  // echte dispersie (Sellmeier indien aanwezig, anders Cauchy-fit)
+  return glassN_lambda(key, lambdaNm);
+}
+
+function surfaceN(surface, wavePresetOrNm = "d") {
+  const custom = getSurfaceCustomGlass(surface);
+  if (custom) {
+    const lambdaNm =
+      (typeof wavePresetOrNm === "number" && Number.isFinite(wavePresetOrNm))
+        ? wavePresetOrNm
+        : wavePresetToLambdaNm(wavePresetOrNm);
+    return glassN_fromNdVd(custom.nd, custom.Vd, lambdaNm);
+  }
+  return glassN(String(surface?.glass ?? "AIR"), wavePresetOrNm);
+}
+
+   // -------------------- GLASS ALIASES (keep existing preset names working) --------------------
+const GLASS_ALIASES = {
+  // element modal defaults
+  BK7: "N-BK7HT",
+  F2: "N-F2",
+
+  // your preset names
+  LASF35: "N-LASF43",     // kies de beste match in jouw DB
+  LASFN31: "N-LASF43",    // idem
+  LF5: "N-SF5",           // of N-F2 als je liever minder extreme flint wil
+
+  // SCHOTT / OHARA style names you used
+  "S-LAM3": "N-LAK9",     // lanthanum crown-ish
+  "S-BAH11": "N-BAK4"     // barium crown-ish (of N-BAF10 als je meer flint wil)
+};
+
+function normalizeGlassInput(name) {
+  const raw = String(name ?? "").trim();
+  if (!raw) return "AIR";
+  if (GLASS_DB[raw] || GLASS_ALIASES[raw]) return raw;
+  const up = raw.toUpperCase();
+  if (GLASS_DB[up] || GLASS_ALIASES[up]) return up;
+  return raw;
+}
+
+function getGlassOptionNames(surfaces = []) {
+  const names = new Set(["AIR"]);
+  Object.keys(GLASS_ALIASES).forEach((k) => names.add(k));
+  Object.keys(GLASS_DB).forEach((k) => names.add(k));
+  (surfaces || []).forEach((s) => names.add(normalizeGlassInput(s?.glass)));
+
+  return Array.from(names).sort((a, b) => {
+    if (a === "AIR") return -1;
+    if (b === "AIR") return 1;
+    return a.localeCompare(b);
+  });
+}
+
+// helper: resolve any name to a real GLASS_DB key
+function resolveGlassName(name) {
+  const key = normalizeGlassInput(name);
+  if (GLASS_DB[key]) return key;
+  const alias = GLASS_ALIASES[key];
+  if (alias && GLASS_DB[alias]) return alias;
+  return "AIR";
+}
+
+// OPTIONAL: warn once per missing glass, so you immediately see what's broken
+const _glassWarned = new Set();
+function warnMissingGlass(name) {
+  if (!_glassWarned.has(name)) {
+    _glassWarned.add(name);
+    console.warn(`[GLASS_DB] Unknown glass "${name}" (resolved to AIR). Add alias or DB entry.`);
+  }
+}
+
+  // -------------------- built-in lenses --------------------
+  function demoLensSimple() {
+    return {
+      name: "Demo (simple)",
+      surfaces: [
+        { type: "OBJ", R: 0.0, t: 10.0, ap: 22.0, glass: "AIR", stop: false },
+        { type: "1", R: 42.0, t: 10.0, ap: 22.0, glass: "LASF35", stop: false },
+        { type: "2", R: -140.0, t: 10.0, ap: 21.0, glass: "AIR", stop: false },
+        { type: "3", R: -30.0, t: 10.0, ap: 19.0, glass: "LASFN31", stop: false },
+        { type: "STOP", R: 0.0, t: 10.0, ap: 14.0, glass: "AIR", stop: true },
+        { type: "5", R: 12.42, t: 10.0, ap: 8.5, glass: "AIR", stop: false },
+        { type: "AST", R: 0.0, t: 6.4, ap: 8.5, glass: "AIR", stop: false },
+        { type: "7", R: -18.93, t: 10.0, ap: 11.0, glass: "LF5", stop: false },
+        { type: "8", R: 59.6, t: 10.0, ap: 13.0, glass: "LASFN31", stop: false },
+        { type: "9", R: -40.49, t: 10.0, ap: 13.0, glass: "AIR", stop: false },
+        { type: "IMS", R: 0.0, t: 0.0, ap: 12.0, glass: "AIR", stop: false },
+      ],
+    };
+  }
+
+  function omit50ConceptV1() {
+    return {
+      name: "OMIT 50mm (concept v1 — scaled Double-Gauss base)",
+      notes: [
+        "Scaled from Double-Gauss base; used as geometric sanity for this 2D meridional tracer.",
+        "Not optimized; coatings/stop/entrance pupil are not modeled.",
+      ],
+      surfaces: [
+        { type: "OBJ", R: 0.0, t: 0.0, ap: 60.0, glass: "AIR", stop: false },
+
+        { type: "1", R: 37.4501, t: 4.49102, ap: 16.46707, glass: "S-LAM3", stop: false },
+        { type: "2", R: 135.07984, t: 0.0499, ap: 16.46707, glass: "AIR", stop: false },
+
+        { type: "3", R: 19.59581, t: 8.23852, ap: 13.72255, glass: "S-BAH11", stop: false },
+        { type: "4", R: 0.0, t: 0.998, ap: 12.22555, glass: "N-SF5", stop: false },
+
+        { type: "5", R: 12.7994, t: 5.48403, ap: 9.73054, glass: "AIR", stop: false },
+
+        { type: "STOP", R: 0.0, t: 6.48703, ap: 9.28144, glass: "AIR", stop: true },
+
+        { type: "7", R: -15.90319, t: 3.50798, ap: 9.23154, glass: "N-SF5", stop: false },
+        { type: "8", R: 0.0, t: 4.48104, ap: 10.47904, glass: "S-LAM3", stop: false },
+        { type: "9", R: -21.71158, t: 0.0499, ap: 10.47904, glass: "AIR", stop: false },
+
+        { type: "10", R: 110.3493, t: 3.98204, ap: 11.47705, glass: "S-BAH11", stop: false },
+        { type: "11", R: -44.30639, t: 30.6477, ap: 11.47705, glass: "AIR", stop: false },
+
+        { type: "IMS", R: 0.0, t: 0.0, ap: 12.77, glass: "AIR", stop: false },
+      ],
+    };
+  }
+
+  // -------------------- sanitize/load --------------------
+  const DRAW_MODE_SET = new Set(["optical", "mechanical", "zemax_like"]);
+  const SHOULDER_MODE_SET = new Set(["none", "flat", "step", "bridge"]);
+  const EDGE_THICKNESS_MODE_SET = new Set(["auto", "explicit"]);
+  const FOCUS_MODE_IMPORT_SET = new Set(["fixed", "manual", "auto"]);
+  const FOCUS_MECH_IMPORT_SET = new Set(["move-lens", "move-ims", "move-focus-group"]);
+
+  function finiteNumberOr(v, fallback) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function enumOr(v, allowed, fallback) {
+    const s = String(v ?? "").trim().toLowerCase();
+    return allowed.has(s) ? s : fallback;
+  }
+
+  function sanitizeFocusModeImport(raw) {
+    return enumOr(raw, FOCUS_MODE_IMPORT_SET, "auto");
+  }
+
+  function sanitizeFocusMechanismImport(raw) {
+    return enumOr(raw, FOCUS_MECH_IMPORT_SET, "move-lens");
+  }
+
+  function normalizeSurfaceApertures(src, importOptions) {
+    const fromDiam = Number(src?.DIAM);
+    const importAp = Number.isFinite(fromDiam) ? Math.abs(fromDiam) : null;
+
+    const apOptical = Math.max(0.01, finiteNumberOr(src?.ap_optical, finiteNumberOr(src?.ap, importAp ?? 10)));
+
+    const hasExplicitMech =
+      src &&
+      Object.prototype.hasOwnProperty.call(src, "ap_mech") &&
+      src.ap_mech != null &&
+      String(src.ap_mech).trim() !== "";
+    let apMech = null;
+    if (hasExplicitMech) {
+      const m = Number(src.ap_mech);
+      apMech = Number.isFinite(m) ? Math.max(0.01, m) : null;
+    } else if (importAp != null) {
+      if (importOptions?.use_same_ap_for_optics_and_mechanics === false) {
+        apMech = Math.max(0.01, importAp);
+      } else {
+        apMech = apOptical;
+      }
+    }
+
+    return {
+      ap: apOptical, // backwards-compatible alias used by existing optical code
+      ap_optical: apOptical,
+      ap_mech: apMech, // null => follow optical aperture
+    };
+  }
+
+  function sanitizeZemaxMeta(z) {
+    if (!z || typeof z !== "object") return null;
+    const toFiniteList = (arr, mapper = (x) => x) =>
+      (Array.isArray(arr) ? arr : [])
+        .map((v, i) => mapper(v, i))
+        .filter((v) => v != null);
+
+    const wavelengthsNm = toFiniteList(z.wavelengthsNm, (v) => {
+      const n = Number(v);
+      return (Number.isFinite(n) && n > 0) ? n : null;
+    });
+    const primaryWavelengthIndex = Number(z.primaryWavelengthIndex);
+    const primaryWavelengthNmRaw = Number(z.primaryWavelengthNm);
+    const primaryWavelengthNm = (Number.isFinite(primaryWavelengthNmRaw) && primaryWavelengthNmRaw > 0)
+      ? primaryWavelengthNmRaw
+      : (Number.isInteger(primaryWavelengthIndex) && primaryWavelengthIndex > 0 && wavelengthsNm[primaryWavelengthIndex - 1] != null
+        ? wavelengthsNm[primaryWavelengthIndex - 1]
+        : null);
+
+    const fields = toFiniteList(z.fields, (f, idx) => {
+      const angle = Number(f?.angleDeg ?? f?.fieldDeg ?? f);
+      if (!Number.isFinite(angle)) return null;
+      const weightRaw = Number(f?.weight);
+      const weight = Number.isFinite(weightRaw) ? Math.max(0, weightRaw) : 1;
+      const vdx = Number(f?.vdx);
+      const vdy = Number(f?.vdy);
+      const vcx = Number(f?.vcx);
+      const vcy = Number(f?.vcy);
+      return {
+        index: Number.isFinite(Number(f?.index)) ? Number(f.index) : idx,
+        angleDeg: angle,
+        weight,
+        vdx: Number.isFinite(vdx) ? vdx : 0,
+        vdy: Number.isFinite(vdy) ? vdy : 0,
+        vcx: Number.isFinite(vcx) ? vcx : 0,
+        vcy: Number.isFinite(vcy) ? vcy : 0,
+      };
+    });
+
+    const maxFieldAngleDeg = fields.length
+      ? Math.max(...fields.map((f) => Math.abs(Number(f.angleDeg) || 0)))
+      : null;
+
+    const zoomConfigCountRaw = Number(z.zoomConfigCount);
+    const zoomConfigCount = Number.isFinite(zoomConfigCountRaw)
+      ? Math.max(0, Math.trunc(zoomConfigCountRaw))
+      : null;
+    const currentConfigIndexRaw = Number(z.currentConfigIndex);
+    const currentConfigIndex = Number.isFinite(currentConfigIndexRaw)
+      ? Math.max(1, Math.trunc(currentConfigIndexRaw))
+      : null;
+    const currentConfigLabel = (z?.currentConfigLabel != null && String(z.currentConfigLabel).trim() !== "")
+      ? String(z.currentConfigLabel).trim()
+      : null;
+    const configApertureRaw = Number(z.configAperture);
+    const configAperture = Number.isFinite(configApertureRaw) ? configApertureRaw : null;
+    const imsSurfaceNumberRaw = Number(z.imsSurfaceNumber);
+    const imsSurfaceNumber = Number.isFinite(imsSurfaceNumberRaw) ? Math.max(0, Math.trunc(imsSurfaceNumberRaw)) : null;
+    const baseFields = toFiniteList(z.baseFields, (f, idx) => {
+      const angle = Number(f?.angleDeg ?? f?.fieldDeg ?? f);
+      if (!Number.isFinite(angle)) return null;
+      const weightRaw = Number(f?.weight);
+      const weight = Number.isFinite(weightRaw) ? Math.max(0, weightRaw) : 1;
+      const vdx = Number(f?.vdx);
+      const vdy = Number(f?.vdy);
+      const vcx = Number(f?.vcx);
+      const vcy = Number(f?.vcy);
+      return {
+        index: Number.isFinite(Number(f?.index)) ? Number(f.index) : idx,
+        angleDeg: angle,
+        weight,
+        vdx: Number.isFinite(vdx) ? vdx : 0,
+        vdy: Number.isFinite(vdy) ? vdy : 0,
+        vcx: Number.isFinite(vcx) ? vcx : 0,
+        vcy: Number.isFinite(vcy) ? vcy : 0,
+      };
+    });
+
+    return {
+      source: String(z.source || "zemax"),
+      name: (z?.name != null && String(z.name).trim() !== "") ? String(z.name).trim() : null,
+      version: (z?.version != null && String(z.version).trim() !== "") ? String(z.version).trim() : null,
+      mode: (z?.mode != null && String(z.mode).trim() !== "") ? String(z.mode).trim().toUpperCase() : null,
+      fieldType: String(z.fieldType || "angle_deg"),
+      wavelengthsNm,
+      primaryWavelengthIndex: Number.isInteger(primaryWavelengthIndex) ? primaryWavelengthIndex : null,
+      primaryWavelengthNm,
+      fields,
+      maxFieldAngleDeg,
+      zoomConfigCount,
+      currentConfigIndex,
+      currentConfigLabel,
+      configAperture,
+      imsSurfaceNumber,
+      baseFields,
+    };
+  }
+
+  function sanitizeZoomFieldOverrideMap(src) {
+    const out = {};
+    const obj = (src && typeof src === "object") ? src : {};
+    for (const [k, v] of Object.entries(obj)) {
+      const keyNum = Number(k);
+      const valNum = Number(v);
+      if (!Number.isFinite(keyNum) || !Number.isFinite(valNum)) continue;
+      out[String(Math.max(0, Math.trunc(keyNum)))] = valNum;
+    }
+    return out;
+  }
+
+  function sanitizeZoomModel(z) {
+    if (!z || typeof z !== "object") return null;
+    const rawConfigs = Array.isArray(z.configs) ? z.configs : [];
+    const configs = rawConfigs
+      .map((cfg, idx) => {
+        const indexRaw = Number(cfg?.index);
+        const index = Number.isFinite(indexRaw) ? Math.max(1, Math.trunc(indexRaw)) : (idx + 1);
+        const label = (cfg?.label != null && String(cfg.label).trim() !== "")
+          ? String(cfg.label).trim()
+          : null;
+        const apertureRaw = Number(cfg?.aperture);
+        const aperture = Number.isFinite(apertureRaw) ? apertureRaw : null;
+
+        const thicRaw = (cfg?.thicknessOverrides && typeof cfg.thicknessOverrides === "object")
+          ? cfg.thicknessOverrides
+          : {};
+        const thicknessOverrides = {};
+        for (const [k, v] of Object.entries(thicRaw)) {
+          const surfNo = Number(k);
+          const val = Number(v);
+          if (!Number.isFinite(surfNo) || !Number.isFinite(val)) continue;
+          thicknessOverrides[String(Math.max(0, Math.trunc(surfNo)))] = val;
+        }
+
+        const fov = (cfg?.fieldOverrides && typeof cfg.fieldOverrides === "object")
+          ? cfg.fieldOverrides
+          : {};
+        const fieldOverrides = {
+          vdx: sanitizeZoomFieldOverrideMap(fov.vdx),
+          vdy: sanitizeZoomFieldOverrideMap(fov.vdy),
+          vcx: sanitizeZoomFieldOverrideMap(fov.vcx),
+          vcy: sanitizeZoomFieldOverrideMap(fov.vcy),
+        };
+
+        const overrideSurfaceNumbers = Object.keys(thicknessOverrides)
+          .map((k) => Number(k))
+          .filter((n) => Number.isFinite(n))
+          .sort((a, b) => a - b);
+
+        return {
+          index,
+          label,
+          aperture,
+          thicknessOverrides,
+          fieldOverrides,
+          overrideSurfaceNumbers,
+        };
+      })
+      .sort((a, b) => a.index - b.index);
+
+    if (!configs.length) return null;
+    const activeRaw = Number(z.activeConfig);
+    const activeConfig = configs.some((c) => c.index === activeRaw)
+      ? activeRaw
+      : configs[0].index;
+
+    return { activeConfig, configs };
+  }
+
+  function isAirSurfaceMedium(surface) {
+    return String(surface?.glass ?? "AIR").trim().toUpperCase() === "AIR";
+  }
+
+  function isReservedSurfaceType(typeRaw) {
+    const t = String(typeRaw || "").trim().toUpperCase();
+    return t === "OBJ" || t === "IMS" || t === "STOP" || t === "MECH" || t === "BAFFLE" || t === "HOUSING";
+  }
+
+  function isAutoSurfaceLabelCandidate(surface) {
+    const label = String(surface?.surfaceLabel ?? surface?.label ?? "").trim();
+    const type = String(surface?.type ?? "").trim();
+    if (!label) return true;
+    if (surface?.surfaceLabelAuto) return true;
+    if (/^\d+$/.test(label) || /^S\d+$/i.test(label)) return true;
+    if (/^L\d+[A-Z]?(?:\/L\d+[A-Z]?)?\s+(?:FRONT|REAR|CEMENT)$/i.test(label)) return true;
+    return /^\d+$/.test(type) && label === type;
+  }
+
+  function setSurfaceAutoLabel(surface, label, force = false) {
+    if (!surface || typeof surface !== "object") return;
+    const clean = String(label || "").trim();
+    if (!clean) return;
+    if (force || isAutoSurfaceLabelCandidate(surface)) {
+      surface.surfaceLabel = clean;
+      surface.surfaceLabelAuto = true;
+    }
+  }
+
+  function assignElementGroupLabels(surfaces, startIdx, endIdx, elementNo, force = false) {
+    const count = endIdx - startIdx + 1;
+    if (count <= 0) return;
+    if (count === 1) {
+      setSurfaceAutoLabel(surfaces[startIdx], `L${elementNo} S1`, force);
+      return;
+    }
+    if (count === 2) {
+      setSurfaceAutoLabel(surfaces[startIdx], `L${elementNo} FRONT`, force);
+      setSurfaceAutoLabel(surfaces[endIdx], `L${elementNo} REAR`, force);
+      return;
+    }
+    for (let i = startIdx; i <= endIdx; i++) {
+      const offset = i - startIdx;
+      const letter = String.fromCharCode(65 + Math.min(offset, 25));
+      if (i === startIdx) {
+        setSurfaceAutoLabel(surfaces[i], `L${elementNo}${letter} FRONT`, force);
+      } else if (i === endIdx) {
+        const rearLetter = String.fromCharCode(65 + Math.min(offset - 1, 25));
+        setSurfaceAutoLabel(surfaces[i], `L${elementNo}${rearLetter} REAR`, force);
+      } else {
+        const prevLetter = String.fromCharCode(65 + Math.min(offset - 1, 25));
+        setSurfaceAutoLabel(surfaces[i], `L${elementNo}${prevLetter}/L${elementNo}${letter} CEMENT`, force);
+      }
+    }
+  }
+
+  function generateSurfaceLabels(surfaces, options = {}) {
+    if (!Array.isArray(surfaces)) return surfaces;
+    const force = !!options.force;
+    let elementNo = 0;
+    let fallbackNo = 1;
+
+    for (let i = 0; i < surfaces.length; i++) {
+      const s = surfaces[i];
+      if (!s || typeof s !== "object") continue;
+
+      const type = String(s.type || "").trim().toUpperCase();
+      if (i === 0 || type === "OBJ") {
+        setSurfaceAutoLabel(s, "OBJ", true);
+        continue;
+      }
+      if (i === surfaces.length - 1 || type === "IMS") {
+        setSurfaceAutoLabel(s, "IMS", true);
+        continue;
+      }
+      if (s.stop || type === "STOP") {
+        setSurfaceAutoLabel(s, "STOP", true);
+        continue;
+      }
+      if (isReservedSurfaceType(type)) {
+        setSurfaceAutoLabel(s, type, force);
+        continue;
+      }
+
+      const mediumBeforeIsAir = i === 0 || isAirSurfaceMedium(surfaces[i - 1]);
+      const mediumAfterIsAir = isAirSurfaceMedium(s);
+      if (mediumBeforeIsAir && !mediumAfterIsAir) {
+        let endIdx = i;
+        for (let j = i + 1; j < surfaces.length; j++) {
+          const next = surfaces[j];
+          const nextType = String(next?.type || "").trim().toUpperCase();
+          if (!next || next.stop || nextType === "STOP" || nextType === "IMS" || nextType === "OBJ") break;
+          endIdx = j;
+          if (isAirSurfaceMedium(next)) break;
+        }
+        elementNo += 1;
+        assignElementGroupLabels(surfaces, i, endIdx, elementNo, force);
+        i = endIdx;
+        continue;
+      }
+
+      setSurfaceAutoLabel(s, `S${fallbackNo++}`, force);
+    }
+    return surfaces;
+  }
+
+  function getSurfaceDisplayLabel(surface, index = 0) {
+    const label = String(surface?.surfaceLabel ?? surface?.label ?? "").trim();
+    if (label) return label;
+    const type = String(surface?.type ?? "").trim();
+    if (type) return type;
+    return `S${index}`;
+  }
+
+  function escapeAttr(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function sanitizeLens(obj) {
+  const rawAutofocusMode = String(obj?.import_options?.autofocus_mode || "").trim().toLowerCase();
+  const autofocusMode = (
+    rawAutofocusMode === "chart-mid" ||
+    rawAutofocusMode === "chart-edge" ||
+    rawAutofocusMode === "chart-grid" ||
+    rawAutofocusMode === "scene-center" ||
+    rawAutofocusMode === "chart-center"
+  ) ? rawAutofocusMode : "chart-center";
+
+  const importOptions = {
+    use_same_ap_for_optics_and_mechanics:
+      obj?.import_options?.use_same_ap_for_optics_and_mechanics !== false,
+    preserve_ims_aperture:
+      obj?.import_options?.preserve_ims_aperture === true,
+    use_zemax_fields:
+      obj?.import_options?.use_zemax_fields === true,
+    match_zemax_wavelength:
+      obj?.import_options?.match_zemax_wavelength === true,
+    autofocus_mode: autofocusMode,
+  };
+
+  const focusMode = sanitizeFocusModeImport(
+    obj?.focusMode ?? obj?.focus_mode ?? obj?.focus?.mode
+  );
+  const focusMechanism = sanitizeFocusMechanismImport(
+    obj?.focusMechanism ?? obj?.focus_mechanism ?? obj?.focus?.mechanism
+  );
+  const focusShiftRaw = Number(
+    obj?.focusShiftMm ??
+    obj?.focus_shift_mm ??
+    obj?.focus?.shiftMm ??
+    obj?.focus?.shift_mm ??
+    obj?.lensFocus ??
+    0
+  );
+  const focusShiftMm = Number.isFinite(focusShiftRaw) ? focusShiftRaw : 0;
+  const autoRefocusOnDistanceChange = (
+    obj?.autoRefocusOnDistanceChange ??
+    obj?.auto_refocus_on_distance_change ??
+    obj?.focus?.autoRefocusOnDistanceChange ??
+    true
+  ) !== false;
+
+  const safe = {
+    name: String(obj?.name ?? "No name"),
+    notes: Array.isArray(obj?.notes) ? obj.notes.map(String) : [],
+    surfaces: Array.isArray(obj?.surfaces) ? obj.surfaces : [],
+    import_options: importOptions,
+    importSource: (obj?.importSource != null && String(obj.importSource).trim() !== "")
+      ? String(obj.importSource).trim()
+      : null,
+    originalZmxText: (obj?.originalZmxText != null && String(obj.originalZmxText).trim() !== "")
+      ? String(obj.originalZmxText)
+      : null,
+    zemaxName: (obj?.zemaxName != null && String(obj.zemaxName).trim() !== "")
+      ? String(obj.zemaxName).trim()
+      : null,
+    zemaxVersion: (obj?.zemaxVersion != null && String(obj.zemaxVersion).trim() !== "")
+      ? String(obj.zemaxVersion).trim()
+      : null,
+    zemax: sanitizeZemaxMeta(obj?.zemax),
+    zoom: sanitizeZoomModel(obj?.zoom),
+    focus: {
+      mode: focusMode,
+      mechanism: focusMechanism,
+      shiftMm: focusShiftMm,
+      autoRefocusOnDistanceChange,
+    },
+  };
+  if (!safe.zemaxName && safe.zemax?.name) safe.zemaxName = String(safe.zemax.name);
+  if (!safe.zemaxVersion && safe.zemax?.version) safe.zemaxVersion = String(safe.zemax.version);
+
+  safe.surfaces = safe.surfaces.map((s) => {
+    const aps = normalizeSurfaceApertures(s, importOptions);
+    const glassNdRaw = Number(s?.nd ?? s?.glass_nd ?? s?.zmx?.nd ?? s?.zmx?.glass_nd);
+    const glassVdRaw = Number(s?.vd ?? s?.glass_vd ?? s?.zmx?.vd ?? s?.zmx?.Vd ?? s?.zmx?.glass_vd);
+    const glassNd = (Number.isFinite(glassNdRaw) && glassNdRaw > 1) ? glassNdRaw : null;
+    const glassVd = (glassNd != null)
+      ? ((Number.isFinite(glassVdRaw) && glassVdRaw > 0) ? glassVdRaw : 999)
+      : null;
+    const originalGlass = (() => {
+      if (s?.originalGlass != null && String(s.originalGlass).trim() !== "") return String(s.originalGlass).trim();
+      if (s?.original_glass != null && String(s.original_glass).trim() !== "") return String(s.original_glass).trim();
+      if (s?.zmx?.glass_name != null && String(s.zmx.glass_name).trim() !== "") return String(s.zmx.glass_name).trim();
+      return String(s?.glass ?? "").trim() || null;
+    })();
+    return {
+      type: String(s?.type ?? ""),
+      surfaceLabel: String(s?.surfaceLabel ?? s?.label ?? "").trim(),
+      surfaceLabelAuto: Boolean(s?.surfaceLabelAuto ?? false),
+      R: Number(s?.R ?? 0),
+      t: Number(s?.t ?? 0),
+      ap: aps.ap,
+      ap_optical: aps.ap_optical,
+      ap_mech: aps.ap_mech,
+      draw_mode: enumOr(s?.draw_mode, DRAW_MODE_SET, "zemax_like"),
+      shoulder_depth: Math.max(0, finiteNumberOr(s?.shoulder_depth, 0)),
+      shoulder_mode: enumOr(s?.shoulder_mode, SHOULDER_MODE_SET, "none"),
+      bevel: Math.max(0, finiteNumberOr(s?.bevel, 0)),
+      edge_thickness_mode: enumOr(s?.edge_thickness_mode, EDGE_THICKNESS_MODE_SET, "auto"),
+      edge_thickness: (() => {
+        const et = Number(s?.edge_thickness);
+        return Number.isFinite(et) ? Math.max(0, et) : null;
+      })(),
+      glass: normalizeGlassInput(s?.glass),
+      originalGlass,
+      nd: glassNd,
+      vd: glassVd,
+      glass_nd: glassNd,
+      glass_vd: glassVd,
+      stop: Boolean(s?.stop ?? false),
+      zmx: {
+        surf: Number.isFinite(Number(s?.zmx?.surf)) ? Number(s.zmx.surf) : null,
+        curv: Number.isFinite(Number(s?.zmx?.curv)) ? Number(s.zmx.curv) : null,
+        baseCurv: Number.isFinite(Number(s?.zmx?.baseCurv))
+          ? Number(s.zmx.baseCurv)
+          : (Number.isFinite(Number(s?.zmx?.curv)) ? Number(s.zmx.curv) : null),
+        disz: Number.isFinite(Number(s?.zmx?.disz)) ? Number(s.zmx.disz) : null,
+        diam: Number.isFinite(Number(s?.zmx?.diam)) ? Number(s.zmx.diam) : null,
+        glass_name: (s?.zmx?.glass_name != null && String(s.zmx.glass_name).trim() !== "")
+          ? String(s.zmx.glass_name).trim()
+          : originalGlass,
+        nd: glassNd,
+        vd: glassVd,
+        glass_nd: glassNd,
+        glass_vd: glassVd,
+        baseDisz: Number.isFinite(Number(s?.zmx?.baseDisz))
+          ? Number(s.zmx.baseDisz)
+          : (Number.isFinite(Number(s?.t)) ? Number(s.t) : null),
+      },
+    };
+  });
+
+    const firstStop = safe.surfaces.findIndex((s) => s.stop);
+    if (firstStop >= 0) safe.surfaces.forEach((s, i) => { if (i !== firstStop) s.stop = false; });
+
+    if (safe.surfaces.length >= 1) {
+    safe.surfaces[0].type = "OBJ";
+    // ✅ hard lock
+    safe.surfaces[0].t = 0.0;
+  }
+    if (safe.surfaces.length >= 1) safe.surfaces[safe.surfaces.length - 1].type = "IMS";
+    generateSurfaceLabels(safe.surfaces);
+
+    return safe;
+  }
+
+  let lens = sanitizeLens(omit50ConceptV1());
+  let _lastParaxialFailSignature = "";
+  let _lastZemaxTraceDebugSignature = "";
+  const HEAVY_RENDER_DEBOUNCE_MS = 180;
+  const MAX_AUTOFOCUS_ITERATIONS = 20;
+  const MAX_FOCUS_SHIFT_MM = 100;
+  const MAX_RAY_STEPS = 200;
+  const RUNTIME_BUSY_STORAGE_KEY = "tvl_lensbuilder:runtime_busy:v1";
+  let isAutofocusing = false;
+  let _safeModeActive = false;
+  let _lastStatusWarning = "";
+
+  function getSafeLocalStorage() {
+    try {
+      if (typeof window === "undefined" || !window.localStorage) return null;
+      return window.localStorage;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setStatusWarning(message, { append = false, force = false } = {}) {
+    const text = String(message || "").trim();
+    if (!text) return;
+    if (!force && text === _lastStatusWarning) return;
+    _lastStatusWarning = text;
+    if (ui.footerWarn) {
+      ui.footerWarn.textContent = append && ui.footerWarn.textContent
+        ? `${ui.footerWarn.textContent} • ${text}`
+        : text;
+    }
+    console.warn(text);
+  }
+
+  function clearStatusWarning() {
+    _lastStatusWarning = "";
+    if (ui.footerWarn) ui.footerWarn.textContent = "";
+  }
+
+  function markRuntimeBusy(reason) {
+    const storage = getSafeLocalStorage();
+    if (!storage) return;
+    try {
+      storage.setItem(RUNTIME_BUSY_STORAGE_KEY, JSON.stringify({
+        reason: String(reason || "render"),
+        at: Date.now(),
+      }));
+    } catch (_) {}
+  }
+
+  function clearRuntimeBusy() {
+    const storage = getSafeLocalStorage();
+    if (!storage) return;
+    try { storage.removeItem(RUNTIME_BUSY_STORAGE_KEY); } catch (_) {}
+  }
+
+  function readRuntimeBusyMarker() {
+    const storage = getSafeLocalStorage();
+    if (!storage) return null;
+    try {
+      const raw = storage.getItem(RUNTIME_BUSY_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isSafeFocusShift(shiftMm) {
+    const n = Number(shiftMm);
+    return Number.isFinite(n) && Math.abs(n) <= MAX_FOCUS_SHIFT_MM;
+  }
+
+  function enterSafeMode(reason = "runtime guard") {
+    _safeModeActive = true;
+    if (ui.focusMode) ui.focusMode.value = "manual";
+    if (ui.autoRefocusOnDistanceChange) ui.autoRefocusOnDistanceChange.checked = false;
+    if (ui.rayCount) ui.rayCount.value = "7";
+    focusRuntime.lastAutoKey = "";
+    focusRuntime.lastAutoMetric = null;
+    focusRuntime.lastAutoShiftMm = getFocusShiftMm();
+    try { setRenderEngineEnabled(false); } catch (_) { renderEngineEnabled = false; }
+    try { syncFocusControlsUI(); } catch (_) {}
+    try { persistLensSession(); } catch (_) {}
+    setStatusWarning(`Safe Mode: ${reason}. Preview OFF, focus manual, rays 7.`, { force: true });
+  }
+
+  function handleRuntimeError(prefix, error) {
+    const msg = error?.message || String(error || "unknown error");
+    console.error(prefix, error);
+    enterSafeMode(`${prefix}: ${msg}`);
+  }
+
+  function handleRaytraceGuard(message) {
+    const text = String(message || "Raytrace stopped.");
+    if (_safeModeActive) {
+      setStatusWarning(text);
+      return;
+    }
+    enterSafeMode(text);
+  }
+
+  function buildPersistableLensPayload() {
+    if (!lens || typeof lens !== "object") return null;
+    const snapshot = clone(lens);
+    // Keep storage footprint predictable; this source text can be large.
+    if (snapshot && typeof snapshot === "object" && "originalZmxText" in snapshot) {
+      delete snapshot.originalZmxText;
+    }
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      lens: snapshot,
+    };
+  }
+
+  function persistLensSession() {
+    const storage = getSafeLocalStorage();
+    if (!storage) return false;
+    try {
+      const payload = buildPersistableLensPayload();
+      if (!payload) return false;
+      storage.setItem(LAST_LENS_STORAGE_KEY, JSON.stringify(payload));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function restoreLensSession() {
+    const storage = getSafeLocalStorage();
+    if (!storage) return false;
+    try {
+      const raw = storage.getItem(LAST_LENS_STORAGE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      const savedLens = parsed?.lens ?? parsed;
+      if (!savedLens || !Array.isArray(savedLens?.surfaces) || !savedLens.surfaces.length) return false;
+      loadLens(savedLens);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function normalizeInitialAnchorScroll() {
+    if (typeof window === "undefined") return;
+    const hasAppMainHash = String(window.location.hash || "") === "#appMain";
+
+    if (hasAppMainHash) {
+      try {
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      } catch (_) {}
+    }
+    try {
+      if (window.history && "scrollRestoration" in window.history) {
+        window.history.scrollRestoration = "manual";
+      }
+    } catch (_) {}
+
+    const resetScroll = () => {
+      try {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      } catch (_) {
+        window.scrollTo(0, 0);
+      }
+      try {
+        const scroller = document.scrollingElement;
+        if (scroller) scroller.scrollTop = 0;
+      } catch (_) {}
+    };
+
+    resetScroll();
+    requestAnimationFrame(resetScroll);
+    setTimeout(resetScroll, 0);
+  }
+
+  function zoomRoleForIndex(idx, total) {
+    if (total <= 1) return null;
+    if (idx === 0) return "Wide";
+    if (idx === total - 1) return "Tele";
+    return "Mid";
+  }
+
+  function formatZoomConfigLabel(cfg, idx, total) {
+    const role = zoomRoleForIndex(idx, total);
+    const raw = String(cfg?.label || "").trim();
+    if (raw) {
+      if (role) return `${role} — ${raw}`;
+      return `Config ${cfg?.index ?? (idx + 1)} — ${raw}`;
+    }
+    if (role) return `${role} — Config ${cfg?.index ?? (idx + 1)}`;
+    return `Config ${cfg?.index ?? (idx + 1)}`;
+  }
+
+  function updateZoomConfigUI() {
+    if (!ui.zoomConfigWrap || !ui.zoomConfigSelect) return;
+    const configs = Array.isArray(lens?.zoom?.configs) ? lens.zoom.configs : [];
+    if (configs.length <= 1) {
+      ui.zoomConfigWrap.classList.add("hidden");
+      ui.zoomConfigSelect.innerHTML = "";
+      return;
+    }
+
+    const active = Number(lens?.zoom?.activeConfig);
+    ui.zoomConfigSelect.innerHTML = configs
+      .map((cfg, idx) => {
+        const label = formatZoomConfigLabel(cfg, idx, configs.length);
+        const val = Number(cfg?.index);
+        return `<option value="${Number.isFinite(val) ? val : (idx + 1)}">${label}</option>`;
+      })
+      .join("");
+    const activeCfg = configs.some((cfg) => Number(cfg?.index) === active)
+      ? active
+      : Number(configs[0]?.index || 1);
+    ui.zoomConfigSelect.value = String(activeCfg);
+    ui.zoomConfigWrap.classList.remove("hidden");
+  }
+
+  function syncActiveZoomConfigFromUI() {
+    if (!ui.zoomConfigSelect) return false;
+    const cfgIdx = Number(ui.zoomConfigSelect.value);
+    if (!Number.isFinite(cfgIdx)) return false;
+    return applyZoomConfigToLens(cfgIdx, { silent: true, skipBuild: true, skipRender: true });
+  }
+
+  function applyZoomConfigToLens(configIndex, opts = {}) {
+    const options = {
+      silent: opts?.silent === true,
+      skipBuild: opts?.skipBuild === true,
+      skipRender: opts?.skipRender === true,
+    };
+    if (!lens?.zoom?.configs?.length) return false;
+
+    const target = Number(configIndex);
+    const cfg = lens.zoom.configs.find((c) => Number(c?.index) === target);
+    if (!cfg) return false;
+    const overrideKeys = Object.keys(cfg?.thicknessOverrides || {})
+      .map((k) => String(Math.max(0, Math.trunc(Number(k)))))
+      .filter((k) => k !== "0");
+    const matchedOverrideKeys = new Set();
+
+    for (const s of lens.surfaces || []) {
+      if (!s) continue;
+      if (!s.zmx || typeof s.zmx !== "object") s.zmx = {};
+      if (!Number.isFinite(Number(s.zmx.baseDisz)) && Number.isFinite(Number(s.t))) {
+        s.zmx.baseDisz = Number(s.t);
+      }
+
+      const surfNo = Number(s?.zmx?.surf);
+      const type = String(s?.type || "").toUpperCase();
+      if (!Number.isFinite(surfNo) || surfNo <= 0 || type === "IMS") continue;
+
+      const key = String(Math.max(0, Math.trunc(surfNo)));
+      const override = Number(cfg?.thicknessOverrides?.[key]);
+      if (Number.isFinite(override)) {
+        s.t = override;
+        matchedOverrideKeys.add(key);
+      } else if (Number.isFinite(Number(s?.zmx?.baseDisz))) {
+        s.t = Number(s.zmx.baseDisz);
+      }
+    }
+
+    const cfgIdx = lens.zoom.configs.findIndex((c) => Number(c?.index) === Number(cfg.index));
+    if (!lens.zemax || typeof lens.zemax !== "object") lens.zemax = {};
+    lens.zemax.zoomConfigCount = Math.max(0, Number(lens.zoom.configs.length) || 0);
+    lens.zemax.currentConfigIndex = Number(cfg.index);
+    lens.zemax.currentConfigLabel = formatZoomConfigLabel(cfg, Math.max(0, cfgIdx), lens.zoom.configs.length);
+    lens.zemax.configAperture = Number.isFinite(Number(cfg?.aperture)) ? Number(cfg.aperture) : null;
+    const imsIdxMeta = (lens.surfaces || []).findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+    lens.zemax.imsSurfaceNumber = imsIdxMeta >= 0 && Number.isFinite(Number(lens?.surfaces?.[imsIdxMeta]?.zmx?.surf))
+      ? Number(lens.surfaces[imsIdxMeta].zmx.surf)
+      : null;
+
+    const hasFieldOverrides = !!(
+      cfg?.fieldOverrides &&
+      (Object.keys(cfg.fieldOverrides.vdx || {}).length ||
+       Object.keys(cfg.fieldOverrides.vdy || {}).length ||
+       Object.keys(cfg.fieldOverrides.vcx || {}).length ||
+       Object.keys(cfg.fieldOverrides.vcy || {}).length)
+    );
+    if (Array.isArray(lens?.zemax?.fields)) {
+      if (!Array.isArray(lens.zemax.baseFields) || !lens.zemax.baseFields.length) {
+        lens.zemax.baseFields = clone(lens.zemax.fields);
+      }
+      const baseFields = Array.isArray(lens.zemax.baseFields) ? lens.zemax.baseFields : [];
+      const ov = cfg.fieldOverrides || {};
+      const pick = (mapObj, keys, fallback) => {
+        for (const k of keys) {
+          const v = Number(mapObj?.[k]);
+          if (Number.isFinite(v)) return v;
+        }
+        return fallback;
+      };
+      lens.zemax.fields = baseFields.map((f, i) => {
+        const idx0 = Number.isFinite(Number(f?.index)) ? Number(f.index) : i;
+        const keys = [String(i + 1), String(i), String(idx0), String(idx0 + 1)];
+        return {
+          ...f,
+          vdx: pick(ov.vdx, keys, Number(f?.vdx) || 0),
+          vdy: pick(ov.vdy, keys, Number(f?.vdy) || 0),
+          vcx: pick(ov.vcx, keys, Number(f?.vcx) || 0),
+          vcy: pick(ov.vcy, keys, Number(f?.vcy) || 0),
+        };
+      });
+      lens.zemax.currentFieldOverrideSource = hasFieldOverrides ? `config_${cfg.index}` : "base";
+    }
+
+    lens.zoom.activeConfig = Number(cfg.index);
+    clampAllApertures(lens.surfaces);
+    computeVertices(lens.surfaces, 0, 0);
+    updateZoomConfigUI();
+
+    if (!options.silent) {
+      try {
+        const availableSurfNos = (lens.surfaces || [])
+          .map((s) => Number(s?.zmx?.surf))
+          .filter((n) => Number.isFinite(n))
+          .map((n) => String(Math.max(0, Math.trunc(n))));
+        const unmatchedOverrides = overrideKeys.filter((k) => !matchedOverrideKeys.has(k));
+        const rows = (lens.surfaces || []).map((s, i) => {
+          const zmxSurfNum = Number(s?.zmx?.surf);
+          const zmxSurfKey = Number.isFinite(zmxSurfNum) ? String(Math.max(0, Math.trunc(zmxSurfNum))) : null;
+          const overrideRaw = zmxSurfKey != null ? cfg?.thicknessOverrides?.[zmxSurfKey] : null;
+          const override = Number(overrideRaw);
+          return {
+            row: i,
+            type: String(s?.type || ""),
+            zmxSurf: Number.isFinite(zmxSurfNum) ? zmxSurfNum : null,
+            R: Number(s?.R),
+            t: Number(s?.t),
+            vx: Number.isFinite(Number(s?.vx)) ? Number(s.vx) : null,
+            baseDisz: Number.isFinite(Number(s?.zmx?.baseDisz)) ? Number(s.zmx.baseDisz) : null,
+            override: Number.isFinite(override) ? override : null,
+            glass: String(s?.glass || "AIR"),
+            nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+            vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+            ap: Number(s?.ap),
+            stop: !!s?.stop,
+          };
+        });
+        const imsIndex = (lens.surfaces || []).findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+        const imsSurfNo = imsIndex >= 0 ? Number(lens?.surfaces?.[imsIndex]?.zmx?.surf) : null;
+        console.groupCollapsed(`[zoom-config] Applied ${formatZoomConfigLabel(cfg, Math.max(0, cfgIdx), lens.zoom.configs.length)}`);
+        console.table(rows);
+        console.log("[zoom-config] thicknessOverrides", cfg?.thicknessOverrides || {});
+        console.log("[zoom-config] matchedOverrideKeys", Array.from(matchedOverrideKeys).sort((a, b) => Number(a) - Number(b)));
+        console.log("[zoom-config] imsIndex", imsIndex, "imsZmxSurf", Number.isFinite(imsSurfNo) ? imsSurfNo : null);
+        if (unmatchedOverrides.length) {
+          console.warn("[zoom-config] Unmatched THIC overrides (zmx surface numbers not found):", unmatchedOverrides, {
+            availableSurfNos,
+          });
+        }
+        console.groupEnd();
+      } catch (_) {}
+    }
+
+    if (!options.skipBuild) buildTable();
+    if (!options.skipRender) {
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    }
+    if (!options.silent) toast(`Zoom config: ${formatZoomConfigLabel(cfg, Math.max(0, cfgIdx), lens.zoom.configs.length)}`);
+    return true;
+  }
+
+  function loadLens(obj) {
+    lens = sanitizeLens(obj);
+    verifyPanelExpanded = false;
+    focusRuntime.lastAutoKey = "";
+    focusRuntime.lastAutoMetric = null;
+    focusRuntime.lastAutoShiftMm = Number(lens?.focus?.shiftMm) || 0;
+    if (ui.useZemaxFields) ui.useZemaxFields.checked = !!lens?.import_options?.use_zemax_fields;
+    if (ui.verifyMatchZemaxWave) ui.verifyMatchZemaxWave.checked = !!lens?.import_options?.match_zemax_wavelength;
+    if (ui.autoFocusMode) {
+      const autofocusRaw = String(lens?.import_options?.autofocus_mode || "").trim().toLowerCase();
+      ui.autoFocusMode.value = PREVIEW_AUTOFOCUS_MODES.has(autofocusRaw)
+        ? autofocusRaw
+        : PREVIEW_AUTOFOCUS_DEFAULT_MODE;
+    }
+    if (ui.focusMode) ui.focusMode.value = sanitizeFocusModeImport(lens?.focus?.mode);
+    if (ui.focusMechanism) ui.focusMechanism.value = sanitizeFocusMechanismImport(lens?.focus?.mechanism);
+    if (ui.autoRefocusOnDistanceChange) {
+      ui.autoRefocusOnDistanceChange.checked = lens?.focus?.autoRefocusOnDistanceChange !== false;
+    }
+    if (_safeModeActive) {
+      if (ui.focusMode) ui.focusMode.value = "manual";
+      if (ui.autoRefocusOnDistanceChange) ui.autoRefocusOnDistanceChange.checked = false;
+      if (ui.rayCount) ui.rayCount.value = "7";
+      if (lens.focus) {
+        lens.focus.mode = "manual";
+        lens.focus.autoRefocusOnDistanceChange = false;
+      }
+    }
+    updateZemaxVerifyChrome();
+    ensureZemaxPrimaryWaveOption();
+    const initialFocusShiftMm = Number(lens?.focus?.shiftMm);
+    setFocusShiftMm(Number.isFinite(initialFocusShiftMm) ? initialFocusShiftMm : getFocusShiftMm(), { updateStatus: false });
+    syncFocusControlsUI();
+    selectedIndex = 0;
+    clampAllApertures(lens.surfaces);
+    updateZoomConfigUI();
+    if (Array.isArray(lens?.zoom?.configs) && lens.zoom.configs.length) {
+      const firstIdx = Number(lens.zoom.configs[0]?.index || 1);
+      const desired = Number.isFinite(Number(lens?.zoom?.activeConfig))
+        ? Number(lens.zoom.activeConfig)
+        : firstIdx;
+      if (!applyZoomConfigToLens(desired, { silent: true, skipBuild: true, skipRender: true })) {
+        applyZoomConfigToLens(firstIdx, { silent: true, skipBuild: true, skipRender: true });
+      }
+    }
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    if (preview.ready) scheduleRenderPreview();
+    persistLensSession();
+  }
+
+  // -------------------- table helpers --------------------
+  function clampSelected() {
+    selectedIndex = Math.max(0, Math.min(lens.surfaces.length - 1, selectedIndex));
+  }
+  function enforceSingleStop(changedIndex) {
+    if (!lens.surfaces[changedIndex]?.stop) return;
+    lens.surfaces.forEach((s, i) => { if (i !== changedIndex) s.stop = false; });
+  }
+
+  let _focusMemo = null;
+  function rememberTableFocus() {
+    const a = document.activeElement;
+    if (!a) return;
+    if (!(a.classList && a.classList.contains("cellInput"))) return;
+    _focusMemo = {
+      i: a.dataset.i,
+      k: a.dataset.k,
+      ss: typeof a.selectionStart === "number" ? a.selectionStart : null,
+      se: typeof a.selectionEnd === "number" ? a.selectionEnd : null,
+    };
+  }
+  function restoreTableFocus() {
+    if (!_focusMemo || !ui.tbody) return;
+    const sel = `input.cellInput[data-i="${_focusMemo.i}"][data-k="${_focusMemo.k}"]`;
+    const el = ui.tbody.querySelector(sel);
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    if (_focusMemo.ss != null && _focusMemo.se != null) {
+      try { el.setSelectionRange(_focusMemo.ss, _focusMemo.se); } catch (_) {}
+    }
+    _focusMemo = null;
+  }
+
+  // -------------------- table build + events --------------------
+  function buildTable() {
+    clampSelected();
+    if (!ui.tbody) return;
+    generateSurfaceLabels(lens.surfaces);
+    const glassOptionNames = getGlassOptionNames(lens.surfaces);
+
+    rememberTableFocus();
+    ui.tbody.innerHTML = "";
+
+    lens.surfaces.forEach((s, idx) => {
+      const tr = document.createElement("tr");
+      tr.classList.toggle("selected", idx === selectedIndex);
+
+      tr.addEventListener("click", (ev) => {
+        if (["INPUT", "SELECT", "OPTION", "TEXTAREA"].includes(ev.target.tagName)) return;
+        selectedIndex = idx;
+        buildTable();
+      });
+
+     const isOBJ = String(s.type || "").toUpperCase() === "OBJ";
+     const glassValue = normalizeGlassInput(s.glass);
+     const customNd = Number(s?.nd ?? s?.glass_nd);
+     const customVd = Number(s?.vd ?? s?.glass_vd);
+     const hasCustomGlass = Number.isFinite(customNd) && customNd > 1 && Number.isFinite(customVd) && customVd > 0;
+     const customGlassLabel = hasCustomGlass
+       ? `CUSTOM nd=${customNd.toFixed(3)} vd=${customVd.toFixed(1)}`
+       : null;
+
+tr.innerHTML = `
+  <td style="width:34px; font-family:var(--mono)">${idx}</td>
+  <td style="width:72px"><input class="cellInput" data-k="surfaceLabel" data-i="${idx}" value="${escapeAttr(getSurfaceDisplayLabel(s, idx))}"></td>
+  <td style="width:92px"><input class="cellInput" data-k="R" data-i="${idx}" type="number" step="0.01" value="${s.R}"></td>
+
+  <td style="width:92px">
+    <input class="cellInput" data-k="t" data-i="${idx}" type="number" step="0.01"
+      value="${isOBJ ? 0 : s.t}" ${isOBJ ? "disabled" : ""}>
+  </td>
+
+  <td style="width:92px"><input class="cellInput" data-k="ap" data-i="${idx}" type="number" step="0.01" value="${s.ap}"></td>
+        <td style="width:110px">
+          <select class="cellSelect" data-k="glass" data-i="${idx}">
+            ${glassOptionNames.map((name) =>
+              `<option value="${name}" ${name === glassValue ? "selected" : ""}>${
+                (name === glassValue && hasCustomGlass) ? customGlassLabel : name
+              }</option>`
+            ).join("")}
+          </select>
+        </td>
+        <td class="cellChk" style="width:58px">
+          <input type="checkbox" data-k="stop" data-i="${idx}" ${s.stop ? "checked" : ""}>
+        </td>
+      `;
+      ui.tbody.appendChild(tr);
+    });
+
+    ui.tbody.querySelectorAll("input.cellInput").forEach((el) => {
+      el.addEventListener("input", onCellInput);
+      el.addEventListener("change", onCellCommit);
+      el.addEventListener("blur", onCellCommit);
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); onCellCommit(e); }
+      });
+    });
+
+    ui.tbody.querySelectorAll("select.cellSelect").forEach((el) => el.addEventListener("change", onCellCommit));
+    ui.tbody.querySelectorAll('input[type="checkbox"][data-k="stop"]').forEach((el) => el.addEventListener("change", onCellCommit));
+
+    restoreTableFocus();
+  }
+
+ function onCellInput(e) {
+  const el = e.target;
+  const i = Number(el.dataset.i);
+  const k = el.dataset.k;
+  if (!Number.isFinite(i) || !k) return;
+
+  selectedIndex = i;
+  const s = lens.surfaces[i];
+  if (!s) return;
+
+  const t0 = String(s.type || "").toUpperCase();
+
+  // ✅ OBJ thickness hard lock
+  if (t0 === "OBJ" && k === "t") {
+    s.t = 0.0;
+    el.value = "0";
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    return;
+  }
+
+  if ((k === "R" || k === "t" || k === "ap") && String(el.value ?? "").trim() === "") {
+    setStatusWarning(`Invalid number in surface ${i}`);
+    return;
+  }
+
+  if (k === "surfaceLabel") {
+    s.surfaceLabel = String(el.value ?? "");
+    s.surfaceLabelAuto = false;
+  } else if (k === "type") s.type = el.value;
+  else if (k === "ap") {
+    const ap = num(el.value, s.ap ?? 0);
+    if (ap <= 0) setStatusWarning(`Raytrace stopped: invalid surface ${i} ap <= 0`);
+    s.ap = ap;
+    s.ap_optical = ap;
+  } else if (k === "R" || k === "t") s[k] = num(el.value, s[k] ?? 0);
+  else s[k] = num(el.value, s[k] ?? 0);
+
+  applySensorToIMS();
+  scheduleRenderAll();
+  scheduleRenderPreview();
+}
+
+function onCellCommit(e) {
+  const el = e.target;
+  const i = Number(el.dataset.i);
+  const k = el.dataset.k;
+  if (!Number.isFinite(i) || !k) return;
+
+  selectedIndex = i;
+  const s = lens.surfaces[i];
+  if (!s) return;
+
+  const t0 = String(s.type || "").toUpperCase();
+
+  // ✅ OBJ thickness hard lock (ook op commit)
+  if (t0 === "OBJ" && k === "t") {
+    s.t = 0.0;
+    el.value = "0";
+  }
+
+  if ((k === "R" || k === "t" || k === "ap") && String(el.value ?? "").trim() === "") {
+    setStatusWarning(`Invalid number in surface ${i}`);
+    buildTable();
+    scheduleRenderAll();
+    return;
+  }
+
+  if (k === "stop") {
+    s.stop = !!el.checked;
+    enforceSingleStop(i);
+  } else if (k === "glass") {
+    s.glass = normalizeGlassInput(el.value);
+    s.originalGlass = s.glass;
+    s.nd = null;
+    s.vd = null;
+    s.glass_nd = null;
+    s.glass_vd = null;
+  } else if (k === "surfaceLabel") {
+    const label = String(el.value ?? "").trim();
+    const upperLabel = label.toUpperCase();
+    s.surfaceLabel = label;
+    s.surfaceLabelAuto = false;
+    if (upperLabel === "STOP") {
+      s.type = "STOP";
+      s.stop = true;
+      s.surfaceLabelAuto = true;
+      enforceSingleStop(i);
+    } else if (upperLabel === "MECH" || upperLabel === "BAFFLE" || upperLabel === "HOUSING") {
+      s.type = upperLabel;
+    } else if (!label) {
+      s.surfaceLabelAuto = true;
+      generateSurfaceLabels(lens.surfaces, { force: true });
+    }
+  } else if (k === "type") {
+    s.type = String(el.value ?? "");
+    if (String(s.type).toUpperCase() === "STOP") {
+      s.stop = true;
+      enforceSingleStop(i);
+    }
+  } else if (k === "ap") {
+    const ap = num(el.value, s.ap ?? 0);
+    if (ap <= 0) setStatusWarning(`Raytrace stopped: invalid surface ${i} ap <= 0`);
+    s.ap = ap;
+    s.ap_optical = ap;
+  } else if (k === "R" || k === "t") {
+    s[k] = num(el.value, s[k] ?? 0);
+  } else {
+    s[k] = String(el.value ?? "");
+  }
+
+  if (i === 0) {
+    s.type = "OBJ";
+    s.surfaceLabel = "OBJ";
+    s.surfaceLabelAuto = true;
+    s.t = 0.0;
+    s.stop = false;
+  }
+  if (i === lens.surfaces.length - 1) {
+    s.type = "IMS";
+    s.surfaceLabel = "IMS";
+    s.surfaceLabelAuto = true;
+    s.stop = false;
+  }
+
+  applySensorToIMS();
+  clampAllApertures(lens.surfaces);
+  generateSurfaceLabels(lens.surfaces);
+  buildTable();
+  scheduleRenderAll();
+  scheduleRenderPreview();
+}
+
+  // -------------------- math helpers --------------------
+  function normalize(v) {
+    const m = Math.hypot(v.x, v.y);
+    if (m < 1e-12) return { x: 0, y: 0 };
+    return { x: v.x / m, y: v.y / m };
+  }
+  function dot(a, b) { return a.x * b.x + a.y * b.y; }
+  function add(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
+  function mul(a, s) { return { x: a.x * s, y: a.y * s }; }
+
+  const HIT_T_EPS = 1e-9;
+  const SURFACE_BRANCH_EPS = 1e-6;
+  const DEBUG_FIRST_NEG_SURFACE_INTERSECT = true;
+  const DEBUG_FIRST_TRACE_FAIL = true;
+  let _loggedNegSurfaceBranch2D = false;
+  let _loggedNegSurfaceBranch3D = false;
+  let _loggedTraceFail = false;
+
+  function maybeLogNegativeSurfaceBranch2D(surf, roots, chosen) {
+    if (!DEBUG_FIRST_NEG_SURFACE_INTERSECT || _loggedNegSurfaceBranch2D) return;
+    if (!(Number(surf?.R || 0) < -1e-9)) return;
+    _loggedNegSurfaceBranch2D = true;
+    console.log("[intersectSurface 2D] first negative-surface branch check", {
+      type: String(surf?.type || ""),
+      vx: Number(surf?.vx || 0),
+      R: Number(surf?.R || 0),
+      roots,
+      chosen: chosen
+        ? { t: chosen.t, hit: chosen.hit, xExpected: chosen.xExpected, branchError: chosen.branchError }
+        : null,
+    });
+  }
+
+  function maybeLogNegativeSurfaceBranch3D(surf, roots, chosen) {
+    if (!DEBUG_FIRST_NEG_SURFACE_INTERSECT || _loggedNegSurfaceBranch3D) return;
+    if (!(Number(surf?.R || 0) < -1e-9)) return;
+    _loggedNegSurfaceBranch3D = true;
+    console.log("[intersectSurface3D] first negative-surface branch check", {
+      type: String(surf?.type || ""),
+      vx: Number(surf?.vx || 0),
+      R: Number(surf?.R || 0),
+      roots,
+      chosen: chosen
+        ? { t: chosen.t, hit: chosen.hit, xExpected: chosen.xExpected, branchError: chosen.branchError }
+        : null,
+    });
+  }
+
+  function maybeLogTraceFail(tag, payload) {
+    if (!DEBUG_FIRST_TRACE_FAIL || _loggedTraceFail) return;
+    _loggedTraceFail = true;
+    console.warn(`[trace] ${tag}`, payload);
+  }
+
+  function refract(I, N, n1, n2) {
+    I = normalize(I);
+    N = normalize(N);
+    if (dot(I, N) > 0) N = mul(N, -1);
+    const cosi = -dot(N, I);
+    const eta = n1 / n2;
+    const k = 1 - eta * eta * (1 - cosi * cosi);
+    if (k < 0) return null;
+    const T = add(mul(I, eta), mul(N, eta * cosi - Math.sqrt(k)));
+    return normalize(T);
+  }
+
+  function intersectSurface(ray, surf) {
+    if (!validateRayForTrace(ray)) return null;
+    const vx = Number(surf?.vx);
+    const R = Number(surf?.R ?? 0);
+    const ap = getSurfaceOpticalAp(surf);
+    if (!Number.isFinite(vx) || !Number.isFinite(R) || !Number.isFinite(ap) || ap <= 0) return null;
+
+    if (Math.abs(R) < 1e-9) {
+      if (Math.abs(ray.d.x) < 1e-12) return null;
+
+      const tRaw = (vx - ray.p.x) / ray.d.x;
+      if (!Number.isFinite(tRaw) || tRaw <= -HIT_T_EPS) return null;
+      const t = tRaw < 0 ? 0 : tRaw;
+
+      const hit = add(ray.p, mul(ray.d, t));
+      const vignetted = Math.abs(hit.y) > ap + HIT_T_EPS;
+
+      const N = { x: -1, y: 0 };
+      return { hit, t, vignetted, normal: N };
+    }
+
+    const cx = vx + R;
+    const rad = Math.abs(R);
+
+    const px = ray.p.x - cx;
+    const py = ray.p.y;
+    const dx = ray.d.x;
+    const dy = ray.d.y;
+
+    const A = dx * dx + dy * dy;
+    if (!Number.isFinite(A) || Math.abs(A) < 1e-18) return null;
+    const B = 2 * (px * dx + py * dy);
+    const C = px * px + py * py - rad * rad;
+
+    const disc = B * B - 4 * A * C;
+    if (disc < 0) return null;
+
+    const sdisc = Math.sqrt(disc);
+    const t1 = (-B - sdisc) / (2 * A);
+    const t2 = (-B + sdisc) / (2 * A);
+
+    const signR = Math.sign(R) || 1;
+    const evalRoot = (t) => {
+      if (!Number.isFinite(t)) {
+        return { t, positive: false, inside: null, hit: null, xExpected: null, branchError: null, branchOk: false };
+      }
+      const hit = add(ray.p, mul(ray.d, t));
+      const inside = rad * rad - hit.y * hit.y;
+      const xExpected = cx - signR * Math.sqrt(Math.max(0, inside));
+      const branchError = Math.abs(hit.x - xExpected);
+      const nonNegative = t >= -HIT_T_EPS;
+      const branchOk = nonNegative && inside >= -SURFACE_BRANCH_EPS && branchError <= SURFACE_BRANCH_EPS;
+      const tClamped = t < 0 ? 0 : t;
+      return { t: tClamped, nonNegative, inside, hit, xExpected, branchError, branchOk };
+    };
+
+    const roots = [evalRoot(t1), evalRoot(t2)];
+    let chosen = null;
+    for (const r of roots) {
+      if (!r.branchOk) continue;
+      if (!chosen || r.t < chosen.t) chosen = r;
+    }
+    if (!chosen) {
+      const fallback = roots
+        .filter((r) => r.nonNegative && r.inside >= -SURFACE_BRANCH_EPS && Number.isFinite(r.branchError))
+        .sort((a, b) => a.branchError - b.branchError)[0] || null;
+      const fallbackTol = Math.max(SURFACE_BRANCH_EPS * 50, 1e-4);
+      if (fallback && fallback.branchError <= fallbackTol) chosen = fallback;
+    }
+
+    maybeLogNegativeSurfaceBranch2D(surf, roots, chosen);
+    if (!chosen) return null;
+
+    const hit = chosen.hit;
+    const t = chosen.t;
+    const vignetted = Math.abs(hit.y) > ap + HIT_T_EPS;
+    const Nout = normalize({ x: hit.x - cx, y: hit.y });
+    return { hit, t, vignetted, normal: Nout };
+  }
+
+  const _surfacePositionCache = new WeakMap();
+
+  function computeVertices(surfaces, lensShift = 0, sensorShift = 0) {
+    if (!Array.isArray(surfaces)) return 0;
+    const key = [
+      Number(lensShift).toFixed(6),
+      Number(sensorShift).toFixed(6),
+      surfaces.length,
+      ...surfaces.map((s) => `${String(s?.type || "")}:${Number(s?.t ?? 0).toFixed(6)}`),
+    ].join("|");
+    const cached = _surfacePositionCache.get(surfaces);
+    if (cached?.key === key && Array.isArray(cached.vx) && cached.vx.length === surfaces.length) {
+      for (let i = 0; i < surfaces.length; i++) surfaces[i].vx = cached.vx[i];
+      return cached.total;
+    }
+    let x = 0;
+    for (let i = 0; i < surfaces.length; i++) {
+      surfaces[i].vx = x;
+      const dt = Number(surfaces[i].t ?? 0);
+      if (!Number.isFinite(dt)) {
+        handleRaytraceGuard(`Raytrace stopped: invalid surface ${i} t`);
+        continue;
+      }
+      x += dt;
+    }
+
+    if (Number.isFinite(lensShift) && Math.abs(lensShift) > 1e-12) {
+      for (let i = 0; i < surfaces.length; i++) {
+        const t = String(surfaces[i]?.type || "").toUpperCase();
+        if (t !== "IMS") surfaces[i].vx += lensShift;
+      }
+    }
+
+    const imsIdx = surfaces.findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+    if (imsIdx >= 0 && Number.isFinite(sensorShift) && Math.abs(sensorShift) > 1e-12) {
+      surfaces[imsIdx].vx += sensorShift;
+    }
+
+    _surfacePositionCache.set(surfaces, {
+      key,
+      total: x,
+      vx: surfaces.map((s) => Number(s?.vx) || 0),
+    });
+    return x;
+  }
+
+  function getSensorPlaneX(surfaces, fallback = 0) {
+    const ims = Array.isArray(surfaces)
+      ? surfaces.find((s) => String(s?.type || "").toUpperCase() === "IMS")
+      : null;
+    const x = Number(ims?.vx);
+    if (Number.isFinite(x)) return x;
+    const fb = Number(fallback);
+    return Number.isFinite(fb) ? fb : 0;
+  }
+
+  function findStopSurfaceIndex(surfaces) {
+    return surfaces.findIndex((s) => !!s.stop);
+  }
+
+  // ==================== 3D (axisymmetric) helpers ====================
+  function normalize3(v){
+    const m = Math.hypot(v.x, v.y, v.z);
+    if (m < 1e-12) return { x:0, y:0, z:0 };
+    return { x:v.x/m, y:v.y/m, z:v.z/m };
+  }
+  function dot3(a,b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
+  function add3(a,b){ return { x:a.x+b.x, y:a.y+b.y, z:a.z+b.z }; }
+  function mul3(a,s){ return { x:a.x*s, y:a.y*s, z:a.z*s }; }
+
+  function refract3(I, N, n1, n2){
+    I = normalize3(I);
+    N = normalize3(N);
+    if (dot3(I, N) > 0) N = mul3(N, -1);
+
+    const cosi = -dot3(N, I);
+    const eta = n1 / n2;
+    const k = 1 - eta*eta*(1 - cosi*cosi);
+    if (k < 0) return null;
+
+    const T = add3(mul3(I, eta), mul3(N, eta*cosi - Math.sqrt(k)));
+    return normalize3(T);
+  }
+
+  function intersectSurface3D(ray, surf){
+    if (!validateRay3DForTrace(ray)) return null;
+    const vx = Number(surf?.vx);
+    const R = Number(surf?.R ?? 0);
+    const ap = getSurfaceOpticalAp(surf);
+    if (!Number.isFinite(vx) || !Number.isFinite(R) || !Number.isFinite(ap) || ap <= 0) return null;
+
+    const isPlane = Math.abs(R) < 1e-9;
+
+    if (isPlane){
+      if (Math.abs(ray.d.x) < 1e-12) return null;
+      const tRaw = (vx - ray.p.x) / ray.d.x;
+      if (!Number.isFinite(tRaw) || tRaw <= -HIT_T_EPS) return null;
+      const t = tRaw < 0 ? 0 : tRaw;
+
+      const hit = add3(ray.p, mul3(ray.d, t));
+      const r = Math.hypot(hit.y, hit.z);
+      const vignetted = r > ap + HIT_T_EPS;
+
+      const N = { x:-1, y:0, z:0 };
+      return { hit, t, vignetted, normal: N };
+    }
+
+    const cx = vx + R;
+    const rad = Math.abs(R);
+
+    const px = ray.p.x - cx;
+    const py = ray.p.y;
+    const pz = ray.p.z;
+    const dx = ray.d.x;
+    const dy = ray.d.y;
+    const dz = ray.d.z;
+
+    const A = dx*dx + dy*dy + dz*dz;
+    if (!Number.isFinite(A) || Math.abs(A) < 1e-18) return null;
+    const B = 2 * (px*dx + py*dy + pz*dz);
+    const C = px*px + py*py + pz*pz - rad*rad;
+
+    const disc = B*B - 4*A*C;
+    if (disc < 0) return null;
+
+    const sdisc = Math.sqrt(disc);
+    const t1 = (-B - sdisc) / (2*A);
+    const t2 = (-B + sdisc) / (2*A);
+
+    const signR = Math.sign(R) || 1;
+    const evalRoot = (t) => {
+      if (!Number.isFinite(t)) {
+        return { t, positive: false, r2: null, inside: null, hit: null, xExpected: null, branchError: null, branchOk: false };
+      }
+      const hit = add3(ray.p, mul3(ray.d, t));
+      const r2 = hit.y * hit.y + hit.z * hit.z;
+      const inside = rad * rad - r2;
+      const xExpected = cx - signR * Math.sqrt(Math.max(0, inside));
+      const branchError = Math.abs(hit.x - xExpected);
+      const nonNegative = t >= -HIT_T_EPS;
+      const branchOk = nonNegative && inside >= -SURFACE_BRANCH_EPS && branchError <= SURFACE_BRANCH_EPS;
+      const tClamped = t < 0 ? 0 : t;
+      return { t: tClamped, nonNegative, r2, inside, hit, xExpected, branchError, branchOk };
+    };
+
+    const roots = [evalRoot(t1), evalRoot(t2)];
+    let chosen = null;
+    for (const r of roots) {
+      if (!r.branchOk) continue;
+      if (!chosen || r.t < chosen.t) chosen = r;
+    }
+    if (!chosen) {
+      const fallback = roots
+        .filter((r) => r.nonNegative && r.inside >= -SURFACE_BRANCH_EPS && Number.isFinite(r.branchError))
+        .sort((a, b) => a.branchError - b.branchError)[0] || null;
+      const fallbackTol = Math.max(SURFACE_BRANCH_EPS * 50, 1e-4);
+      if (fallback && fallback.branchError <= fallbackTol) chosen = fallback;
+    }
+
+    maybeLogNegativeSurfaceBranch3D(surf, roots, chosen);
+    if (!chosen) return null;
+
+    const hit = chosen.hit;
+    const t = chosen.t;
+    const r = Math.hypot(hit.y, hit.z);
+    const vignetted = r > ap + HIT_T_EPS;
+
+    const Nout = normalize3({ x: hit.x - cx, y: hit.y, z: hit.z });
+    return { hit, t, vignetted, normal: Nout };
+  }
+
+  function traceRayReverse3D(ray, surfaces, wavePreset){
+    let vignetted = false;
+    let tir = false;
+    let failReason = null;
+    let failSurfaceIndex = null;
+
+  if (!validateRay3DForTrace(ray)) {
+    handleRaytraceGuard("Raytrace stopped: invalid 3D ray input.");
+    return { pts: [], vignetted: true, tir: false, failReason: "invalid_ray", failSurfaceIndex: null, endRay: ray };
+  }
+
+  let raySteps = 0;
+  for (let i = surfaces.length - 1; i >= 0; i--){
+    if (++raySteps > MAX_RAY_STEPS) {
+      handleRaytraceGuard("Raytrace stopped: max ray steps reached.");
+      vignetted = true;
+      failReason = "max_ray_steps";
+      break;
+    }
+    const s = surfaces[i];
+    const type = String(s?.type || "").toUpperCase();
+    const isOBJ  = type === "OBJ";
+    const isIMS  = type === "IMS";
+    const isMECH = type === "MECH" || type === "BAFFLE" || type === "HOUSING";
+
+    if (isOBJ){
+      continue;
+    }
+    const surfaceGuard = validateSurfaceForRaytrace(s, i);
+    if (!surfaceGuard.ok) {
+      handleRaytraceGuard(surfaceGuard.message);
+      vignetted = true;
+      failReason = surfaceGuard.reason;
+      failSurfaceIndex = i;
+      break;
+    }
+
+    const hitInfo = intersectSurface3D(ray, s);
+      if (!hitInfo){ vignetted = true; failReason = "no_hit"; failSurfaceIndex = i; break; }
+
+      if (!isIMS && hitInfo.vignetted){ vignetted = true; break; }
+
+      if (isIMS || isMECH){
+        ray = { p: hitInfo.hit, d: ray.d };
+        continue;
+      }
+
+      const nRight = surfaceN(s, wavePreset);
+      const nLeft  = (i === 0) ? 1.0 : surfaceN(surfaces[i - 1], wavePreset);
+      if (!Number.isFinite(Number(nRight)) || !Number.isFinite(Number(nLeft)) || Number(nRight) <= 0 || Number(nLeft) <= 0) {
+        handleRaytraceGuard(`Raytrace stopped: invalid refractive index at surface ${i}`);
+        vignetted = true;
+        failReason = "invalid_refractive_index";
+        failSurfaceIndex = i;
+        break;
+      }
+
+      if (Math.abs(nLeft - nRight) < 1e-9){
+        ray = { p: hitInfo.hit, d: ray.d };
+        continue;
+      }
+
+      const newDir = refract3(ray.d, hitInfo.normal, nRight, nLeft);
+      if (!newDir){ tir = true; failReason = "tir"; failSurfaceIndex = i; break; }
+      if (!Number.isFinite(Number(newDir.x)) || !Number.isFinite(Number(newDir.y)) || !Number.isFinite(Number(newDir.z))) {
+        handleRaytraceGuard(`Raytrace stopped: numerical overflow at surface ${i}`);
+        vignetted = true;
+        failReason = "numerical_overflow";
+        failSurfaceIndex = i;
+        break;
+      }
+
+      ray = { p: hitInfo.hit, d: newDir };
+    }
+
+    return { vignetted, tir, failReason, failSurfaceIndex, endRay: ray };
+  }
+
+  function intersectPlaneX3D(ray, xPlane){
+    if (Math.abs(ray.d.x) < 1e-12) return null;
+    const t = (xPlane - ray.p.x) / ray.d.x;
+    if (!Number.isFinite(t) || t <= 1e-9) return null;
+    return add3(ray.p, mul3(ray.d, t));
+  }
+
+  // -------------------- physical sanity clamps --------------------
+  const AP_SAFETY = 0.90;
+  const AP_MAX_PLANE = 30.0;
+  const AP_MIN = 0.01;
+  const DEFAULT_SHOULDER_MIN_DIFF = 0.35;
+
+  function isZemaxImportedLens() {
+    const src = String(lens?.importSource || "").trim().toLowerCase();
+    const zsrc = String(lens?.zemax?.source || "").trim().toLowerCase();
+    return (
+      src === "zemax" ||
+      src === "zmx_text" ||
+      src === "zmx_file" ||
+      src.includes("zemax") ||
+      src.includes("zmx") ||
+      zsrc === "zemax" ||
+      !!lens?.originalZmxText
+    );
+  }
+
+  function shouldBypassApertureClampForSurface(s) {
+    if (!isZemaxImportedLens()) return false;
+    const surfNo = Number(s?.zmx?.surf);
+    if (Number.isFinite(surfNo) && surfNo >= 0) return true;
+    return !!lens?.originalZmxText;
+  }
+
+  function isAirMediumName(name) {
+    return String(name ?? "AIR").trim().toUpperCase() === "AIR";
+  }
+
+  function isPhysicalSurfaceType(typeRaw) {
+    const t = String(typeRaw || "").toUpperCase();
+    return t !== "OBJ" && t !== "IMS" && t !== "MECH" && t !== "BAFFLE" && t !== "HOUSING";
+  }
+
+  function getRawSurfaceOpticalAp(s) {
+    return Number(s?.ap_optical ?? s?.ap);
+  }
+
+  function validateSurfaceForRaytrace(s, surfaceIndex = null) {
+    const label = Number.isFinite(Number(surfaceIndex)) ? `surface ${Number(surfaceIndex)}` : "surface";
+    const type = String(s?.type || "").toUpperCase();
+    if (!s || typeof s !== "object") return { ok: false, reason: "missing_surface", message: `Raytrace stopped: missing ${label}` };
+    const R = Number(s.R ?? 0);
+    const t = Number(s.t ?? 0);
+    const apRaw = getRawSurfaceOpticalAp(s);
+    if (!Number.isFinite(R)) return { ok: false, reason: "invalid_R", message: `Raytrace stopped: invalid ${label} R` };
+    if (!Number.isFinite(t)) return { ok: false, reason: "invalid_t", message: `Raytrace stopped: invalid ${label} t` };
+    if (!Number.isFinite(apRaw)) return { ok: false, reason: "invalid_ap", message: `Raytrace stopped: invalid ${label} ap` };
+    if (apRaw <= 0 && type !== "OBJ") return { ok: false, reason: "invalid_ap", message: `Raytrace stopped: invalid ${label} ap <= 0` };
+
+    const hasNd = s.nd != null && String(s.nd).trim() !== "";
+    const hasVd = s.vd != null && String(s.vd).trim() !== "";
+    if (hasNd && !Number.isFinite(Number(s.nd))) return { ok: false, reason: "invalid_nd", message: `Raytrace stopped: invalid ${label} nd` };
+    if (hasVd && !Number.isFinite(Number(s.vd))) return { ok: false, reason: "invalid_vd", message: `Raytrace stopped: invalid ${label} vd` };
+    return { ok: true };
+  }
+
+  function validateRayForTrace(ray) {
+    return !!(
+      ray &&
+      Number.isFinite(Number(ray?.p?.x)) &&
+      Number.isFinite(Number(ray?.p?.y)) &&
+      Number.isFinite(Number(ray?.d?.x)) &&
+      Number.isFinite(Number(ray?.d?.y))
+    );
+  }
+
+  function validateRay3DForTrace(ray) {
+    return !!(
+      ray &&
+      Number.isFinite(Number(ray?.p?.x)) &&
+      Number.isFinite(Number(ray?.p?.y)) &&
+      Number.isFinite(Number(ray?.p?.z)) &&
+      Number.isFinite(Number(ray?.d?.x)) &&
+      Number.isFinite(Number(ray?.d?.y)) &&
+      Number.isFinite(Number(ray?.d?.z))
+    );
+  }
+
+  function getSurfaceOpticalAp(s) {
+    const ap = Number(s?.ap_optical ?? s?.ap ?? AP_MIN);
+    if (shouldBypassApertureClampForSurface(s)) {
+      return Math.max(AP_MIN, ap);
+    }
+    const lim = maxApForSurface(s);
+    return Math.max(AP_MIN, Math.min(ap, lim));
+  }
+
+  function getSurfaceMechanicalAp(s) {
+    const fallback = getSurfaceOpticalAp(s);
+    const hasExplicitMech = s && s.ap_mech != null && String(s.ap_mech).trim() !== "";
+    const raw = hasExplicitMech ? Number(s.ap_mech) : NaN;
+    let ap = Number.isFinite(raw) ? raw : fallback;
+
+    const R = Number(s?.R || 0);
+    if (Number.isFinite(R) && Math.abs(R) >= 1e-9) {
+      // Keep branch-aware sphere evaluation stable at the edge.
+      const lim = Math.max(AP_MIN, Math.abs(R) - 1e-5);
+      ap = Math.min(ap, lim);
+    }
+
+    return Math.max(AP_MIN, ap);
+  }
+
+  function hasExplicitMechanicalAperture(s) {
+    if (!s) return false;
+    if (!(s.ap_mech != null && String(s.ap_mech).trim() !== "")) return false;
+    const m = Number(s.ap_mech);
+    return Number.isFinite(m) && m > 0;
+  }
+
+  function isStopLikeSurface(s) {
+    if (!s) return false;
+    if (Boolean(s.stop)) return true;
+    return String(s.type || "").toUpperCase() === "STOP";
+  }
+
+  function getSurfaceDrawMode(s) {
+    const dm = String(s?.draw_mode ?? "zemax_like").trim().toLowerCase();
+    if (dm === "optical" || dm === "mechanical" || dm === "zemax_like") return dm;
+    return "zemax_like";
+  }
+
+  function getSurfaceShoulderMode(s) {
+    const sm = String(s?.shoulder_mode ?? "none").trim().toLowerCase();
+    if (sm === "none" || sm === "flat" || sm === "step" || sm === "bridge") return sm;
+    return "none";
+  }
+
+  function getSurfaceShoulderDepth(s, fallback = 0) {
+    const d = Number(s?.shoulder_depth);
+    if (Number.isFinite(d) && d > 0) return d;
+    return Math.max(0, Number(fallback) || 0);
+  }
+
+  function getSurfaceBevel(s) {
+    const b = Number(s?.bevel);
+    return Number.isFinite(b) ? Math.max(0, b) : 0;
+  }
+
+  function getSurfaceEdgeThicknessMode(s) {
+    const m = String(s?.edge_thickness_mode ?? "auto").trim().toLowerCase();
+    return m === "explicit" ? "explicit" : "auto";
+  }
+
+  function maxApForSurface(s) {
+    const R = Number(s?.R || 0);
+    if (!Number.isFinite(R) || Math.abs(R) < 1e-9) return AP_MAX_PLANE;
+    return Math.max(AP_MIN, Math.abs(R) * AP_SAFETY);
+  }
+
+  function clampSurfaceAp(s) {
+    if (!s) return;
+
+    const t = String(s.type || "").toUpperCase();
+    if (t === "IMS" || t === "OBJ") return;
+
+    const lim = maxApForSurface(s);
+    const apOpt = Number(s.ap_optical ?? s.ap ?? AP_MIN);
+    if (shouldBypassApertureClampForSurface(s)) {
+      const unclamped = Math.max(AP_MIN, apOpt);
+      s.ap_optical = unclamped;
+      s.ap = unclamped;
+      return;
+    }
+    const clamped = Math.max(AP_MIN, Math.min(apOpt, lim));
+    s.ap_optical = clamped;
+    s.ap = clamped;
+  }
+
+  function clampAllApertures(surfaces) {
+    if (!Array.isArray(surfaces)) return;
+    for (const s of surfaces) clampSurfaceAp(s);
+  }
+
+  function surfaceXatY(s, y) {
+    const vx = s.vx;
+    const R = s.R;
+    if (Math.abs(R) < 1e-9) return vx;
+
+    const cx = vx + R;
+    const rad = Math.abs(R);
+    const sign = Math.sign(R) || 1;
+    const inside = rad * rad - y * y;
+    if (inside < 0) return null;
+    return cx - sign * Math.sqrt(inside);
+  }
+
+  function maxNonOverlappingSemiDiameter(sFront, sBack, minCT = 0.10) {
+    const apGuess = Math.max(AP_MIN, Math.min(getSurfaceOpticalAp(sFront), getSurfaceOpticalAp(sBack)));
+    function gapAt(y) {
+      const xf = surfaceXatY(sFront, y);
+      const xb = surfaceXatY(sBack, y);
+      if (xf == null || xb == null) return -1e9;
+      return xb - xf;
+    }
+    if (gapAt(0) < minCT) return 0.01;
+    if (gapAt(apGuess) >= minCT) return apGuess;
+
+    let lo = 0, hi = apGuess;
+    for (let i = 0; i < 30; i++) {
+      const mid = (lo + hi) * 0.5;
+      if (gapAt(mid) >= minCT) lo = mid;
+      else hi = mid;
+    }
+    return Math.max(0.01, lo);
+  }
+
+  // -------------------- tracing --------------------
+function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
+  const skipIMS = !!opts.skipIMS;
+  const rayIndex = Number.isFinite(Number(opts?.rayIndex)) ? Number(opts.rayIndex) : null;
+  const debugTrace = opts?.debugTrace === true;
+
+  let pts = [];
+  let vignetted = false;
+  let tir = false;
+  let reachedIMS = false;
+  let failReason = null;
+  let failSurfaceIndex = null;
+  let failSurface = null;
+
+  if (!validateRayForTrace(ray)) {
+    handleRaytraceGuard("Raytrace stopped: invalid ray input.");
+    return {
+      pts: [],
+      vignetted: true,
+      tir: false,
+      reachedIMS: false,
+      failReason: "invalid_ray",
+      failSurfaceIndex: null,
+      failSurface: null,
+      endRay: ray,
+    };
+  }
+
+  // ✅ teken altijd vanaf ray start
+  pts.push({ x: ray.p.x, y: ray.p.y });
+
+  let nBefore = 1.0;
+  const logTraceFailDetailed = (reason, surfaceIndex, s, hitInfo, nAfter = null) => {
+    if (!debugTrace) return;
+    console.warn("[trace fail]", {
+      reason,
+      rayIndex,
+      surfaceIndex,
+      zmxSurf: Number.isFinite(Number(s?.zmx?.surf)) ? Number(s.zmx.surf) : null,
+      type: String(s?.type || ""),
+      vx: Number(s?.vx || 0),
+      R: Number(s?.R || 0),
+      t: Number(s?.t || 0),
+      ap: Number(getSurfaceOpticalAp(s)),
+      glass: String(s?.glass || "AIR"),
+      nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+      vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+      nBefore: Number.isFinite(Number(nBefore)) ? Number(nBefore) : null,
+      nAfter: Number.isFinite(Number(nAfter)) ? Number(nAfter) : null,
+      hit: hitInfo?.hit || null,
+      rayP: ray?.p || null,
+      rayD: ray?.d || null,
+      activeZoomConfig: Number.isFinite(Number(lens?.zoom?.activeConfig)) ? Number(lens.zoom.activeConfig) : null,
+      activeZoomLabel: String(lens?.zemax?.currentConfigLabel || lens?.zemax?.currentConfigIndex || "—"),
+    });
+  };
+
+  let raySteps = 0;
+  for (let i = 0; i < surfaces.length; i++) {
+    if (++raySteps > MAX_RAY_STEPS) {
+      handleRaytraceGuard("Raytrace stopped: max ray steps reached.");
+      vignetted = true;
+      failReason = "max_ray_steps";
+      break;
+    }
+    const s = surfaces[i];
+    const type = String(s?.type || "").toUpperCase();
+    const isOBJ = type === "OBJ";
+    const isIMS = type === "IMS";
+    const isMECH = type === "MECH" || type === "BAFFLE" || type === "HOUSING";
+
+    if (isOBJ) continue;
+    if (skipIMS && isIMS) continue;
+    const surfaceGuard = validateSurfaceForRaytrace(s, i);
+    if (!surfaceGuard.ok) {
+      handleRaytraceGuard(surfaceGuard.message);
+      vignetted = true;
+      failReason = surfaceGuard.reason;
+      failSurfaceIndex = i;
+      failSurface = s;
+      break;
+    }
+
+    const hitInfo = intersectSurface(ray, s);
+    if (!hitInfo) {
+      if (Number.isFinite(Number(s?.vx)) && Math.abs(Number(ray?.d?.x || 0)) > 1e-12) {
+        const tFail = (Number(s.vx) - Number(ray.p.x || 0)) / Number(ray.d.x || 1);
+        if (Number.isFinite(tFail) && tFail > 0) {
+          pts.push(add(ray.p, mul(ray.d, tFail)));
+        }
+      }
+      const nAfter = (!isIMS && !isMECH) ? surfaceN(s, wavePreset) : null;
+      maybeLogTraceFail("forward_no_hit", {
+        surfaceIndex: i,
+        rayIndex,
+        type,
+        vx: Number(s?.vx || 0),
+        R: Number(s?.R || 0),
+        t: Number(s?.t || 0),
+        ap: Number(getSurfaceOpticalAp(s)),
+        glass: String(s?.glass || "AIR"),
+        nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+        vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+        nBefore,
+        nAfter,
+        rayP: ray?.p,
+        rayD: ray?.d,
+      });
+      logTraceFailDetailed("no_hit", i, s, null, nAfter);
+      vignetted = true;
+      failReason = "no_hit";
+      failSurfaceIndex = i;
+      failSurface = s;
+      break;
+    }
+
+    pts.push(hitInfo.hit);
+
+    if (isIMS) {
+      reachedIMS = true;
+      ray = { p: hitInfo.hit, d: ray.d };
+      continue;
+    }
+
+    if (hitInfo.vignetted) {
+      const nAfter = !isMECH ? surfaceN(s, wavePreset) : null;
+      maybeLogTraceFail("forward_aperture_clip", {
+        surfaceIndex: i,
+        rayIndex,
+        type,
+        vx: Number(s?.vx || 0),
+        R: Number(s?.R || 0),
+        t: Number(s?.t || 0),
+        ap: Number(getSurfaceOpticalAp(s)),
+        glass: String(s?.glass || "AIR"),
+        nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+        vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+        nBefore,
+        nAfter,
+        hit: hitInfo.hit,
+      });
+      logTraceFailDetailed("aperture_clip", i, s, hitInfo, nAfter);
+      vignetted = true;
+      failReason = "aperture_clip";
+      failSurfaceIndex = i;
+      failSurface = s;
+      break;
+    }
+
+    if (isMECH) {
+      ray = { p: hitInfo.hit, d: ray.d };
+      continue;
+    }
+
+    const nAfter = surfaceN(s, wavePreset);
+    if (!Number.isFinite(Number(nAfter)) || Number(nAfter) <= 0) {
+      handleRaytraceGuard(`Raytrace stopped: invalid refractive index at surface ${i}`);
+      vignetted = true;
+      failReason = "invalid_refractive_index";
+      failSurfaceIndex = i;
+      failSurface = s;
+      break;
+    }
+
+    if (Math.abs(nAfter - nBefore) < 1e-9) {
+      ray = { p: hitInfo.hit, d: ray.d };
+      nBefore = nAfter;
+      continue;
+    }
+
+    const newDir = refract(ray.d, hitInfo.normal, nBefore, nAfter);
+    if (!newDir) {
+      maybeLogTraceFail("forward_tir", {
+        surfaceIndex: i,
+        rayIndex,
+        type,
+        vx: Number(s?.vx || 0),
+        R: Number(s?.R || 0),
+        t: Number(s?.t || 0),
+        ap: Number(getSurfaceOpticalAp(s)),
+        glass: String(s?.glass || "AIR"),
+        nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+        vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+        nBefore,
+        nAfter,
+        hit: hitInfo.hit,
+      });
+      logTraceFailDetailed("tir", i, s, hitInfo, nAfter);
+      tir = true;
+      failReason = "tir";
+      failSurfaceIndex = i;
+      failSurface = s;
+      break;
+    }
+    if (!Number.isFinite(Number(newDir.x)) || !Number.isFinite(Number(newDir.y))) {
+      handleRaytraceGuard(`Raytrace stopped: numerical overflow at surface ${i}`);
+      vignetted = true;
+      failReason = "numerical_overflow";
+      failSurfaceIndex = i;
+      failSurface = s;
+      break;
+    }
+
+    ray = { p: hitInfo.hit, d: newDir };
+    nBefore = nAfter;
+  }
+
+  if (!reachedIMS && !vignetted && !tir) {
+    failReason = "no_ims";
+  }
+  return { pts, vignetted, tir, reachedIMS, failReason, failSurfaceIndex, failSurface, endRay: ray };
+}
+
+  function traceRayReverse(ray, surfaces, wavePreset, opts = {}) {
+    const ignoreAperture = !!opts.ignoreAperture;
+    let pts = [];
+    let vignetted = false;
+    let tir = false;
+    let failReason = null;
+    let failSurfaceIndex = null;
+
+    if (!validateRayForTrace(ray)) {
+      handleRaytraceGuard("Raytrace stopped: invalid reverse ray input.");
+      return { pts, vignetted: true, tir: false, failReason: "invalid_ray", failSurfaceIndex: null, endRay: ray };
+    }
+
+    let raySteps = 0;
+    for (let i = surfaces.length - 1; i >= 0; i--) {
+      if (++raySteps > MAX_RAY_STEPS) {
+        handleRaytraceGuard("Raytrace stopped: max ray steps reached.");
+        vignetted = true;
+        failReason = "max_ray_steps";
+        break;
+      }
+      const s = surfaces[i];
+      const type = String(s?.type || "").toUpperCase();
+      const isOBJ = type === "OBJ";
+      const isIMS = type === "IMS";
+      const isMECH = type === "MECH" || type === "BAFFLE" || type === "HOUSING";
+
+      if (isOBJ) continue;
+      const surfaceGuard = validateSurfaceForRaytrace(s, i);
+      if (!surfaceGuard.ok) {
+        handleRaytraceGuard(surfaceGuard.message);
+        vignetted = true;
+        failReason = surfaceGuard.reason;
+        failSurfaceIndex = i;
+        break;
+      }
+      const hitInfo = intersectSurface(ray, s);
+      if (!hitInfo) { vignetted = true; failReason = "no_hit"; failSurfaceIndex = i; break; }
+
+      pts.push(hitInfo.hit);
+
+      if (!isIMS && hitInfo.vignetted && !ignoreAperture) { vignetted = true; break; }
+
+      if (isIMS || isMECH) {
+        ray = { p: hitInfo.hit, d: ray.d };
+        continue;
+      }
+
+      const nRight = surfaceN(s, wavePreset);
+      const nLeft  = (i === 0) ? 1.0 : surfaceN(surfaces[i - 1], wavePreset);
+      if (!Number.isFinite(Number(nRight)) || !Number.isFinite(Number(nLeft)) || Number(nRight) <= 0 || Number(nLeft) <= 0) {
+        handleRaytraceGuard(`Raytrace stopped: invalid refractive index at surface ${i}`);
+        vignetted = true;
+        failReason = "invalid_refractive_index";
+        failSurfaceIndex = i;
+        break;
+      }
+
+      if (Math.abs(nLeft - nRight) < 1e-9) {
+        ray = { p: hitInfo.hit, d: ray.d };
+        continue;
+      }
+
+      const newDir = refract(ray.d, hitInfo.normal, nRight, nLeft);
+      if (!newDir) { tir = true; failReason = "tir"; failSurfaceIndex = i; break; }
+      if (!Number.isFinite(Number(newDir.x)) || !Number.isFinite(Number(newDir.y))) {
+        handleRaytraceGuard(`Raytrace stopped: numerical overflow at surface ${i}`);
+        vignetted = true;
+        failReason = "numerical_overflow";
+        failSurfaceIndex = i;
+        break;
+      }
+
+      ray = { p: hitInfo.hit, d: newDir };
+    }
+
+    return { pts, vignetted, tir, failReason, failSurfaceIndex, endRay: ray };
+  }
+
+  function intersectPlaneX(ray, xPlane) {
+    if (Math.abs(ray.d.x) < 1e-12) return null;
+    const t = (xPlane - ray.p.x) / ray.d.x;
+    if (!Number.isFinite(t) || t <= 1e-9) return null;
+    return add(ray.p, mul(ray.d, t));
+  }
+
+  // -------------------- ray bundles --------------------
+  function getRayReferencePlane(surfaces) {
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    if (stopIdx >= 0) {
+      const s = surfaces[stopIdx];
+      return { xRef: s.vx, apRef: Math.max(1e-3, getSurfaceOpticalAp(s) * 0.98), refIdx: stopIdx };
+    }
+    let refIdx = 1;
+    if (!surfaces[refIdx] || String(surfaces[refIdx].type).toUpperCase() === "IMS") refIdx = 0;
+    const s = surfaces[refIdx] || surfaces[0];
+    return { xRef: s.vx, apRef: Math.max(1e-3, getSurfaceOpticalAp(s) * 0.98), refIdx };
+  }
+
+  function finiteFieldObjectPoint(surfaces, fieldAngleDeg, objectDistanceMm = null) {
+    const dist = Number(objectDistanceMm);
+    if (!Number.isFinite(dist) || dist <= 0.1 || dist >= 1e8) return null;
+    const xObj = (Number(surfaces?.[0]?.vx) || 0) - dist;
+    const theta = (fieldAngleDeg * Math.PI) / 180;
+    const yObj = Math.tan(theta) * dist;
+    if (!Number.isFinite(xObj) || !Number.isFinite(yObj)) return null;
+    return { xObj, yObj, distMm: dist };
+  }
+
+  function projectRayThroughAimFromObject(xObj, yObj, xAim, yAim, xStart) {
+    const den = xAim - xObj;
+    if (!Number.isFinite(den) || Math.abs(den) < 1e-9) return null;
+    const t = (xStart - xObj) / den;
+    const yStart = yObj + (yAim - yObj) * t;
+    if (!Number.isFinite(yStart)) return null;
+    const dir = normalize({ x: xAim - xStart, y: yAim - yStart });
+    if (!Number.isFinite(dir.x) || !Number.isFinite(dir.y)) return null;
+    return { p: { x: xStart, y: yStart }, d: dir };
+  }
+
+  function buildRays(surfaces, fieldAngleDeg, count, objectDistanceMm = null) {
+    const n = Math.max(3, Math.min(101, count | 0));
+    const theta = (fieldAngleDeg * Math.PI) / 180;
+    const dir = normalize({ x: Math.cos(theta), y: Math.sin(theta) });
+
+    const xStart = (surfaces[0]?.vx ?? 0) - 80;
+    const { xRef, apRef } = getRayReferencePlane(surfaces);
+    const objPoint = finiteFieldObjectPoint(surfaces, fieldAngleDeg, objectDistanceMm);
+
+    const hMax = apRef * 0.98;
+    const rays = [];
+    const tanT = Math.abs(dir.x) < 1e-9 ? 0 : dir.y / dir.x;
+
+    for (let k = 0; k < n; k++) {
+      const a = (k / (n - 1)) * 2 - 1;
+      const yAtRef = a * hMax;
+      if (objPoint) {
+        const finiteRay = projectRayThroughAimFromObject(
+          objPoint.xObj,
+          objPoint.yObj,
+          xRef,
+          yAtRef,
+          xStart
+        );
+        if (finiteRay) {
+          rays.push(finiteRay);
+          continue;
+        }
+      }
+      const y0 = yAtRef - tanT * (xRef - xStart);
+      rays.push({ p: { x: xStart, y: y0 }, d: dir });
+    }
+    return rays;
+  }
+
+  function buildDebugCenterRays(surfaces, count = 31) {
+    const n = Math.max(3, Math.min(101, count | 0));
+    const first = (surfaces || []).find((s) => {
+      const t = String(s?.type || "").toUpperCase();
+      return t !== "OBJ" && t !== "IMS";
+    }) || (surfaces || []).find((s) => String(s?.type || "").toUpperCase() !== "OBJ");
+    const stopIdx = findStopSurfaceIndex(surfaces || []);
+    const stopSurf = stopIdx >= 0 ? surfaces[stopIdx] : first;
+    const stopAp = Math.max(0.25, Number(getSurfaceOpticalAp(stopSurf)) || 0.25);
+    const firstAp = Math.max(0.25, Math.min(stopAp * 0.55, 3.0));
+    const xStart = Number(first?.vx || 0) - 20;
+    const rays = [];
+    for (let k = 0; k < n; k++) {
+      const a = (k / (n - 1)) * 2 - 1;
+      rays.push({
+        p: { x: xStart, y: a * firstAp },
+        d: normalize({ x: 1, y: 0 }),
+      });
+    }
+    return rays;
+  }
+
+  function buildEntrancePupilLimitedRays(surfaces, count = 31, fieldAngleDeg = 0, wavePreset = "d", objectDistanceMm = null) {
+    const n = Math.max(3, Math.min(101, count | 0));
+    const theta = (fieldAngleDeg * Math.PI) / 180;
+    const dir = normalize({ x: Math.cos(theta), y: Math.sin(theta) });
+
+    const first = (surfaces || []).find((s) => {
+      const t = String(s?.type || "").toUpperCase();
+      return t !== "OBJ" && t !== "IMS";
+    }) || (surfaces || []).find((s) => String(s?.type || "").toUpperCase() !== "OBJ");
+
+    const xStart = Number(first?.vx || 0) - 20;
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    const stopSurf = stopIdx >= 0 ? surfaces[stopIdx] : first;
+    const xAim = Number(stopSurf?.vx || 0);
+    const objPoint = finiteFieldObjectPoint(surfaces, fieldAngleDeg, objectDistanceMm);
+    const stopAp = Math.max(0.25, Number(getSurfaceOpticalAp(stopSurf)) || 0.25);
+
+    let epRadiusMm = null;
+    // Start from stop aperture scale so on-axis bundles are not visually collapsed.
+    let pupilRadius = stopAp * 0.95;
+
+    try {
+      const ep = estimateEntrancePupil(surfaces, wavePreset);
+      if (ep && Number.isFinite(ep.radiusMm) && ep.radiusMm > 0.1 && ep.radiusMm < 100) {
+        epRadiusMm = Number(ep.radiusMm);
+        pupilRadius = epRadiusMm * 0.85;
+      }
+    } catch (_) {}
+
+    // Keep bundle tied to the active stop aperture instead of a tiny fixed cap.
+    pupilRadius = Math.max(stopAp * 0.75, Math.min(pupilRadius, stopAp * 0.98));
+
+    const rays = [];
+    for (let k = 0; k < n; k++) {
+      const a = (k / (n - 1)) * 2 - 1;
+      const yAtAim = a * pupilRadius;
+      if (objPoint) {
+        const finiteRay = projectRayThroughAimFromObject(
+          objPoint.xObj,
+          objPoint.yObj,
+          xAim,
+          yAtAim,
+          xStart
+        );
+        if (finiteRay) {
+          rays.push(finiteRay);
+          continue;
+        }
+      }
+      const yStart = yAtAim - (Math.abs(dir.x) < 1e-9 ? 0 : (dir.y / dir.x) * (xAim - xStart));
+      rays.push({
+        p: { x: xStart, y: yStart },
+        d: dir,
+      });
+    }
+
+    return {
+      rays,
+      bundleRadiusMm: pupilRadius,
+      epRadiusMm,
+      xStartMm: xStart,
+      xAimMm: xAim,
+      mode: objPoint ? "entrance_pupil_limited_finite_object" : "entrance_pupil_limited",
+    };
+  }
+
+  function buildChiefRay(surfaces, fieldAngleDeg) {
+    const theta = (fieldAngleDeg * Math.PI) / 180;
+    const dir = normalize({ x: Math.cos(theta), y: Math.sin(theta) });
+
+    const xStart = (surfaces[0]?.vx ?? 0) - 120;
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    const stopSurf = stopIdx >= 0 ? surfaces[stopIdx] : surfaces[0];
+    const xStop = stopSurf.vx;
+
+    const tanT = Math.abs(dir.x) < 1e-9 ? 0 : dir.y / dir.x;
+    const y0 = 0 - tanT * (xStop - xStart);
+    return { p: { x: xStart, y: y0 }, d: dir };
+  }
+
+  function rayHitYAtX(endRay, x) {
+    if (!endRay?.d || Math.abs(endRay.d.x) < 1e-9) return null;
+    const t = (x - endRay.p.x) / endRay.d.x;
+    if (!Number.isFinite(t)) return null;
+    return endRay.p.y + t * endRay.d.y;
+  }
+
+  function coverageTestMaxFieldDeg(surfaces, wavePreset, sensorX, halfH) {
+    let lo = 0, hi = 60, best = 0;
+    for (let iter = 0; iter < 18; iter++) {
+      const mid = (lo + hi) * 0.5;
+      const ray = buildChiefRay(surfaces, mid);
+      const tr = traceRayForward(clone(ray), surfaces, wavePreset);
+      if (!tr || tr.vignetted || tr.tir) { hi = mid; continue; }
+
+      const y = rayHitYAtX(tr.endRay, sensorX);
+      if (y == null) { hi = mid; continue; }
+      if (Math.abs(y) <= halfH) { best = mid; lo = mid; }
+      else hi = mid;
+    }
+    return best;
+  }
+
+  // -------------------- EFL/BFL (paraxial-ish) --------------------
+  function lastPhysicalVertexX(surfaces) {
+    let maxX = -Infinity;
+    for (const s of surfaces || []) {
+      const t = String(s?.type || "").toUpperCase();
+      if (t === "IMS") continue;
+      if (!Number.isFinite(s.vx)) continue;
+      maxX = Math.max(maxX, s.vx);
+    }
+    return Number.isFinite(maxX) ? maxX : 0;
+  }
+  function firstPhysicalVertexX(surfaces) {
+    if (!surfaces?.length) return 0;
+    let minX = Infinity;
+    for (const s of surfaces) {
+      const t = String(s?.type || "").toUpperCase();
+      if (t === "OBJ" || t === "IMS") continue;
+      if (!Number.isFinite(s.vx)) continue;
+      minX = Math.min(minX, s.vx);
+    }
+    return Number.isFinite(minX) ? minX : (surfaces[0]?.vx ?? 0);
+  }
+
+  function traceParaxialRayDetailed(surfaces, wavePreset, xStart, y0, opts = {}) {
+    const ignoreAperture = opts?.ignoreAperture === true;
+    let ray = { p: { x: xStart, y: y0 }, d: normalize({ x: 1, y: 0 }) };
+    let nBefore = 1.0;
+    let lastSurfaceInfo = null;
+
+    for (let i = 0; i < (surfaces?.length || 0); i++) {
+      const s = surfaces[i];
+      const type = String(s?.type || "").toUpperCase();
+      const isOBJ = type === "OBJ";
+      const isIMS = type === "IMS";
+      const isMECH = type === "MECH" || type === "BAFFLE" || type === "HOUSING";
+      if (isOBJ || isIMS) continue;
+
+      const hitInfo = intersectSurface(ray, s);
+      if (!hitInfo) {
+        return {
+          ok: false,
+          reason: "no_hit",
+          surfaceIndex: i,
+          surface: s,
+          nBefore,
+          nAfter: null,
+          hit: null,
+          vignetted: false,
+          tir: false,
+        };
+      }
+
+      if (hitInfo.vignetted && !ignoreAperture) {
+        return {
+          ok: false,
+          reason: "aperture_clip",
+          surfaceIndex: i,
+          surface: s,
+          nBefore,
+          nAfter: null,
+          hit: hitInfo.hit,
+          vignetted: true,
+          tir: false,
+        };
+      }
+
+      if (isMECH) {
+        ray = { p: hitInfo.hit, d: ray.d };
+        continue;
+      }
+
+      const nAfter = surfaceN(s, wavePreset);
+      lastSurfaceInfo = { index: i, surface: s, nBefore, nAfter, hit: hitInfo.hit };
+
+      if (Math.abs(nAfter - nBefore) < 1e-9) {
+        ray = { p: hitInfo.hit, d: ray.d };
+        nBefore = nAfter;
+        continue;
+      }
+
+      const newDir = refract(ray.d, hitInfo.normal, nBefore, nAfter);
+      if (!newDir) {
+        return {
+          ok: false,
+          reason: "tir",
+          surfaceIndex: i,
+          surface: s,
+          nBefore,
+          nAfter,
+          hit: hitInfo.hit,
+          vignetted: false,
+          tir: true,
+        };
+      }
+
+      ray = { p: hitInfo.hit, d: newDir };
+      nBefore = nAfter;
+    }
+
+    return {
+      ok: true,
+      endRay: ray,
+      y0,
+      lastSurfaceInfo,
+    };
+  }
+
+  function maybeLogParaxialFailure(surfaces, wavePreset, xStart, y0, fail) {
+    if (!fail || fail.ok) return;
+    const s = fail.surface || {};
+    const signature = [
+      fail.reason,
+      String(fail.surfaceIndex),
+      String(Number(s?.zmx?.surf)),
+      Number(s?.R || 0).toFixed(6),
+      Number(s?.t || 0).toFixed(6),
+      String(s?.glass || "AIR"),
+      Number(fail.nBefore || 0).toFixed(6),
+      Number(fail.nAfter || 0).toFixed(6),
+    ].join("|");
+    if (signature === _lastParaxialFailSignature) return;
+    _lastParaxialFailSignature = signature;
+
+    const row = {
+      reason: fail.reason,
+      y0,
+      xStart,
+      surfaceIndex: fail.surfaceIndex,
+      zmxSurf: Number.isFinite(Number(s?.zmx?.surf)) ? Number(s.zmx.surf) : null,
+      type: String(s?.type || ""),
+      R: Number(s?.R || 0),
+      t: Number(s?.t || 0),
+      vx: Number(s?.vx || 0),
+      ap: Number(s?.ap_optical ?? s?.ap ?? 0),
+      glass: String(s?.glass || "AIR"),
+      nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+      vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+      nBefore: Number.isFinite(Number(fail.nBefore)) ? Number(fail.nBefore) : null,
+      nAfter: Number.isFinite(Number(fail.nAfter)) ? Number(fail.nAfter) : null,
+      hitX: Number.isFinite(Number(fail?.hit?.x)) ? Number(fail.hit.x) : null,
+      hitY: Number.isFinite(Number(fail?.hit?.y)) ? Number(fail.hit.y) : null,
+      vignetted: !!fail.vignetted,
+      tir: !!fail.tir,
+      activeZoomConfig: Number.isFinite(Number(lens?.zoom?.activeConfig)) ? Number(lens.zoom.activeConfig) : null,
+      activeZoomLabel: String(lens?.zemax?.currentConfigLabel || lens?.zemax?.currentConfigIndex || "—"),
+    };
+
+    console.groupCollapsed("[paraxial-debug] EFL/BFL paraxial trace failed");
+    console.table([row]);
+    console.groupEnd();
+  }
+
+  function estimateEflBflParaxial(surfaces, wavePreset) {
+    const lastVx = lastPhysicalVertexX(surfaces);
+    const xStart = (surfaces[0]?.vx ?? 0) - 160;
+
+    const heights = [0.02, 0.05, 0.10, 0.20, 0.35];
+    const fVals = [];
+    const xCrossVals = [];
+    let firstFail = null;
+
+    for (const y0 of heights) {
+      const tr = traceParaxialRayDetailed(surfaces, wavePreset, xStart, y0, { ignoreAperture: true });
+      if (!tr || !tr.ok || !tr.endRay) {
+        if (!firstFail) {
+          firstFail = tr
+            ? { ...tr, y0 }
+            : {
+                ok: false,
+                reason: "unknown",
+                y0,
+                surfaceIndex: null,
+                surface: null,
+                nBefore: null,
+                nAfter: null,
+                hit: null,
+                vignetted: false,
+                tir: false,
+              };
+        }
+        continue;
+      }
+
+      const er = tr.endRay;
+      const dx = er.d.x, dy = er.d.y;
+      if (Math.abs(dx) < 1e-12) continue;
+
+      const uOut = dy / dx;
+      if (Math.abs(uOut) < 1e-12) continue;
+
+      const f = -y0 / uOut;
+      if (Number.isFinite(f)) fVals.push(f);
+
+      if (Math.abs(dy) > 1e-12) {
+        const t = -er.p.y / dy;
+        const xCross = er.p.x + t * dx;
+        if (Number.isFinite(xCross)) xCrossVals.push(xCross);
+      }
+    }
+
+    if (fVals.length < 2) {
+      if (firstFail) maybeLogParaxialFailure(surfaces, wavePreset, xStart, firstFail.y0, firstFail);
+      return { efl: null, bfl: null };
+    }
+
+    _lastParaxialFailSignature = "";
+
+    const efl = fVals.reduce((a, b) => a + b, 0) / fVals.length;
+
+    let bfl = null;
+    if (xCrossVals.length >= 2) {
+      const xF = xCrossVals.reduce((a, b) => a + b, 0) / xCrossVals.length;
+      bfl = xF - lastVx;
+    }
+    return { efl, bfl };
+  }
+
+  function lineIntersectionFromRays2D(r1, r2) {
+    if (!r1?.p || !r1?.d || !r2?.p || !r2?.d) return null;
+    const den = r1.d.x * r2.d.y - r1.d.y * r2.d.x;
+    if (!Number.isFinite(den) || Math.abs(den) < 1e-12) return null;
+
+    const dx = r2.p.x - r1.p.x;
+    const dy = r2.p.y - r1.p.y;
+    const t1 = (dx * r2.d.y - dy * r2.d.x) / den;
+    if (!Number.isFinite(t1)) return null;
+
+    return {
+      x: r1.p.x + t1 * r1.d.x,
+      y: r1.p.y + t1 * r1.d.y,
+    };
+  }
+
+  function leastSquaresLineIntersection2D(rays) {
+    if (!Array.isArray(rays) || rays.length < 2) return null;
+
+    let a11 = 0, a12 = 0, a22 = 0;
+    let b1 = 0, b2 = 0;
+    let used = 0;
+
+    for (const r of rays) {
+      if (!r?.p || !r?.d) continue;
+      const m = Math.hypot(r.d.x, r.d.y);
+      if (!Number.isFinite(m) || m < 1e-12) continue;
+
+      const dx = r.d.x / m;
+      const dy = r.d.y / m;
+      const nx = -dy;
+      const ny = dx;
+      const c = nx * r.p.x + ny * r.p.y;
+
+      a11 += nx * nx;
+      a12 += nx * ny;
+      a22 += ny * ny;
+      b1 += nx * c;
+      b2 += ny * c;
+      used++;
+    }
+
+    if (used < 2) return null;
+    const det = a11 * a22 - a12 * a12;
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
+
+    const x = (b1 * a22 - b2 * a12) / det;
+    const y = (a11 * b2 - a12 * b1) / det;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y, used };
+  }
+
+  function estimateStopPointImageParaxial(frontStack, xStop, yStop, wavePreset) {
+    const startX = xStop + 1e-4;
+    const slopes = [-0.012, -0.008, -0.005, -0.003, 0.003, 0.005, 0.008, 0.012];
+    const endRays = [];
+
+    for (const slope of slopes) {
+      const ray = {
+        p: { x: startX, y: yStop },
+        d: normalize({ x: -1, y: slope }),
+      };
+      const tr = traceRayReverse(clone(ray), frontStack, wavePreset, { ignoreAperture: true });
+      if (!tr || tr.vignetted || tr.tir || !tr.endRay) continue;
+      endRays.push(tr.endRay);
+    }
+
+    if (endRays.length < 2) return null;
+
+    const lsq = leastSquaresLineIntersection2D(endRays);
+    if (lsq && Math.abs(lsq.x) < 1e6 && Math.abs(lsq.y) < 1e6) {
+      return { x: lsq.x, y: lsq.y, n: lsq.used, method: "lsq" };
+    }
+
+    const intersections = [];
+    for (let i = 0; i < endRays.length; i++) {
+      for (let j = i + 1; j < endRays.length; j++) {
+        const d1 = endRays[i].d;
+        const d2 = endRays[j].d;
+        const m1 = Math.hypot(d1.x, d1.y);
+        const m2 = Math.hypot(d2.x, d2.y);
+        if (m1 < 1e-12 || m2 < 1e-12) continue;
+        const cosang = Math.abs((d1.x * d2.x + d1.y * d2.y) / (m1 * m2));
+        if (cosang > 0.99995) continue;
+
+        const cross = lineIntersectionFromRays2D(endRays[i], endRays[j]);
+        if (!cross) continue;
+        if (!Number.isFinite(cross.x) || !Number.isFinite(cross.y)) continue;
+        if (Math.abs(cross.x) > 1e6 || Math.abs(cross.y) > 1e6) continue;
+        intersections.push(cross);
+      }
+    }
+
+    if (!intersections.length) return null;
+
+    const xs = intersections.map((p) => p.x).sort((a, b) => a - b);
+    const ys = intersections.map((p) => p.y).sort((a, b) => a - b);
+    const median = (arr) => {
+      const n = arr.length;
+      if (!n) return NaN;
+      const mid = Math.floor(n / 2);
+      return (n % 2) ? arr[mid] : 0.5 * (arr[mid - 1] + arr[mid]);
+    };
+    const mx = median(xs);
+    const my = median(ys);
+    if (!Number.isFinite(mx) || !Number.isFinite(my)) return null;
+
+    const ranked = intersections
+      .map((p) => ({ p, d: Math.hypot(p.x - mx, p.y - my) }))
+      .sort((a, b) => a.d - b.d);
+    const keepN = Math.max(1, Math.ceil(ranked.length * 0.6));
+    const core = ranked.slice(0, keepN).map((e) => e.p);
+
+    const x = core.reduce((sum, p) => sum + p.x, 0) / core.length;
+    const y = core.reduce((sum, p) => sum + p.y, 0) / core.length;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y, n: core.length, method: "pairwise" };
+  }
+
+  function estimateEntrancePupilFromOnAxisBundle(surfaces, wavePreset = "d") {
+    if (!Array.isArray(surfaces) || !surfaces.length) return null;
+
+    const xStart = (Number(surfaces[0]?.vx) || 0) - 120;
+    const testPass = (y) => {
+      const ray = {
+        p: { x: xStart, y },
+        d: normalize({ x: 1, y: 0 }),
+      };
+      const tr = traceRayForward(clone(ray), surfaces, wavePreset, { skipIMS: true });
+      return !!(tr && !tr.vignetted && !tr.tir);
+    };
+
+    if (!testPass(0)) return null;
+
+    let apMax = 1;
+    for (const s of surfaces) {
+      if (!isPhysicalSurfaceType(s?.type)) continue;
+      apMax = Math.max(apMax, getSurfaceOpticalAp(s));
+    }
+
+    let lo = 0;
+    let hi = Math.max(1, apMax * 1.25);
+    for (let i = 0; i < 8; i++) {
+      if (!testPass(hi)) break;
+      lo = hi;
+      hi *= 1.5;
+    }
+
+    if (lo === 0 && !testPass(hi)) {
+      // keep current bracket
+    } else if (testPass(hi)) {
+      // no clipping even at high test value; clamp to tested max
+      return {
+        diameterMm: 2 * hi,
+        radiusMm: hi,
+        xMm: xStart,
+        method: "on_axis_bundle_unclipped_fallback",
+      };
+    }
+
+    for (let iter = 0; iter < 30; iter++) {
+      const mid = 0.5 * (lo + hi);
+      if (testPass(mid)) lo = mid;
+      else hi = mid;
+    }
+
+    const radius = Math.max(0, lo);
+    if (!Number.isFinite(radius) || radius <= 1e-6) return null;
+    return {
+      diameterMm: 2 * radius,
+      radiusMm: radius,
+      xMm: xStart,
+      method: "on_axis_bundle_fallback",
+    };
+  }
+
+  function estimateEntrancePupil(surfaces, wavePreset = "d") {
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    if (stopIdx < 0) return null;
+
+    const stopSurf = surfaces[stopIdx];
+    const stopAp = Math.max(1e-6, getSurfaceOpticalAp(stopSurf));
+    const xStop = Number(stopSurf?.vx);
+    if (!Number.isFinite(xStop)) return null;
+
+    if (stopIdx <= 0) {
+      return {
+        diameterMm: 2 * stopAp,
+        radiusMm: stopAp,
+        xMm: xStop,
+        method: "stop_direct",
+      };
+    }
+
+    const frontStack = surfaces.slice(0, stopIdx + 1);
+    const yPara = Math.min(1.2, Math.max(0.03, stopAp * 0.015));
+    const pPos = estimateStopPointImageParaxial(frontStack, xStop, +yPara, wavePreset);
+    const pNeg = estimateStopPointImageParaxial(frontStack, xStop, -yPara, wavePreset);
+
+    if (pPos && pNeg) {
+      const m = (pPos.y - pNeg.y) / (2 * yPara);
+      const radius = Math.abs(m) * stopAp;
+      if (Number.isFinite(radius) && radius > 1e-6 && radius < 1e5) {
+        return {
+          diameterMm: 2 * radius,
+          radiusMm: radius,
+          xMm: 0.5 * (pPos.x + pNeg.x),
+          method: "paraxial_stop_image",
+        };
+      }
+    }
+
+    const pOne = pPos || pNeg;
+    if (pOne) {
+      const yObj = pPos ? yPara : -yPara;
+      const m = pOne.y / yObj;
+      const radius = Math.abs(m) * stopAp;
+      if (Number.isFinite(radius) && radius > 1e-6 && radius < 1e5) {
+        return {
+          diameterMm: 2 * radius,
+          radiusMm: radius,
+          xMm: pOne.x,
+          method: "paraxial_single_side",
+        };
+      }
+    }
+
+    // Near-edge paraxial mapping (less ideal than small-signal, but often robust for very fast lenses).
+    const yEdge = stopAp * 0.95;
+    const ePos = estimateStopPointImageParaxial(frontStack, xStop, +yEdge, wavePreset);
+    const eNeg = estimateStopPointImageParaxial(frontStack, xStop, -yEdge, wavePreset);
+    if (ePos && eNeg) {
+      const mEdge = (ePos.y - eNeg.y) / (2 * yEdge);
+      const radius = Math.abs(mEdge) * stopAp;
+      if (Number.isFinite(radius) && radius > 1e-6 && radius < 1e5) {
+        return {
+          diameterMm: 2 * radius,
+          radiusMm: radius,
+          xMm: 0.5 * (ePos.x + eNeg.x),
+          method: "edge_paraxial_stop_image",
+        };
+      }
+    }
+
+    const eOne = ePos || eNeg;
+    if (eOne) {
+      const yObj = ePos ? yEdge : -yEdge;
+      const m = eOne.y / yObj;
+      const radius = Math.abs(m) * stopAp;
+      if (Number.isFinite(radius) && radius > 1e-6 && radius < 1e5) {
+        return {
+          diameterMm: 2 * radius,
+          radiusMm: radius,
+          xMm: eOne.x,
+          method: "edge_paraxial_single_side",
+        };
+      }
+    }
+
+    // Fallback: use full edge imaging (more aberration-sensitive but robust).
+    const startX = xStop + 1e-4;
+    const slopeBases = [0.03, 0.08, 0.15, 0.25];
+    const edgeSigns = [1, -1];
+    const edgeEstimates = [];
+
+    for (const sign of edgeSigns) {
+      const yEdge = sign * stopAp;
+      let edgeHit = null;
+
+      for (const base of slopeBases) {
+        const slopes = [-sign * base, sign * base];
+        for (const slope of slopes) {
+          const rayA = { p: { x: startX, y: yEdge }, d: normalize({ x: -1, y: 0 }) };
+          const rayB = { p: { x: startX, y: yEdge }, d: normalize({ x: -1, y: slope }) };
+
+          const trA = traceRayReverse(clone(rayA), frontStack, wavePreset);
+          const trB = traceRayReverse(clone(rayB), frontStack, wavePreset);
+          if (!trA || !trB) continue;
+          if (trA.vignetted || trA.tir || trB.vignetted || trB.tir) continue;
+          if (!trA.endRay || !trB.endRay) continue;
+
+          const cross = lineIntersectionFromRays2D(trA.endRay, trB.endRay);
+          if (!cross) continue;
+
+          const radius = Math.abs(Number(cross.y));
+          if (!Number.isFinite(radius) || radius <= 1e-7 || radius > 1e4) continue;
+          if (!Number.isFinite(cross.x) || Math.abs(cross.x) > 1e6) continue;
+
+          edgeHit = { radiusMm: radius, xMm: Number(cross.x) };
+          break;
+        }
+        if (edgeHit) break;
+      }
+
+      if (edgeHit) edgeEstimates.push(edgeHit);
+    }
+
+    if (!edgeEstimates.length) {
+      // Last resort only: this depends on the chosen launch plane and is not
+      // the true entrance pupil definition. Keep it as a safety fallback.
+      const bundleEP = estimateEntrancePupilFromOnAxisBundle(surfaces, wavePreset);
+      if (bundleEP && Number.isFinite(bundleEP.diameterMm) && bundleEP.diameterMm > 1e-6) {
+        return bundleEP;
+      }
+      return {
+        diameterMm: 2 * stopAp,
+        radiusMm: stopAp,
+        xMm: xStop,
+        method: "stop_fallback",
+      };
+    }
+
+    const radiusMm = edgeEstimates.reduce((sum, e) => sum + e.radiusMm, 0) / edgeEstimates.length;
+    const xMm = edgeEstimates.reduce((sum, e) => sum + e.xMm, 0) / edgeEstimates.length;
+    return {
+      diameterMm: 2 * radiusMm,
+      radiusMm,
+      xMm,
+      method: "reverse_stop_image",
+    };
+  }
+
+  function estimateTStopApprox(efl, surfaces, wavePreset = "d") {
+    if (!Number.isFinite(efl) || efl <= 0) return null;
+
+    const ep = estimateEntrancePupil(surfaces, wavePreset);
+    const epDiam = Number(ep?.diameterMm);
+    if (Number.isFinite(epDiam) && epDiam > 1e-6) {
+      const T = efl / epDiam;
+      if (Number.isFinite(T) && T > 0) return T;
+    }
+
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    if (stopIdx < 0) return null;
+    const stopAp = Math.max(1e-6, getSurfaceOpticalAp(surfaces[stopIdx]));
+    const T = efl / (2 * stopAp);
+    return Number.isFinite(T) ? T : null;
+  }
+
+  // -------------------- FOV --------------------
+  function rad2deg(r) { return (r * 180) / Math.PI; }
+  function computeFovDeg(efl, sensorW, sensorH) {
+    if (!Number.isFinite(efl) || efl <= 0) return null;
+    const diag = Math.hypot(sensorW, sensorH);
+    const hfov = 2 * Math.atan(sensorW / (2 * efl));
+    const vfov = 2 * Math.atan(sensorH / (2 * efl));
+    const dfov = 2 * Math.atan(diag / (2 * efl));
+    return { hfov: rad2deg(hfov), vfov: rad2deg(vfov), dfov: rad2deg(dfov) };
+  }
+
+  function coversSensorYesNo({ fov, maxField, mode = "diag", marginDeg = 0.5 }) {
+    if (!fov || !Number.isFinite(maxField)) return { ok: false, req: null };
+    let req = null;
+    if (mode === "h") req = fov.hfov * 0.5;
+    else if (mode === "v") req = fov.vfov * 0.5;
+    else req = fov.dfov * 0.5;
+    const ok = maxField + marginDeg >= req;
+    return { ok, req };
+  }
+
+  // -------------------- autofocus --------------------
+  const FOCUS_MODE_SET = new Set(["fixed", "manual", "auto"]);
+  const FOCUS_MECHANISM_SET = new Set(["move-lens", "move-ims", "move-focus-group"]);
+  const FOCUS_SHIFT_FALLBACK_MM = 0;
+
+  const focusRuntime = {
+    lastAutoKey: "",
+    lastAutoMetric: null,
+    lastAutoShiftMm: 0,
+  };
+
+  function normalizeFocusMode(raw) {
+    const m = String(raw || "auto").trim().toLowerCase();
+    return FOCUS_MODE_SET.has(m) ? m : "auto";
+  }
+
+  function normalizeFocusMechanism(raw) {
+    const m = String(raw || "move-lens").trim().toLowerCase();
+    return FOCUS_MECHANISM_SET.has(m) ? m : "move-lens";
+  }
+
+  function getFocusShiftMm() {
+    const raw = Number(ui.lensFocus?.value ?? FOCUS_SHIFT_FALLBACK_MM);
+    return Number.isFinite(raw) ? raw : FOCUS_SHIFT_FALLBACK_MM;
+  }
+
+  function syncFocusStateToLens(shiftOverride = null) {
+    if (!lens || typeof lens !== "object") return;
+    if (!lens.focus || typeof lens.focus !== "object") lens.focus = {};
+    if (!lens.import_options || typeof lens.import_options !== "object") lens.import_options = {};
+    lens.focus.mode = normalizeFocusMode(ui.focusMode?.value || lens.focus.mode || "auto");
+    lens.focus.mechanism = normalizeFocusMechanism(ui.focusMechanism?.value || lens.focus.mechanism || "move-lens");
+    const shiftVal = Number(shiftOverride);
+    lens.focus.shiftMm = Number.isFinite(shiftVal) ? shiftVal : getFocusShiftMm();
+    lens.focus.autoRefocusOnDistanceChange = !!ui.autoRefocusOnDistanceChange?.checked;
+    lens.import_options.autofocus_mode = getPreviewAutofocusMode();
+  }
+
+  function setFocusShiftMm(nextShiftMm, { updateStatus = true } = {}) {
+    const raw = Number(nextShiftMm);
+    if (!Number.isFinite(raw)) {
+      setStatusWarning("Invalid focus shift: not a finite number.");
+      return getFocusShiftMm();
+    }
+    if (Math.abs(raw) > MAX_FOCUS_SHIFT_MM) {
+      enterSafeMode(`Autofocus stopped: focus shift ${raw.toFixed(2)}mm exceeds ${MAX_FOCUS_SHIFT_MM}mm`);
+      return getFocusShiftMm();
+    }
+    const shift = raw;
+    if (ui.lensFocus) ui.lensFocus.value = shift.toFixed(4);
+    if (ui.focusShiftSlider) ui.focusShiftSlider.value = String(shift);
+    syncFocusStateToLens(shift);
+    if (updateStatus) updateFocusShiftStatus();
+    return shift;
+  }
+
+  function focusPoseFromShift(shiftMm, mechanismRaw) {
+    const mechanism = normalizeFocusMechanism(mechanismRaw);
+    const shift = Number.isFinite(Number(shiftMm)) ? Number(shiftMm) : 0;
+
+    if (mechanism === "move-ims") {
+      return {
+        focusMechanism: mechanism,
+        focusShiftMm: shift,
+        lensShift: 0,
+        sensorX: shift,
+        mechanismApplied: "move-ims",
+      };
+    }
+
+    if (mechanism === "move-focus-group") {
+      // Placeholder: until focus-group surfaces are modelled, map to whole-lens move.
+      return {
+        focusMechanism: mechanism,
+        focusShiftMm: shift,
+        lensShift: shift,
+        sensorX: 0,
+        mechanismApplied: "move-lens (focus-group placeholder)",
+      };
+    }
+
+    return {
+      focusMechanism: mechanism,
+      focusShiftMm: shift,
+      lensShift: shift,
+      sensorX: 0,
+      mechanismApplied: "move-lens",
+    };
+  }
+
+  function getFocusContext({ objectDistanceMm = null, wavePreset = "d", allowAutoRefocus = false } = {}) {
+    const focusMode = normalizeFocusMode(ui.focusMode?.value || "auto");
+    const focusMechanism = normalizeFocusMechanism(ui.focusMechanism?.value || "move-lens");
+    const autoRefocusOnDistanceChange = !!ui.autoRefocusOnDistanceChange?.checked;
+    const targetDist = Number.isFinite(Number(objectDistanceMm)) ? Number(objectDistanceMm) : null;
+
+    let focusShiftMm = getFocusShiftMm();
+    let autoRun = null;
+
+    if (focusMode === "auto" && allowAutoRefocus && !isAutofocusing && Number.isFinite(targetDist) && targetDist > 0.1) {
+      const autoKey = [
+        focusMechanism,
+        String(wavePreset || "d"),
+        targetDist.toFixed(6),
+      ].join("|");
+      let shouldRun = false;
+      if (!focusRuntime.lastAutoKey) {
+        shouldRun = true;
+      } else {
+        const [lastMech, lastWave, lastDist] = String(focusRuntime.lastAutoKey).split("|");
+        const distChanged = lastDist !== targetDist.toFixed(6);
+        const nonDistChanged = lastMech !== focusMechanism || lastWave !== String(wavePreset || "d");
+        const lastAutoShift = Number(focusRuntime.lastAutoShiftMm);
+        const shiftChanged = !Number.isFinite(lastAutoShift) || Math.abs(lastAutoShift - focusShiftMm) > 1e-6;
+        shouldRun = nonDistChanged || shiftChanged || (autoRefocusOnDistanceChange && distChanged);
+      }
+      if (shouldRun) {
+        isAutofocusing = true;
+        markRuntimeBusy("autofocus:auto-refocus");
+        try {
+          autoRun = runAutofocusForShift({
+            objectDistanceMm: targetDist,
+            wavePreset,
+            focusMechanism,
+            currentShiftMm: focusShiftMm,
+            autofocusMode: getPreviewAutofocusMode(),
+          });
+        } catch (e) {
+          autoRun = { ok: false, reason: "exception", error: e?.message || String(e) };
+          handleRuntimeError("Autofocus stopped", e);
+        } finally {
+          isAutofocusing = false;
+          clearRuntimeBusy();
+        }
+        if (autoRun?.stoppedByMaxIterations) {
+          setStatusWarning("Autofocus stopped: max iterations reached.");
+        }
+        if (autoRun?.ok && isSafeFocusShift(autoRun.focusShiftMm)) {
+          focusShiftMm = setFocusShiftMm(autoRun.focusShiftMm, { updateStatus: false });
+          focusRuntime.lastAutoKey = autoKey;
+          focusRuntime.lastAutoMetric = Number.isFinite(autoRun.bestMetricRmsMm) ? autoRun.bestMetricRmsMm : null;
+          focusRuntime.lastAutoShiftMm = focusShiftMm;
+        } else if (autoRun?.ok) {
+          enterSafeMode(`Autofocus stopped: invalid focus shift ${Number(autoRun.focusShiftMm).toFixed(2)}mm`);
+          autoRun.ok = false;
+          autoRun.reason = "unsafe_focus_shift";
+        } else if (autoRun?.reason) {
+          setStatusWarning(`Autofocus stopped: ${String(autoRun.reason).replaceAll("_", " ")}.`);
+        }
+      }
+    }
+
+    const pose = focusPoseFromShift(focusShiftMm, focusMechanism);
+    return {
+      focusMode,
+      focusMechanism,
+      autoRefocusOnDistanceChange,
+      focusShiftMm: pose.focusShiftMm,
+      lensShift: pose.lensShift,
+      sensorX: pose.sensorX,
+      mechanismApplied: pose.mechanismApplied,
+      autoRun,
+    };
+  }
+
+  function updateFocusShiftStatus(extra = "") {
+    if (!ui.focusShiftActive) return;
+    const mode = normalizeFocusMode(ui.focusMode?.value || "auto");
+    const mechanism = normalizeFocusMechanism(ui.focusMechanism?.value || "move-lens");
+    const shift = getFocusShiftMm();
+    const suffix = extra ? ` • ${extra}` : "";
+    ui.focusShiftActive.textContent = `${shift.toFixed(4)} mm • mode ${mode} • mechanism ${mechanism}${suffix}`;
+  }
+
+  function syncFocusControlsUI() {
+    const mode = normalizeFocusMode(ui.focusMode?.value || "auto");
+    const disableShift = mode === "auto";
+    if (ui.lensFocus) ui.lensFocus.disabled = disableShift;
+    if (ui.focusShiftSlider) ui.focusShiftSlider.disabled = disableShift;
+    if (ui.autoRefocusOnDistanceChange) ui.autoRefocusOnDistanceChange.disabled = mode !== "auto";
+    syncFocusStateToLens();
+    updateFocusShiftStatus();
+  }
+
+  function runAutofocusForShift({
+    objectDistanceMm,
+    wavePreset,
+    focusMechanism,
+    currentShiftMm,
+    autofocusMode,
+    sensorHv: sensorHvOverride = null,
+  }) {
+    const dist = Number(objectDistanceMm);
+    if (!Number.isFinite(dist) || dist <= 0.1) {
+      return { ok: false, reason: "invalid_object_distance" };
+    }
+
+    const { h: sensorH } = getSensorWH();
+    const sensorHv = Number.isFinite(Number(sensorHvOverride))
+      ? Math.max(1e-6, Number(sensorHvOverride))
+      : Math.max(1e-6, sensorH * OV_DEFAULT * 0.5);
+    const mech = normalizeFocusMechanism(focusMechanism);
+    const startShift = Number.isFinite(Number(currentShiftMm)) ? Number(currentShiftMm) : 0;
+
+    if (mech === "move-ims") {
+      const best = autoFocusPreviewSensorForObjectDistance({
+        surfaces: lens.surfaces,
+        wavePreset,
+        lensShift: 0,
+        sensorX: startShift,
+        objDist: dist,
+        sensorHv,
+        autofocusMode,
+      });
+      const ok = isSafeFocusShift(best?.sensorX);
+      return {
+        ok,
+        focusShiftMm: ok ? Number(best.sensorX) : startShift,
+        bestMetricRmsMm: Number.isFinite(best?.rmsMm) ? Number(best.rmsMm) : null,
+        raysUsed: Number.isFinite(best?.raysUsed) ? Number(best.raysUsed) : 0,
+        method: "move-ims",
+        stoppedByMaxIterations: best?.stoppedByMaxIterations === true,
+        reason: ok ? null : "invalid_focus_shift",
+      };
+    }
+
+    const best = autoFocusLensShiftForObjectDistance({
+      surfaces: lens.surfaces,
+      wavePreset,
+      lensShift: startShift,
+      sensorX: 0,
+      objDist: dist,
+      sensorHv,
+      autofocusMode,
+    });
+    const ok = isSafeFocusShift(best?.lensShift);
+    return {
+      ok,
+      focusShiftMm: ok ? Number(best.lensShift) : startShift,
+      bestMetricRmsMm: Number.isFinite(best?.rmsMm) ? Number(best.rmsMm) : null,
+      raysUsed: Number.isFinite(best?.raysUsed) ? Number(best.raysUsed) : 0,
+      method: mech === "move-focus-group" ? "move-focus-group (placeholder→lens)" : "move-lens",
+      stoppedByMaxIterations: best?.stoppedByMaxIterations === true,
+      reason: ok ? null : "invalid_focus_shift",
+    };
+  }
+
+  function getFocusChartDistanceMm() {
+    const d = Number(ui.prevObjDist?.value || 2000);
+    if (!Number.isFinite(d) || d <= 0.1) return null;
+    return d;
+  }
+
+  function thinLensImageDistanceMm(focalLengthMm, objectDistanceMm) {
+    const f = Number(focalLengthMm);
+    const s = Number(objectDistanceMm);
+    if (!Number.isFinite(f) || f <= 0) return null;
+    if (!Number.isFinite(s) || s <= f + 1e-9) return null;
+    const inv = (1 / f) - (1 / s);
+    if (!(inv > 0)) return null;
+    const img = 1 / inv;
+    return Number.isFinite(img) ? img : null;
+  }
+
+  function classifyFiniteDistanceFocusIssue({
+    rows = [],
+    predictedShiftMm = null,
+    actualShiftMm = null,
+    shiftErrorMm = null,
+    scaleLeakMm = null,
+  }) {
+    if (!Array.isArray(rows) || !rows.length) return "no_data";
+    if (rows.some((r) => !Number.isFinite(r.actualSensorXMm) || Number(r.hitRate || 0) < 0.30)) {
+      return "wrong_ray_origin_generation_or_aperture_clipping";
+    }
+    if (Number.isFinite(scaleLeakMm) && Math.abs(scaleLeakMm) > 0.20) {
+      return "preview_scaling_leaks_into_focus_optimization";
+    }
+    if (Number.isFinite(shiftErrorMm) && Math.abs(shiftErrorMm) > 1.50) {
+      return "wrong_image_plane_movement_or_unit_mismatch";
+    }
+    if (rows.some((r) => Number.isFinite(r.rmsMm) && r.rmsMm > 1.00)) {
+      return "focus_metric_or_aberration_dominates";
+    }
+    if (Number.isFinite(predictedShiftMm) && Number.isFinite(actualShiftMm)) {
+      return "finite_distance_focus_shift_physically_consistent";
+    }
+    return "inconclusive";
+  }
+
+  function runFiniteDistanceFocusDiagnostics({
+    surfaces,
+    wavePreset,
+    lensShift,
+    sensorX,
+    focusMechanism = "move-lens",
+    autofocusMode = PREVIEW_AUTOFOCUS_DEFAULT_MODE,
+    sensorHv,
+    distancesMm = [2000, 20000],
+    targetDistanceMm = null,
+    printToConsole = true,
+  }) {
+    if (!Array.isArray(surfaces) || !surfaces.length) return null;
+    const efl = estimateEflBflParaxial(surfaces, wavePreset).efl;
+    if (!Number.isFinite(efl) || efl <= 0) return null;
+
+    const uniqueDistances = Array.from(new Set((distancesMm || [])
+      .map((d) => Number(d))
+      .filter((d) => Number.isFinite(d) && d > Math.max(1, efl + 1e-6))));
+    if (!uniqueDistances.length) return null;
+
+    const mechanism = normalizeFocusMechanism(focusMechanism);
+    const startSensorX = mechanism === "move-ims" ? (Number(sensorX) || 0) : 0;
+    const startLensShift = Number(lensShift) || 0;
+    const startShiftMm = mechanism === "move-ims" ? startSensorX : startLensShift;
+    const sensorHvMm = Number.isFinite(Number(sensorHv)) ? Number(sensorHv) : 1;
+
+    const rows = [];
+    for (const objectDistanceMm of uniqueDistances) {
+      const af = runAutofocusForShift({
+        objectDistanceMm,
+        wavePreset,
+        focusMechanism: mechanism,
+        currentShiftMm: startShiftMm,
+        autofocusMode,
+        sensorHv: sensorHvMm,
+      });
+      const pose = focusPoseFromShift(af?.focusShiftMm, mechanism);
+      const ev = evaluatePreviewFocusAtSensorX({
+        surfaces,
+        wavePreset,
+        lensShift: pose.lensShift,
+        sensorX: pose.sensorX,
+        objDist: objectDistanceMm,
+        sensorHv: sensorHvMm,
+        autofocusMode,
+      });
+      computeVertices(surfaces, pose.lensShift, pose.sensorX);
+      const stopIdx = findStopSurfaceIndex(surfaces);
+      const stopSurf = stopIdx >= 0 ? surfaces[stopIdx] : surfaces[0];
+      const sensorPlaneX = Number.isFinite(Number(ev?.sensorPlaneX))
+        ? Number(ev.sensorPlaneX)
+        : getSensorPlaneX(surfaces, pose.sensorX);
+      const predictedImageDistanceMm = thinLensImageDistanceMm(efl, objectDistanceMm);
+      rows.push({
+        focalLengthMm: efl,
+        objectDistanceMm,
+        predictedImageDistanceMm,
+        actualSensorXMm: sensorPlaneX,
+        actualLensShiftMm: Number(pose.lensShift),
+        actualFocusShiftMm: Number.isFinite(Number(af?.focusShiftMm)) ? Number(af.focusShiftMm) : null,
+        deltaFromStartMm: Number.isFinite(Number(af?.focusShiftMm)) ? (Number(af.focusShiftMm) - startShiftMm) : null,
+        rmsMm: Number.isFinite(Number(ev?.rmsMm)) ? Number(ev.rmsMm) : null,
+        hitRate: Number.isFinite(Number(ev?.hitRate)) ? Number(ev.hitRate) : null,
+        raysUsed: Number.isFinite(Number(af?.raysUsed)) ? Number(af.raysUsed) : 0,
+        xObjPlaneMm: Number(surfaces?.[0]?.vx || 0) - objectDistanceMm,
+        startRayXMm: sensorPlaneX + 0.05,
+        stopXMm: Number(stopSurf?.vx || 0),
+      });
+    }
+
+    const compareField = mechanism === "move-ims" ? "actualSensorXMm" : "actualFocusShiftMm";
+    for (const row of rows) {
+      const cmp = Number(row?.[compareField]);
+      row.actualComparisonMm = Number.isFinite(cmp) ? cmp : null;
+      row.comparisonMetric = compareField;
+    }
+
+    const ref = rows
+      .filter((r) => Number.isFinite(r.predictedImageDistanceMm) && Number.isFinite(r.actualComparisonMm))
+      .sort((a, b) => b.objectDistanceMm - a.objectDistanceMm)[0] || null;
+
+    let principalPlaneEstimateMm = null;
+    if (mechanism === "move-ims" && ref) {
+      principalPlaneEstimateMm = ref.actualSensorXMm - ref.predictedImageDistanceMm;
+    }
+
+    for (const row of rows) {
+      row.predictedSensorXMm = null;
+      row.predictedFocusShiftMm = null;
+      row.predictedVsActualMm = null;
+
+      if (mechanism === "move-ims") {
+        if (Number.isFinite(principalPlaneEstimateMm) && Number.isFinite(row.predictedImageDistanceMm)) {
+          row.predictedSensorXMm = principalPlaneEstimateMm + row.predictedImageDistanceMm;
+          row.predictedVsActualMm = row.actualSensorXMm - row.predictedSensorXMm;
+        }
+        continue;
+      }
+
+      if (
+        ref &&
+        Number.isFinite(ref.predictedImageDistanceMm) &&
+        Number.isFinite(ref.actualComparisonMm) &&
+        Number.isFinite(row.predictedImageDistanceMm) &&
+        Number.isFinite(row.actualComparisonMm)
+      ) {
+        row.predictedFocusShiftMm =
+          ref.actualComparisonMm + (row.predictedImageDistanceMm - ref.predictedImageDistanceMm);
+        row.predictedVsActualMm = row.actualComparisonMm - row.predictedFocusShiftMm;
+      }
+    }
+
+    const row2000 = rows.find((r) => Math.abs(r.objectDistanceMm - 2000) < 1e-6) || null;
+    const row20000 = rows.find((r) => Math.abs(r.objectDistanceMm - 20000) < 1e-6) || null;
+    const predictedShiftMm = (row2000 && row20000 &&
+      Number.isFinite(row2000.predictedImageDistanceMm) && Number.isFinite(row20000.predictedImageDistanceMm))
+      ? (row2000.predictedImageDistanceMm - row20000.predictedImageDistanceMm)
+      : null;
+    const actualShiftMm = (row2000 && row20000 &&
+      Number.isFinite(row2000.actualComparisonMm) && Number.isFinite(row20000.actualComparisonMm))
+      ? (row2000.actualComparisonMm - row20000.actualComparisonMm)
+      : null;
+    const shiftErrorMm = (Number.isFinite(actualShiftMm) && Number.isFinite(predictedShiftMm))
+      ? (actualShiftMm - predictedShiftMm)
+      : null;
+
+    const checkDistanceMm = Number.isFinite(Number(targetDistanceMm))
+      ? Number(targetDistanceMm)
+      : (row2000 ? 2000 : uniqueDistances[0]);
+    const baseAtCheck = runAutofocusForShift({
+      objectDistanceMm: checkDistanceMm,
+      wavePreset,
+      focusMechanism: mechanism,
+      currentShiftMm: startShiftMm,
+      autofocusMode,
+      sensorHv: sensorHvMm,
+    });
+    const scaledAtCheck = runAutofocusForShift({
+      objectDistanceMm: checkDistanceMm,
+      wavePreset,
+      focusMechanism: mechanism,
+      currentShiftMm: startShiftMm,
+      autofocusMode,
+      sensorHv: sensorHvMm * 1.7,
+    });
+    const baseShift = Number(baseAtCheck?.focusShiftMm);
+    const scaledShift = Number(scaledAtCheck?.focusShiftMm);
+    const scaleLeakMm = (
+      Number.isFinite(baseShift) &&
+      Number.isFinite(scaledShift)
+    ) ? (scaledShift - baseShift) : null;
+
+    computeVertices(surfaces, startLensShift, startSensorX);
+
+    const suspectedCause = classifyFiniteDistanceFocusIssue({
+      rows,
+      predictedShiftMm,
+      actualShiftMm,
+      shiftErrorMm,
+      scaleLeakMm,
+    });
+
+    const report = {
+      autofocusMode,
+      focusMechanism: mechanism,
+      comparisonMetric: compareField,
+      focalLengthMm: efl,
+      targetDistanceMm: Number.isFinite(Number(targetDistanceMm)) ? Number(targetDistanceMm) : null,
+      rows,
+      principalPlaneEstimateMm,
+      predictedShift2000to20000Mm: predictedShiftMm,
+      actualShift2000to20000Mm: actualShiftMm,
+      shiftError2000to20000Mm: shiftErrorMm,
+      scaleLeakMm,
+      suspectedCause,
+    };
+
+    if (printToConsole) {
+      console.groupCollapsed("[focus-verify] finite-distance autofocus");
+      console.log("Focal length (mm):", Number(efl.toFixed(6)));
+      console.log("Focus mechanism:", mechanism);
+      console.log("Autofocus mode:", autofocusMode);
+      console.table(rows.map((r) => ({
+        focalLengthMm: Number(r.focalLengthMm.toFixed(6)),
+        objectDistanceMm: r.objectDistanceMm,
+        predictedThinLensImageDistanceMm: Number.isFinite(r.predictedImageDistanceMm) ? Number(r.predictedImageDistanceMm.toFixed(6)) : null,
+        comparisonMetric: r.comparisonMetric,
+        actualComparisonMm: Number.isFinite(r.actualComparisonMm) ? Number(r.actualComparisonMm.toFixed(6)) : null,
+        actualFocusShiftMm: Number.isFinite(r.actualFocusShiftMm) ? Number(r.actualFocusShiftMm.toFixed(6)) : null,
+        actualLensShiftMm: Number.isFinite(r.actualLensShiftMm) ? Number(r.actualLensShiftMm.toFixed(6)) : null,
+        actualAutofocusSensorXMm: Number.isFinite(r.actualSensorXMm) ? Number(r.actualSensorXMm.toFixed(6)) : null,
+        predictedFocusShiftMm: Number.isFinite(r.predictedFocusShiftMm) ? Number(r.predictedFocusShiftMm.toFixed(6)) : null,
+        predictedVsActualMm: Number.isFinite(r.predictedVsActualMm) ? Number(r.predictedVsActualMm.toFixed(6)) : null,
+        xObjPlaneMm: Number.isFinite(r.xObjPlaneMm) ? Number(r.xObjPlaneMm.toFixed(6)) : null,
+        startRayXMm: Number.isFinite(r.startRayXMm) ? Number(r.startRayXMm.toFixed(6)) : null,
+        stopXMm: Number.isFinite(r.stopXMm) ? Number(r.stopXMm.toFixed(6)) : null,
+        rmsMm: Number.isFinite(r.rmsMm) ? Number(r.rmsMm.toFixed(6)) : null,
+        hitRate: Number.isFinite(r.hitRate) ? Number(r.hitRate.toFixed(4)) : null,
+      })));
+      console.log("Predicted shift 2000→20000 (mm):", Number.isFinite(predictedShiftMm) ? Number(predictedShiftMm.toFixed(6)) : null);
+      console.log(`Actual shift 2000→20000 (${compareField}) (mm):`, Number.isFinite(actualShiftMm) ? Number(actualShiftMm.toFixed(6)) : null);
+      console.log("Shift error (actual - predicted) (mm):", Number.isFinite(shiftErrorMm) ? Number(shiftErrorMm.toFixed(6)) : null);
+      console.log("Scale leak check ΔfocusShift (mm):", Number.isFinite(scaleLeakMm) ? Number(scaleLeakMm.toFixed(6)) : null);
+      console.log("Suspected cause:", suspectedCause);
+      console.groupEnd();
+    }
+
+    return report;
+  }
+
+  function autoFocusLensShiftForObjectDistance({
+    surfaces,
+    wavePreset,
+    lensShift,
+    sensorX,
+    objDist,
+    sensorHv,
+    autofocusMode = PREVIEW_AUTOFOCUS_DEFAULT_MODE,
+  }) {
+    const efl = estimateEflBflParaxial(surfaces, wavePreset).efl;
+    const range = Math.max(2, Math.min(32, Number.isFinite(efl) && efl > 0 ? efl * 0.22 : 16));
+    const coarseStep = Math.max(0.25, range / 12);
+    const fineStep = Math.max(0.04, coarseStep / 6);
+
+    let iterations = 0;
+    let stoppedByMaxIterations = false;
+    const evaluateAtShift = (shiftMm) => {
+      if (iterations >= MAX_AUTOFOCUS_ITERATIONS) {
+        stoppedByMaxIterations = true;
+        return null;
+      }
+      iterations++;
+      return evaluatePreviewFocusAtSensorX({
+        surfaces,
+        wavePreset,
+        lensShift: shiftMm,
+        sensorX,
+        objDist,
+        sensorHv,
+        autofocusMode,
+      });
+    };
+
+    let bestShift = Number.isFinite(Number(lensShift)) ? Number(lensShift) : 0;
+    let best = evaluateAtShift(bestShift);
+    if (!best || !Number.isFinite(Number(best.score))) {
+      return {
+        lensShift: bestShift,
+        deltaMm: 0,
+        rmsMm: null,
+        hitRate: null,
+        raysUsed: 0,
+        method: "preview_af_lens_shift",
+        iterations,
+        stoppedByMaxIterations,
+      };
+    }
+
+    const searchCenter = bestShift;
+    for (let sh = searchCenter - range; sh <= searchCenter + range + 1e-9; sh += coarseStep) {
+      const ev = evaluateAtShift(sh);
+      if (!ev) break;
+      if (ev.score < best.score) {
+        best = ev;
+        bestShift = sh;
+      }
+    }
+
+    for (let sh = bestShift - coarseStep; sh <= bestShift + coarseStep + 1e-9; sh += fineStep) {
+      const ev = evaluateAtShift(sh);
+      if (!ev) break;
+      if (ev.score < best.score) {
+        best = ev;
+        bestShift = sh;
+      }
+    }
+
+    return {
+      lensShift: bestShift,
+      deltaMm: bestShift - lensShift,
+      rmsMm: best.rmsMm,
+      hitRate: best.hitRate,
+      raysUsed: best.raysUsed,
+      method: "preview_af_lens_shift",
+      iterations,
+      stoppedByMaxIterations,
+    };
+  }
+
+  function autoFocus() {
+    if (isAutofocusing) {
+      setStatusWarning("Autofocus already running; skipped nested refocus.");
+      return;
+    }
+    isAutofocusing = true;
+    markRuntimeBusy("autofocus:manual");
+    try {
+    const focusMode = normalizeFocusMode(ui.focusMode?.value || "auto");
+    const focusMechanism = normalizeFocusMechanism(ui.focusMechanism?.value || "move-lens");
+    const wavePreset = ui.wavePreset?.value || "d";
+    const targetDistance = getFocusChartDistanceMm();
+    const autofocusMode = getPreviewAutofocusMode();
+
+    if (!(targetDistance > 0.1)) {
+      setStatusWarning("Auto focus failed: set a valid focus chart distance first.");
+      return;
+    }
+
+    const currentShiftMm = getFocusShiftMm();
+    const af = runAutofocusForShift({
+      objectDistanceMm: targetDistance,
+      wavePreset,
+      focusMechanism,
+      currentShiftMm,
+      autofocusMode,
+    });
+
+    if (!af?.ok) {
+      setStatusWarning(`Refocus failed: ${String(af?.reason || "too few valid chart-center rays").replaceAll("_", " ")}.`);
+      scheduleRenderAll({ immediate: true });
+      return;
+    }
+    if (af?.stoppedByMaxIterations) {
+      setStatusWarning("Autofocus stopped: max iterations reached.");
+    }
+    if (!isSafeFocusShift(af.focusShiftMm)) {
+      enterSafeMode(`Autofocus stopped: invalid focus shift ${Number(af.focusShiftMm).toFixed(2)}mm`);
+      return;
+    }
+
+    const nextShiftMm = setFocusShiftMm(af.focusShiftMm, { updateStatus: false });
+    const pose = focusPoseFromShift(nextShiftMm, focusMechanism);
+    const focusedForLog = clone(lens.surfaces);
+    computeVertices(focusedForLog, pose.lensShift, pose.sensorX);
+    const sensorPlaneX = getSensorPlaneX(focusedForLog, pose.sensorX);
+
+    console.log("[focus:refocus-now]", {
+      objectDistanceMm: targetDistance,
+      focusMode,
+      mode: autofocusMode,
+      focusMechanism,
+      mechanismApplied: pose.mechanismApplied,
+      previousFocusShiftMm: currentShiftMm,
+      focusShiftMm: nextShiftMm,
+      sensorPlaneXMm: Number.isFinite(sensorPlaneX) ? sensorPlaneX : null,
+      autofocusBestMetricRmsMm: Number.isFinite(af?.bestMetricRmsMm) ? af.bestMetricRmsMm : null,
+      raysUsed: Number(af?.raysUsed || 0),
+    });
+    const rmsTxt = Number.isFinite(af?.bestMetricRmsMm) ? af.bestMetricRmsMm.toFixed(4) : "—";
+    updateFocusShiftStatus(`auto metric ${rmsTxt}mm`);
+    if (ui.footerWarn) ui.footerWarn.textContent =
+      `Refocus: shift=${nextShiftMm.toFixed(3)}mm • RMS=${rmsTxt}mm • d=${targetDistance.toFixed(1)}mm • ${pose.mechanismApplied}`;
+
+    const diagReport = runFiniteDistanceFocusDiagnostics({
+      surfaces: clone(lens.surfaces),
+      wavePreset,
+      lensShift: pose.lensShift,
+      sensorX: pose.sensorX,
+      focusMechanism,
+      autofocusMode,
+      distancesMm: [2000, 20000],
+      targetDistanceMm: targetDistance,
+      printToConsole: true,
+    });
+    if (diagReport && ui.footerWarn && Number.isFinite(diagReport.actualShift2000to20000Mm) && Number.isFinite(diagReport.predictedShift2000to20000Mm)) {
+      const actual = Number(diagReport.actualShift2000to20000Mm).toFixed(3);
+      const thin = Number(diagReport.predictedShift2000to20000Mm).toFixed(3);
+      ui.footerWarn.textContent += ` • Δx(2m→20m)=${actual}mm vs thin=${thin}mm`;
+    }
+
+    renderAll();
+    scheduleRenderPreview();
+    } catch (e) {
+      handleRuntimeError("Autofocus stopped", e);
+    } finally {
+      isAutofocusing = false;
+      clearRuntimeBusy();
+    }
+  }
+
+  // -------------------- drawing --------------------
+  let view = { panX: 0, panY: 0, zoom: 1.0, dragging: false, lastX: 0, lastY: 0 };
+
+  function drawBackgroundCSS(w, h) {
+    if (!ctx) return;
+    ctx.save();
+    ctx.fillStyle = "#05070c";
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.globalAlpha = 0.08;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1;
+
+    const step = 80;
+    for (let x = 0; x <= w; x += step) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0; y <= h; y += step) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function resizeCanvasToCSS() {
+    if (!canvas || !ctx) return;
+    const r = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(2, Math.floor(r.width * dpr));
+    canvas.height = Math.max(2, Math.floor(r.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function resizePreviewCanvasToCSS() {
+    if (!previewCanvasEl || !pctx) return;
+    const r = previewCanvasEl.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    previewCanvasEl.width  = Math.max(2, Math.floor(r.width  * dpr));
+    previewCanvasEl.height = Math.max(2, Math.floor(r.height * dpr));
+
+    pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    previewCanvasEl._cssW = Math.max(2, r.width);
+    previewCanvasEl._cssH = Math.max(2, r.height);
+  }
+
+  function worldToScreen(p, world) {
+    const { cx, cy, s } = world;
+    return { x: cx + p.x * s, y: cy - p.y * s };
+  }
+
+  function makeWorldTransform() {
+    if (!canvas) return { cx: 0, cy: 0, s: 1 };
+    const r = canvas.getBoundingClientRect();
+    const cx = r.width / 2 + view.panX;
+    const cy = r.height / 2 + view.panY;
+    const base = Number(ui.renderScale?.value || 1.25) * 3.2;
+    const s = base * view.zoom;
+    return { cx, cy, s };
+  }
+
+  function drawAxes(world) {
+    if (!ctx) return;
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(255,255,255,.10)";
+    ctx.beginPath();
+    const p1 = worldToScreen({ x: -240, y: 0 }, world);
+    const p2 = worldToScreen({ x: 800, y: 0 }, world);
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function buildSurfacePolyline(s, ap, steps = 90) {
+    const apSafe = Math.max(AP_MIN, Number(ap || 0));
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const y = -apSafe + (i / steps) * (2 * apSafe);
+      const x = surfaceXatY(s, y);
+      if (x == null) continue;
+      pts.push({ x, y });
+    }
+    return pts;
+  }
+
+  function drawSurfaceWithAperture(world, s, ap, style = {}) {
+    if (!ctx) return;
+    ctx.save();
+    ctx.lineWidth = style.lineWidth ?? 1.25;
+    ctx.strokeStyle = style.strokeStyle ?? "rgba(255,255,255,.22)";
+    ctx.shadowColor = style.shadowColor ?? "transparent";
+    ctx.shadowBlur = style.shadowBlur ?? 0;
+    if (Array.isArray(style.dash)) ctx.setLineDash(style.dash);
+
+    const vx = Number(s?.vx || 0);
+    const apDraw = Math.max(AP_MIN, Number(ap || AP_MIN));
+
+    if (Math.abs(Number(s?.R || 0)) < 1e-9) {
+      const a = worldToScreen({ x: vx, y: -apDraw }, world);
+      const b = worldToScreen({ x: vx, y: apDraw }, world);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    const curve = buildSurfacePolyline(s, apDraw, style.steps ?? 90);
+    if (curve.length >= 2) {
+      ctx.beginPath();
+      const p0 = worldToScreen(curve[0], world);
+      ctx.moveTo(p0.x, p0.y);
+      for (let i = 1; i < curve.length; i++) {
+        const p = worldToScreen(curve[i], world);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  function resolvePairDrawMode(sA, sB) {
+    const a = getSurfaceDrawMode(sA);
+    const b = getSurfaceDrawMode(sB);
+    if (a !== "zemax_like") return a;
+    if (b !== "zemax_like") return b;
+    // No explicit mechanical aperture data: default to simple optical interval drawing.
+    if (!hasExplicitMechanicalAperture(sA) && !hasExplicitMechanicalAperture(sB)) return "optical";
+    return "zemax_like";
+  }
+
+  function resolvePairShoulderMode(sA, sB, drawMode) {
+    const a = getSurfaceShoulderMode(sA);
+    const b = getSurfaceShoulderMode(sB);
+    if (a !== "none") return a;
+    if (b !== "none") return b;
+    if (drawMode !== "zemax_like") return "none";
+
+    const rA = Math.abs(Number(sA?.R || 0));
+    const rB = Math.abs(Number(sB?.R || 0));
+    if (rA < 1e-9 || rB < 1e-9) return "flat";
+
+    const apA = getSurfaceMechanicalAp(sA);
+    const apB = getSurfaceMechanicalAp(sB);
+    if (Math.abs(apA - apB) >= DEFAULT_SHOULDER_MIN_DIFF) return "step";
+    return "flat";
+  }
+
+  function resolvePairShoulderDepth(sA, sB, shoulderMode) {
+    const explicit = Math.max(getSurfaceShoulderDepth(sA, 0), getSurfaceShoulderDepth(sB, 0));
+    const edgeA = Number(sA?.edge_thickness);
+    const edgeB = Number(sB?.edge_thickness);
+    const explicitEdge =
+      Math.max(
+        Number.isFinite(edgeA) ? Math.max(0, edgeA) : 0,
+        Number.isFinite(edgeB) ? Math.max(0, edgeB) : 0
+      );
+    const edgeModeA = getSurfaceEdgeThicknessMode(sA);
+    const edgeModeB = getSurfaceEdgeThicknessMode(sB);
+    if (edgeModeA === "explicit" || edgeModeB === "explicit") {
+      if (explicitEdge > 0) return explicitEdge;
+      if (explicit > 0) return explicit;
+    }
+    if (explicit > 0) return explicit;
+
+    const gap = Math.abs(Number(sB?.vx || 0) - Number(sA?.vx || 0));
+    if (shoulderMode === "bridge") return Math.max(0.1, gap * 0.35);
+    if (shoulderMode === "step") return Math.max(0.1, gap * 0.5);
+    if (shoulderMode === "flat") return Math.max(0.05, gap * 0.15);
+    return 0;
+  }
+
+  function buildShoulderConnector(fromPt, toPt, mode, shoulderDepth, side, bevelFrom = 0, bevelTo = 0) {
+    if (!fromPt || !toPt) return null;
+    const pts = [{ x: fromPt.x, y: fromPt.y }];
+    const dir = toPt.x >= fromPt.x ? 1 : -1;
+    const spanX = Math.abs(toPt.x - fromPt.x);
+    const spanY = Math.abs(toPt.y - fromPt.y);
+
+    const bFrom = Math.max(0, Number(bevelFrom || 0));
+    const bTo = Math.max(0, Number(bevelTo || 0));
+    const bf = Math.min(bFrom, Math.max(0, spanX * 0.45));
+    const bt = Math.min(bTo, Math.max(0, spanX * 0.45));
+    if (bf > 1e-6) pts.push({ x: fromPt.x + dir * bf, y: fromPt.y - side * Math.min(bf, spanY * 0.5) });
+
+    if (mode === "bridge") {
+      const d = Math.max(0, Number(shoulderDepth || 0));
+      const xBridge = fromPt.x + dir * d;
+      pts.push({ x: xBridge, y: fromPt.y });
+      pts.push({ x: xBridge, y: toPt.y });
+      pts.push({ x: toPt.x, y: toPt.y });
+    } else if (mode === "step") {
+      const xStep = fromPt.x + dir * Math.max(Number(shoulderDepth || 0), spanX * 0.5);
+      const xClamped = dir > 0 ? Math.min(xStep, toPt.x) : Math.max(xStep, toPt.x);
+      pts.push({ x: xClamped, y: fromPt.y });
+      pts.push({ x: xClamped, y: toPt.y });
+      pts.push({ x: toPt.x, y: toPt.y });
+    } else if (mode === "flat") {
+      pts.push({ x: fromPt.x, y: toPt.y });
+      pts.push({ x: toPt.x, y: toPt.y });
+    } else {
+      pts.push({ x: toPt.x, y: toPt.y });
+    }
+
+    if (bt > 1e-6) {
+      const xStart = toPt.x - dir * bt;
+      pts.push({ x: xStart, y: toPt.y - side * Math.min(bt, spanY * 0.5) });
+    }
+    pts.push({ x: toPt.x, y: toPt.y });
+    return pts;
+  }
+
+  function buildMechanicalSegmentShape(sA, sB) {
+    const drawMode = resolvePairDrawMode(sA, sB);
+    const opticalMode = drawMode === "optical";
+    const apAraw = opticalMode ? getSurfaceOpticalAp(sA) : getSurfaceMechanicalAp(sA);
+    const apBraw = opticalMode ? getSurfaceOpticalAp(sB) : getSurfaceMechanicalAp(sB);
+    // In optical mode, draw the actual glass interval clear aperture only.
+    const apShared = opticalMode ? Math.max(AP_MIN, Math.min(apAraw, apBraw)) : null;
+    const apA = opticalMode ? apShared : apAraw;
+    const apB = opticalMode ? apShared : apBraw;
+
+    const front = buildSurfacePolyline(sA, apA, 90);
+    const back = buildSurfacePolyline(sB, apB, 90);
+    if (front.length < 2 || back.length < 2) return null;
+
+    const shoulderMode = drawMode === "optical" ? "none" : resolvePairShoulderMode(sA, sB, drawMode);
+    const shoulderDepth = resolvePairShoulderDepth(sA, sB, shoulderMode);
+
+    const topFrom = front[front.length - 1];
+    const topTo = back[back.length - 1];
+    const bottomFrom = back[0];
+    const bottomTo = front[0];
+
+    const topConn = buildShoulderConnector(
+      topFrom,
+      topTo,
+      shoulderMode,
+      shoulderDepth,
+      +1,
+      getSurfaceBevel(sA),
+      getSurfaceBevel(sB)
+    );
+    const bottomConn = buildShoulderConnector(
+      bottomFrom,
+      bottomTo,
+      shoulderMode,
+      shoulderDepth,
+      -1,
+      getSurfaceBevel(sB),
+      getSurfaceBevel(sA)
+    );
+    if (!topConn || !bottomConn) return null;
+
+    const poly = front
+      .concat(topConn.slice(1))
+      .concat(back.slice().reverse())
+      .concat(bottomConn.slice(1));
+
+    return {
+      drawMode,
+      shoulderMode,
+      shoulderDepth,
+      front,
+      back,
+      topConn,
+      bottomConn,
+      poly,
+      edgePoints: [front[0], front[front.length - 1], back[0], back[back.length - 1]],
+    };
+  }
+
+  function drawFilledPolygon(world, poly, fillStyle, strokeStyle) {
+    if (!ctx || !Array.isArray(poly) || poly.length < 3) return;
+    ctx.save();
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = fillStyle;
+    ctx.beginPath();
+    const p0 = worldToScreen(poly[0], world);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < poly.length; i++) {
+      const p = worldToScreen(poly[i], world);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.lineWidth = 1.7;
+    ctx.strokeStyle = strokeStyle;
+    ctx.shadowColor = "rgba(70,140,255,0.25)";
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function collectGlassElements(surfaces) {
+    const out = [];
+    let i = 0;
+    while (i < surfaces.length - 1) {
+      const sA = surfaces[i];
+      const sB = surfaces[i + 1];
+      if (
+        !isPhysicalSurfaceType(sA?.type) ||
+        !isPhysicalSurfaceType(sB?.type) ||
+        isAirMediumName(sA?.glass) ||
+        isStopLikeSurface(sA) ||
+        isStopLikeSurface(sB)
+      ) {
+        i++;
+        continue;
+      }
+
+      const start = i;
+      const segments = [];
+      while (i < surfaces.length - 1) {
+        const a = surfaces[i];
+        const b = surfaces[i + 1];
+        if (
+          !isPhysicalSurfaceType(a?.type) ||
+          !isPhysicalSurfaceType(b?.type) ||
+          isAirMediumName(a?.glass) ||
+          isStopLikeSurface(a) ||
+          isStopLikeSurface(b)
+        ) break;
+        segments.push(i);
+        i++;
+      }
+      if (!segments.length) continue;
+      out.push({
+        start,
+        end: segments[segments.length - 1] + 1,
+        segments,
+      });
+    }
+    return out;
+  }
+
+  function drawMechanicalElements(world, surfaces, debugStore = null) {
+    if (!ctx) return [];
+
+    const ELEMENT_FILL = [
+      "rgba(120,180,255,0.10)",
+      "rgba(120,220,190,0.10)",
+      "rgba(230,180,120,0.10)",
+      "rgba(220,140,170,0.10)",
+      "rgba(180,160,255,0.10)",
+    ];
+    const ELEMENT_STROKE = [
+      "rgba(220,235,255,0.55)",
+      "rgba(190,240,225,0.55)",
+      "rgba(240,220,190,0.55)",
+      "rgba(245,200,220,0.55)",
+      "rgba(220,210,255,0.55)",
+    ];
+
+    let minNonOverlap = Infinity;
+    const elements = collectGlassElements(surfaces);
+
+    elements.forEach((el, elIdx) => {
+      const fill = ELEMENT_FILL[elIdx % ELEMENT_FILL.length];
+      const stroke = ELEMENT_STROKE[elIdx % ELEMENT_STROKE.length];
+
+      if (debugStore) {
+        debugStore.elements.push({
+          index: elIdx,
+          start: el.start,
+          end: el.end,
+          color: stroke,
+        });
+      }
+
+      for (const segIdx of el.segments) {
+        const sA = surfaces[segIdx];
+        const sB = surfaces[segIdx + 1];
+        const shape = buildMechanicalSegmentShape(sA, sB);
+        if (!shape) continue;
+
+        if (Math.abs(Number(sA?.R || 0)) > 1e-9 && Math.abs(Number(sB?.R || 0)) > 1e-9) {
+          const nonOverlap = maxNonOverlappingSemiDiameter(sA, sB, 0.10);
+          minNonOverlap = Math.min(minNonOverlap, nonOverlap);
+        }
+
+        drawFilledPolygon(world, shape.poly, fill, stroke);
+
+        if (debugStore) {
+          debugStore.segments.push({
+            segIdx,
+            elementIndex: elIdx,
+            drawMode: shape.drawMode,
+            shoulderMode: shape.shoulderMode,
+            shoulderDepth: shape.shoulderDepth,
+            edgePoints: shape.edgePoints,
+            topConn: shape.topConn,
+            bottomConn: shape.bottomConn,
+          });
+        }
+      }
+
+      for (let i = el.start + 1; i < el.end; i++) {
+        drawSurfaceWithAperture(world, surfaces[i], getSurfaceMechanicalAp(surfaces[i]), {
+          lineWidth: 1,
+          strokeStyle: "rgba(220,235,255,0.20)",
+        });
+      }
+    });
+
+    if (Number.isFinite(minNonOverlap) && minNonOverlap < 0.5 && ui.footerWarn) {
+      ui.footerWarn.textContent =
+        "WARNING: element surfaces overlap / too thin somewhere — increase t or reduce curvature/aperture.";
+    }
+
+    return elements;
+  }
+
+  function drawSurface(world, s) {
+    if (!ctx) return;
+    drawSurfaceWithAperture(world, s, getSurfaceOpticalAp(s), {
+      lineWidth: 1.25,
+      strokeStyle: "rgba(255,255,255,.22)",
+    });
+  }
+
+  function drawOutlineDebugOverlay(world, surfaces, elements, debugStore) {
+    if (!ctx || !debugOutlineOverlayEnabled) return;
+
+    for (const s of surfaces) {
+      if (!isPhysicalSurfaceType(s?.type)) continue;
+      drawSurfaceWithAperture(world, s, getSurfaceOpticalAp(s), {
+        lineWidth: 1,
+        strokeStyle: "rgba(100,255,140,0.75)",
+        dash: [4, 3],
+      });
+      drawSurfaceWithAperture(world, s, getSurfaceMechanicalAp(s), {
+        lineWidth: 1,
+        strokeStyle: "rgba(255,190,90,0.75)",
+        dash: [2, 3],
+      });
+    }
+
+    ctx.save();
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = "rgba(255,90,180,0.85)";
+    for (const seg of debugStore?.segments || []) {
+      const conns = [seg.topConn, seg.bottomConn];
+      for (const pts of conns) {
+        if (!Array.isArray(pts) || pts.length < 2) continue;
+        ctx.beginPath();
+        const p0 = worldToScreen(pts[0], world);
+        ctx.moveTo(p0.x, p0.y);
+        for (let i = 1; i < pts.length; i++) {
+          const p = worldToScreen(pts[i], world);
+          ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    for (const seg of debugStore?.segments || []) {
+      for (const ep of seg.edgePoints || []) {
+        const p = worldToScreen(ep, world);
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(255,230,120,0.95)";
+        ctx.arc(p.x, p.y, 2.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    ctx.font = "11px var(--mono)";
+    const elementDbg = debugStore?.elements || [];
+    (elements || []).forEach((el, idx) => {
+      const s0 = surfaces[el.start];
+      const s1 = surfaces[el.end];
+      if (!s0 || !s1) return;
+      const xMid = (Number(s0.vx || 0) + Number(s1.vx || 0)) * 0.5;
+      const yTop = Math.max(getSurfaceMechanicalAp(s0), getSurfaceMechanicalAp(s1)) + 2.5;
+      const p = worldToScreen({ x: xMid, y: yTop }, world);
+      ctx.fillStyle = elementDbg[idx]?.color || "rgba(255,255,255,.8)";
+      ctx.fillText(`E${idx + 1}`, p.x - 8, p.y);
+    });
+
+    ctx.restore();
+  }
+
+  function drawLens(world, surfaces) {
+    const debugStore = debugOutlineOverlayEnabled ? { elements: [], segments: [] } : null;
+    const elements = drawMechanicalElements(world, surfaces, debugStore);
+    for (const s of surfaces) drawSurface(world, s);
+    if (debugOutlineOverlayEnabled) drawOutlineDebugOverlay(world, surfaces, elements, debugStore);
+  }
+
+  function drawRays(world, rayTraces, sensorX) {
+    if (!ctx) return;
+    ctx.save();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = "rgba(70,140,255,0.85)";
+    ctx.shadowColor = "rgba(70,140,255,0.45)";
+    ctx.shadowBlur = 12;
+
+    for (const tr of rayTraces) {
+      if (!tr.pts || tr.pts.length < 2) continue;
+      ctx.globalAlpha = tr.vignetted ? 0.10 : 1.0;
+
+      ctx.beginPath();
+      const p0 = worldToScreen(tr.pts[0], world);
+      ctx.moveTo(p0.x, p0.y);
+      for (let i = 1; i < tr.pts.length; i++) {
+        const p = worldToScreen(tr.pts[i], world);
+        ctx.lineTo(p.x, p.y);
+      }
+
+      const last = tr.endRay;
+      if (last && Number.isFinite(sensorX) && last.d && Math.abs(last.d.x) > 1e-9) {
+        const t = (sensorX - last.p.x) / last.d.x;
+        if (t > 0) {
+          const hit = add(last.p, mul(last.d, t));
+          const ps = worldToScreen(hit, world);
+          ctx.lineTo(ps.x, ps.y);
+        }
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawStop(world, surfaces) {
+    if (!ctx) return;
+    const idx = findStopSurfaceIndex(surfaces);
+    if (idx < 0) return;
+    const s = surfaces[idx];
+    const ap = getSurfaceOpticalAp(s);
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#b23b3b";
+    const a = worldToScreen({ x: s.vx, y: -ap }, world);
+    const b = worldToScreen({ x: s.vx, y: ap }, world);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawSensor(world, sensorX, halfH) {
+    if (!ctx) return;
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,.35)";
+    ctx.setLineDash([6, 6]);
+
+    const a = worldToScreen({ x: sensorX, y: -halfH }, world);
+    const b = worldToScreen({ x: sensorX, y: halfH }, world);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    ctx.setLineDash([3, 6]);
+    ctx.lineWidth = 1.25;
+    const l1 = worldToScreen({ x: sensorX - 2.5, y: halfH }, world);
+    const l2 = worldToScreen({ x: sensorX + 2.5, y: halfH }, world);
+    const l3 = worldToScreen({ x: sensorX - 2.5, y: -halfH }, world);
+    const l4 = worldToScreen({ x: sensorX + 2.5, y: -halfH }, world);
+
+    ctx.beginPath();
+    ctx.moveTo(l1.x, l1.y);
+    ctx.lineTo(l2.x, l2.y);
+    ctx.moveTo(l3.x, l3.y);
+    ctx.lineTo(l4.x, l4.y);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // -------- PL mount visuals ----------
+  const PL_FFD = 52.0;
+  const PL_LENS_LIP = 3.0;
+
+  function drawPLFlange(world, xFlange) {
+    if (!ctx || !canvas) return;
+
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,.35)";
+    ctx.setLineDash([10, 8]);
+
+    const r = canvas.getBoundingClientRect();
+    const yWorld = (r.height / (world.s || 1)) * 0.6;
+
+    const a = worldToScreen({ x: xFlange, y: -yWorld }, world);
+    const b = worldToScreen({ x: xFlange, y: yWorld }, world);
+
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function drawPLMountCutout(world, xFlange, opts = {}) {
+    if (!ctx) return;
+
+    const throatR = Number.isFinite(opts.throatR) ? opts.throatR : 27;
+    const outerR = Number.isFinite(opts.outerR) ? opts.outerR : 31;
+    const camDepth = Number.isFinite(opts.camDepth) ? opts.camDepth : 14;
+    const lensLip = Number.isFinite(opts.lensLip) ? opts.lensLip : 3;
+    const flangeT = Number.isFinite(opts.flangeT) ? opts.flangeT : 2.0;
+
+    const P = (x, y) => worldToScreen({ x, y }, world);
+
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,.18)";
+    ctx.fillStyle = "rgba(255,255,255,.02)";
+
+    // flange face
+    {
+      const a = P(xFlange, -outerR);
+      const b = P(xFlange, outerR);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    // flange thickness
+    {
+      const a = P(xFlange, -outerR);
+      const b = P(xFlange + flangeT, -outerR);
+      const c = P(xFlange + flangeT, outerR);
+      const d = P(xFlange, outerR);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineTo(c.x, c.y);
+      ctx.lineTo(d.x, d.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // throat tube
+    {
+      const a = P(xFlange - lensLip, -throatR);
+      const b = P(xFlange + camDepth, -throatR);
+      const c = P(xFlange + camDepth, throatR);
+      const d = P(xFlange - lensLip, throatR);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineTo(c.x, c.y);
+      ctx.lineTo(d.x, d.y);
+      ctx.closePath();
+      ctx.stroke();
+
+      ctx.save();
+      ctx.globalAlpha = 0.06;
+      ctx.fillStyle = "#000";
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // tiny shoulder
+    {
+      const shoulderX = xFlange + flangeT;
+      const a = P(shoulderX, -outerR);
+      const b = P(shoulderX + 3.0, -outerR);
+      const c = P(shoulderX + 3.0, outerR);
+      const d = P(shoulderX, outerR);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineTo(c.x, c.y);
+      ctx.lineTo(d.x, d.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    const mono = (getComputedStyle(document.documentElement).getPropertyValue("--mono") || "ui-monospace").trim();
+    ctx.font = `11px ${mono}`;
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const lab = P(xFlange - lensLip + 1.5, outerR + 6);
+    ctx.fillText("PL mount • Ø54 throat • flange @ sensor-52mm", lab.x, lab.y);
+
+    ctx.restore();
+  }
+
+  function drawRulerFrom(world, originX, xMin, yWorld = null, label = "", yOffsetMm = 0) {
+    if (!ctx) return;
+
+    let maxAp = 0;
+    if (lens?.surfaces?.length) {
+      for (const s of lens.surfaces) maxAp = Math.max(maxAp, Math.abs(Number(s.ap || 0)));
+    }
+
+    const yBase = (yWorld != null) ? yWorld : (maxAp + 18);
+    const y = yBase + yOffsetMm;
+
+    const P = (x, yy) => worldToScreen({ x, y: yy }, world);
+
+    const mono = (getComputedStyle(document.documentElement).getPropertyValue("--mono") || "ui-monospace").trim();
+    const fontMajor = 13;
+    const fontMinor = 12;
+
+    ctx.save();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = "rgba(255,255,255,.30)";
+    ctx.fillStyle = "rgba(255,255,255,.92)";
+    ctx.font = `${fontMinor}px ${mono}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+
+    const a = P(xMin, y);
+    const b = P(originX, y);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    const stepMm  = 10;
+    const majorMm = 50;
+
+    const tLenMajor = 14;
+    const tLenMid   = 10;
+
+    for (let x = originX; x >= xMin - 1e-6; x -= stepMm) {
+      const distMm = originX - x;
+      const isMajor = (Math.round(distMm) % majorMm) === 0;
+      const tLen = isMajor ? tLenMajor : tLenMid;
+      const shouldLabel = true;
+
+      const p = P(x, y);
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x, p.y + tLen);
+      ctx.stroke();
+
+      if (shouldLabel) {
+        const cm = Math.round(distMm / 10);
+        const txt = `${cm}cm`;
+
+        ctx.save();
+        ctx.font = `${isMajor ? fontMajor : fontMinor}px ${mono}`;
+
+        const padX = 6, padY = 3;
+        const w = ctx.measureText(txt).width + padX * 2;
+        const h = (isMajor ? fontMajor : fontMinor) + padY * 2;
+
+        ctx.fillStyle = "rgba(0,0,0,.78)";
+        ctx.fillRect(p.x - w / 2, p.y + tLen + 3, w, h);
+
+        ctx.fillStyle = "rgba(255,255,255,.95)";
+        ctx.shadowColor = "rgba(0,0,0,.75)";
+        ctx.shadowBlur = 6;
+        ctx.fillText(txt, p.x, p.y + tLen + 5);
+        ctx.restore();
+      }
+    }
+
+    if (label) {
+      const p0 = P(originX, y);
+      const txt = `${label} 0`;
+      ctx.save();
+      ctx.font = `${fontMajor}px ${mono}`;
+      const padX = 7, padY = 4;
+      const w = ctx.measureText(txt).width + padX * 2;
+      const h = fontMajor + padY * 2;
+
+      ctx.fillStyle = "rgba(0,0,0,.78)";
+      ctx.fillRect(p0.x - w / 2, p0.y + 14, w, h);
+
+      ctx.fillStyle = "rgba(255,255,255,.95)";
+      ctx.shadowColor = "rgba(0,0,0,.75)";
+      ctx.shadowBlur = 6;
+      ctx.fillText(txt, p0.x, p0.y + 18);
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  function drawRuler(world, x0 = 0, xMin = -200, yWorld = null) {
+    drawRulerFrom(world, x0, xMin, yWorld, "", 0);
+  }
+
+  function drawTitleOverlay(partsOrText) {
+    if (!ctx || !canvas) return;
+
+    const mono = (getComputedStyle(document.documentElement).getPropertyValue("--mono") || "ui-monospace").trim();
+    const r = canvas.getBoundingClientRect();
+
+    const padX = 14;
+    const padY = 10;
+    const maxW = r.width - padX * 2;
+
+    const fontSize = 13;
+    const lineH = 17;
+    const maxLines = 3;
+
+    let parts = [];
+    if (Array.isArray(partsOrText)) {
+      parts = partsOrText.map(s => String(s || "").trim()).filter(Boolean);
+    } else {
+      parts = String(partsOrText || "")
+        .split(" • ")
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    ctx.save();
+    ctx.font = `${fontSize}px ${mono}`;
+
+    const lines = [];
+    let cur = "";
+
+    for (const p of parts) {
+      const test = cur ? (cur + " • " + p) : p;
+      if (ctx.measureText(test).width <= maxW) {
+        cur = test;
+      } else {
+        if (cur) lines.push(cur);
+        cur = p;
+        if (lines.length >= maxLines) break;
+      }
+    }
+    if (lines.length < maxLines && cur) lines.push(cur);
+
+    if (lines.length === maxLines && parts.length) {
+      let last = lines[maxLines - 1];
+      while (ctx.measureText(last + " …").width > maxW && last.length > 0) {
+        last = last.slice(0, -1);
+      }
+      lines[maxLines - 1] = last + " …";
+    }
+
+    const barH = padY * 2 + lines.length * lineH;
+
+    ctx.fillStyle = "rgba(0,0,0,.62)";
+    ctx.fillRect(8, 6, r.width - 16, barH);
+
+    ctx.fillStyle = "rgba(255,255,255,.92)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], padX, 6 + padY + i * lineH);
+    }
+
+    ctx.restore();
+  }
+
+  function wavePresetSemanticLabel(presetValue) {
+    const v = String(presetValue || "d");
+    if (v === "d") return "d-line (587.6nm) — visible default";
+    if (v === "g") return "g-line (435.8nm) — blue";
+    if (v === "c") return "c-line (656.3nm) — red";
+    if (v === "zemax_pwav") {
+      const z = Number(lens?.zemax?.primaryWavelengthNm);
+      return Number.isFinite(z)
+        ? `Zemax PWAV (${z.toFixed(1)}nm) — imported primary wavelength`
+        : "Zemax PWAV — unavailable";
+    }
+    const nm = wavePresetToLambdaNm(v);
+    return Number.isFinite(nm) ? `${v} (${nm.toFixed(1)}nm)` : v;
+  }
+
+  let verifyPanelExpanded = false;
+
+  function hasZemaxLensMeta() {
+    return !!(lens?.zemax && typeof lens.zemax === "object");
+  }
+
+  function updateZemaxVerifyChrome() {
+    const hasZemax = hasZemaxLensMeta();
+    const shouldShowControls = true;
+    if (ui.verifyControls) {
+      ui.verifyControls.classList.toggle("hidden", !shouldShowControls);
+    }
+    if (ui.btnToggleVerifyPanel) {
+      ui.btnToggleVerifyPanel.textContent = verifyPanelExpanded ? "Hide Zemax Verify" : "Show Zemax Verify";
+      ui.btnToggleVerifyPanel.setAttribute("aria-expanded", verifyPanelExpanded ? "true" : "false");
+      ui.btnToggleVerifyPanel.setAttribute("aria-pressed", verifyPanelExpanded ? "true" : "false");
+      ui.btnToggleVerifyPanel.title = hasZemax
+        ? "Toggle Zemax verification details"
+        : "No Zemax metadata loaded. Click to open debug panel.";
+    }
+    if (ui.verifyPanel) {
+      ui.verifyPanel.classList.toggle("hidden", !verifyPanelExpanded);
+    }
+  }
+
+  function updateZemaxVerifyPanel({ sensorX = 0 } = {}) {
+    if (!ui.verifyPanel) return;
+    const z = lens?.zemax;
+    updateZemaxVerifyChrome();
+
+    if (!z) {
+      if (ui.verifySummary) ui.verifySummary.textContent = "No Zemax metadata loaded.";
+      if (ui.verifyWave) ui.verifyWave.textContent = "Load/import a Zemax lens to populate verify details.";
+      if (ui.verifyFields) ui.verifyFields.textContent = "Fields: —";
+      if (ui.verifyWeights) ui.verifyWeights.textContent = "Field weights: —";
+      if (ui.verifyVig) ui.verifyVig.textContent = "Vignetting factors: —";
+      if (ui.verifyPupil) ui.verifyPupil.textContent = "Entrance pupil Ø: —";
+      if (ui.verifyZoom) ui.verifyZoom.textContent = "Zemax zoom configs: —";
+      if (ui.verifyMatchZemaxWave) ui.verifyMatchZemaxWave.disabled = true;
+      if (ui.verifyWaveHelp) {
+        ui.verifyWaveHelp.textContent =
+          "Unchecked: use current dropdown wavelength (normal visible workflow). Checked: verify exactly at Zemax primary wavelength.";
+      }
+      return;
+    }
+
+    if (ui.verifyMatchZemaxWave) ui.verifyMatchZemaxWave.disabled = false;
+
+    const preferZemax = !!ui.verifyMatchZemaxWave?.checked;
+    if (lens?.import_options) lens.import_options.match_zemax_wavelength = preferZemax;
+
+    const lambdaPreviewNm = getActiveAnalysisLambdaNm({ preferZemax: false });
+    const lambdaVerifyNm = getActiveAnalysisLambdaNm({ preferZemax: preferZemax });
+
+    const verifyParax = estimateEflBflParaxial(lens.surfaces, lambdaVerifyNm);
+    const verifyT = estimateTStopApprox(verifyParax.efl, lens.surfaces, lambdaVerifyNm);
+    const verifyEP = estimateEntrancePupil(lens.surfaces, lambdaVerifyNm);
+
+    const fields = Array.isArray(z.fields) ? z.fields : [];
+    const fieldTxt = fields.length
+      ? fields.map((f) => Number(f?.angleDeg || 0).toFixed(2)).join(", ")
+      : "—";
+    const weightTxt = fields.length
+      ? fields.map((f) => Number(f?.weight ?? 1).toFixed(3)).join(", ")
+      : "—";
+    const vigTxt = fields.length
+      ? fields.map((f) => `f${Number(f?.index || 0)}: vdx=${Number(f?.vdx || 0).toFixed(3)} vdy=${Number(f?.vdy || 0).toFixed(3)} vcx=${Number(f?.vcx || 0).toFixed(3)} vcy=${Number(f?.vcy || 0).toFixed(3)}`).join(" | ")
+      : "—";
+
+    const pwavNm = Number(z?.primaryWavelengthNm);
+    const selectedPreset = String(ui.wavePreset?.value || "d");
+
+    if (ui.verifySummary) {
+      const eflTxt = Number.isFinite(verifyParax?.efl) ? `${verifyParax.efl.toFixed(3)}mm` : "—";
+      const bflTxt = Number.isFinite(verifyParax?.bfl) ? `${verifyParax.bfl.toFixed(3)}mm` : "—";
+      const tTxt = Number.isFinite(verifyT) ? `T≈${verifyT.toFixed(3)}` : "T≈—";
+      ui.verifySummary.textContent = `Verify @ ${lambdaVerifyNm.toFixed(1)}nm • EFL ${eflTxt} • BFL ${bflTxt} • ${tTxt}`;
+    }
+    if (ui.verifyWave) {
+      const pwavTxt = Number.isFinite(pwavNm) ? `${pwavNm.toFixed(1)}nm` : "—";
+      const modeTxt = preferZemax ? "match Zemax PWAV" : "use dropdown reference";
+      ui.verifyWave.textContent = `Preview λ: ${wavePresetSemanticLabel(selectedPreset)} (${lambdaPreviewNm.toFixed(1)}nm) • Verify mode: ${modeTxt} • Zemax PWAV: ${pwavTxt}`;
+    }
+    if (ui.verifyWaveHelp) {
+      ui.verifyWaveHelp.textContent = preferZemax
+        ? "Checked: verify exactly at Zemax primary wavelength. Uncheck to use the current dropdown wavelength."
+        : "Unchecked: use current dropdown wavelength (normal visible workflow). Check to verify exactly at Zemax primary wavelength.";
+    }
+    if (ui.verifyFields) {
+      ui.verifyFields.textContent = `Fields (${fields.length}): ${fieldTxt}`;
+    }
+    if (ui.verifyWeights) {
+      ui.verifyWeights.textContent = `Field weights: ${weightTxt}`;
+    }
+    if (ui.verifyVig) {
+      ui.verifyVig.textContent = `Vignetting factors: ${vigTxt}`;
+    }
+    if (ui.verifyPupil) {
+      const epTxt = Number.isFinite(Number(verifyEP?.diameterMm)) ? `${Number(verifyEP.diameterMm).toFixed(4)}mm` : "—";
+      const epMethod = String(verifyEP?.method || "n/a");
+      ui.verifyPupil.textContent = `Entrance pupil Ø: ${epTxt} • method: ${epMethod} • sensorX=${Number(sensorX || 0).toFixed(4)}mm`;
+    }
+    if (ui.verifyZoom) {
+      const zoomConfigs = Array.isArray(lens?.zoom?.configs) ? lens.zoom.configs : [];
+      const activeIdx = Number(lens?.zoom?.activeConfig);
+      const activeCfg = zoomConfigs.find((c) => Number(c?.index) === activeIdx) || zoomConfigs[0] || null;
+      const activeLabel = activeCfg
+        ? formatZoomConfigLabel(activeCfg, zoomConfigs.findIndex((c) => c === activeCfg), zoomConfigs.length)
+        : "—";
+      const thicList = activeCfg?.overrideSurfaceNumbers?.length
+        ? activeCfg.overrideSurfaceNumbers.join(", ")
+        : "—";
+      const apTxt = Number.isFinite(Number(activeCfg?.aperture))
+        ? Number(activeCfg.aperture).toFixed(4)
+        : "—";
+      const imsSurfTxt = Number.isFinite(Number(z?.imsSurfaceNumber))
+        ? Number(z.imsSurfaceNumber)
+        : "—";
+      ui.verifyZoom.textContent =
+        `Zemax zoom configs: ${zoomConfigs.length || 1} • Active: ${activeLabel} • Overrides: THIC ${thicList} • Imported F/#: ${apTxt} • IMS surf: ${imsSurfTxt}`;
+    }
+  }
+
+  // -------------------- render scheduler (RAF throttle) --------------------
+  let _rafAll = 0;
+  let _rafPrev = 0;
+  let _renderAllTimer = 0;
+  let _previewRenderTimer = 0;
+  let renderEngineEnabled = true;
+  let _previewRenderJobId = 0;
+  let _renderAllRunning = false;
+  let _renderAllQueued = false;
+  let _renderPreviewRunning = false;
+  let _renderPreviewQueued = false;
+  let _renderAllAfterPreview = false;
+  let _forcePreviewRender = false;
+  let _lastRayPaneRedraw = null;
+  let debugOutlineOverlayEnabled = false;
+
+  function updateRenderEngineButton() {
+    if (!ui.btnRenderEngine) return;
+    ui.btnRenderEngine.textContent = renderEngineEnabled ? "Preview: ON" : "Preview: OFF";
+    ui.btnRenderEngine.classList.toggle("btnPrimary", renderEngineEnabled);
+    ui.btnRenderEngine.classList.toggle("btnDanger", !renderEngineEnabled);
+    ui.btnRenderEngine.setAttribute("aria-pressed", renderEngineEnabled ? "true" : "false");
+    ui.btnRenderEngine.title = renderEngineEnabled ? "Disable preview renderer" : "Enable preview renderer";
+    if (ui.btnRenderPreview) ui.btnRenderPreview.disabled = !renderEngineEnabled;
+  }
+
+  function updateDebugOverlayButton() {
+    if (!ui.btnDebugOverlay) return;
+    ui.btnDebugOverlay.textContent = debugOutlineOverlayEnabled ? "Outline Debug: ON" : "Outline Debug: OFF";
+    ui.btnDebugOverlay.classList.toggle("btnPrimary", debugOutlineOverlayEnabled);
+    ui.btnDebugOverlay.setAttribute("aria-pressed", debugOutlineOverlayEnabled ? "true" : "false");
+  }
+
+  function toggleDebugOverlay() {
+    debugOutlineOverlayEnabled = !debugOutlineOverlayEnabled;
+    updateDebugOverlayButton();
+    scheduleRenderAll();
+  }
+
+  function setRenderEngineEnabled(enabled) {
+    const next = !!enabled;
+    if (renderEngineEnabled === next) return;
+    renderEngineEnabled = next;
+
+    _previewRenderJobId++;
+    _renderPreviewQueued = false;
+    if (_previewRenderTimer) {
+      clearTimeout(_previewRenderTimer);
+      _previewRenderTimer = 0;
+    }
+
+    if (_rafPrev) {
+      cancelAnimationFrame(_rafPrev);
+      _rafPrev = 0;
+    }
+
+    if (!renderEngineEnabled) {
+      hidePreviewProgress();
+      toast("Preview renderer: OFF", 1200);
+    } else {
+      if (preview.ready) scheduleRenderPreview();
+      toast("Preview renderer: ON", 1200);
+    }
+
+    updateRenderEngineButton();
+  }
+
+  function toggleRenderEngine() {
+    setRenderEngineEnabled(!renderEngineEnabled);
+  }
+
+  function scheduleRenderAll(opts = {}) {
+    const immediate = opts?.immediate === true;
+    if (_renderAllTimer) clearTimeout(_renderAllTimer);
+    if (_rafAll) {
+      cancelAnimationFrame(_rafAll);
+      _rafAll = 0;
+    }
+    _renderAllTimer = setTimeout(() => {
+      _renderAllTimer = 0;
+      _rafAll = requestAnimationFrame(() => {
+        _rafAll = 0;
+        renderAll();
+      });
+    }, immediate ? 0 : HEAVY_RENDER_DEBOUNCE_MS);
+  }
+
+  function scheduleRenderPreview(opts = {}) {
+    if (!renderEngineEnabled) return;
+    if (opts?.force === true) _forcePreviewRender = true;
+    if (_renderPreviewRunning) {
+      _renderPreviewQueued = true;
+      _previewRenderJobId++;
+      return;
+    }
+    if (_previewRenderTimer) clearTimeout(_previewRenderTimer);
+    if (_rafPrev) {
+      cancelAnimationFrame(_rafPrev);
+      _rafPrev = 0;
+    }
+    _previewRenderTimer = setTimeout(() => {
+      _previewRenderTimer = 0;
+      _rafPrev = requestAnimationFrame(() => {
+        _rafPrev = 0;
+        if (preview.ready && renderEngineEnabled) renderPreview();
+      });
+    }, opts?.immediate === true ? 0 : HEAVY_RENDER_DEBOUNCE_MS);
+  }
+
+  function renderAll() {
+    if (_renderAllTimer) {
+      clearTimeout(_renderAllTimer);
+      _renderAllTimer = 0;
+    }
+    if (_renderAllRunning) {
+      _renderAllQueued = true;
+      return;
+    }
+    _renderAllRunning = true;
+    markRuntimeBusy("renderAll");
+    try {
+      performRenderAll();
+      clearRuntimeBusy();
+    } catch (e) {
+      handleRuntimeError("Raytrace stopped", e);
+      clearRuntimeBusy();
+    } finally {
+      _renderAllRunning = false;
+      if (_renderAllQueued) {
+        _renderAllQueued = false;
+        scheduleRenderAll();
+      }
+    }
+  }
+
+  function finishPreviewRender() {
+    _renderPreviewRunning = false;
+    clearRuntimeBusy();
+    if (_renderAllAfterPreview) {
+      _renderAllAfterPreview = false;
+      scheduleRenderAll();
+    }
+    if (_renderPreviewQueued && renderEngineEnabled) {
+      _renderPreviewQueued = false;
+      scheduleRenderPreview();
+    }
+  }
+
+  function renderPreview() {
+    if (_previewRenderTimer) {
+      clearTimeout(_previewRenderTimer);
+      _previewRenderTimer = 0;
+    }
+    if (!renderEngineEnabled) {
+      hidePreviewProgress();
+      return;
+    }
+    if (_renderPreviewRunning) {
+      _renderPreviewQueued = true;
+      _previewRenderJobId++;
+      return;
+    }
+    _renderPreviewRunning = true;
+    markRuntimeBusy("renderPreview");
+    try {
+      performRenderPreview();
+    } catch (e) {
+      _renderPreviewRunning = false;
+      clearRuntimeBusy();
+      handleRuntimeError("Preview stopped", e);
+    }
+  }
+
+  // ===========================
+  // RENDER ALL (rays pane)
+  // ===========================
+  function performRenderAll() {
+    if (!canvas || !ctx) return;
+    if (!_safeModeActive) clearStatusWarning();
+    syncActiveZoomConfigFromUI();
+
+    const fieldAngle = Number(ui.fieldAngle?.value || 0);
+    const rayCount   = Number(ui.rayCount?.value || 31);
+    const wavePreset = ui.wavePreset?.value || "d";
+
+    const { w: sensorW, h: sensorH, halfH } = getSensorWH();
+
+    const objectDistanceMm = getFocusChartDistanceMm();
+    const focusCtx = getFocusContext({
+      objectDistanceMm,
+      wavePreset,
+      allowAutoRefocus: true,
+    });
+    const focusMode = focusCtx.focusMode;
+    const focusMechanism = focusCtx.focusMechanism;
+    const sensorShift = focusCtx.sensorX;
+    const lensShift = focusCtx.lensShift;
+
+    // Keep base lens data at nominal pose; focused clones are used for tracing/display.
+    computeVertices(lens.surfaces, 0, 0);
+    const nominalSensorX = getSensorPlaneX(lens.surfaces, 0);
+
+    // Use a focused optical clone for tracing only.
+    const traceSurfaces = clone(lens.surfaces);
+    computeVertices(traceSurfaces, lensShift, sensorShift);
+    const traceSensorX = getSensorPlaneX(traceSurfaces, sensorShift);
+    // Keep a nominal optical clone as fallback when focused pose tracing collapses.
+    const nominalTraceSurfaces = clone(lens.surfaces);
+    computeVertices(nominalTraceSurfaces, 0, 0);
+    const nominalTraceSensorX = getSensorPlaneX(nominalTraceSurfaces, 0);
+    let activeTraceSurfaces = traceSurfaces;
+    let activeTraceSensorX = traceSensorX;
+
+    const isImportedZemax = !!(
+      lens?.originalZmxText ||
+      String(lens?.importSource || "").toLowerCase().includes("zmx") ||
+      String(lens?.zemax?.source || "").toLowerCase() === "zemax"
+    );
+    const useZemaxPupilBundle = isImportedZemax && Math.abs(fieldAngle) < 1e-9;
+    let rayBundle = useZemaxPupilBundle
+      ? buildEntrancePupilLimitedRays(traceSurfaces, rayCount, fieldAngle, wavePreset, objectDistanceMm)
+      : { rays: buildRays(traceSurfaces, fieldAngle, rayCount, objectDistanceMm), bundleRadiusMm: null, epRadiusMm: null, mode: "default" };
+    let rays = Array.isArray(rayBundle?.rays) ? rayBundle.rays : [];
+    let traces = rays.map((r, ri) => traceRayForward(clone(r), traceSurfaces, wavePreset, { rayIndex: ri, debugTrace: useZemaxPupilBundle }));
+
+    if (useZemaxPupilBundle && traces.length && traces.every((t) => t?.vignetted || t?.tir)) {
+      rays = buildDebugCenterRays(traceSurfaces, rayCount);
+      rayBundle = {
+        rays,
+        bundleRadiusMm: null,
+        epRadiusMm: Number.isFinite(Number(rayBundle?.epRadiusMm)) ? Number(rayBundle.epRadiusMm) : null,
+        xStartMm: Number.isFinite(Number(rayBundle?.xStartMm)) ? Number(rayBundle.xStartMm) : null,
+        xAimMm: Number.isFinite(Number(rayBundle?.xAimMm)) ? Number(rayBundle.xAimMm) : null,
+        mode: "debug_center_fallback",
+      };
+      traces = rays.map((r, ri) => traceRayForward(clone(r), traceSurfaces, wavePreset, { rayIndex: ri, debugTrace: true }));
+      console.warn("[ray-bundle] Fallback to debug center bundle (all rays failed in entrance-pupil-limited bundle).");
+    }
+
+    // If focused-pose tracing yields no IMS hits, retry once in nominal pose.
+    let reachedIMSCount = traces.filter((t) => t.reachedIMS).length;
+    if (isImportedZemax && reachedIMSCount === 0) {
+      let nominalBundle = useZemaxPupilBundle
+        ? buildEntrancePupilLimitedRays(nominalTraceSurfaces, rayCount, fieldAngle, wavePreset, objectDistanceMm)
+        : { rays: buildRays(nominalTraceSurfaces, fieldAngle, rayCount, objectDistanceMm), bundleRadiusMm: null, epRadiusMm: null, mode: "nominal_default" };
+      let nominalRays = Array.isArray(nominalBundle?.rays) ? nominalBundle.rays : [];
+      let nominalTraces = nominalRays.map((r, ri) => traceRayForward(clone(r), nominalTraceSurfaces, wavePreset, { rayIndex: ri, debugTrace: false }));
+      let nominalReachedIMS = nominalTraces.filter((t) => t.reachedIMS).length;
+      if (nominalReachedIMS === 0 && useZemaxPupilBundle) {
+        nominalRays = buildDebugCenterRays(nominalTraceSurfaces, rayCount);
+        nominalBundle = {
+          rays: nominalRays,
+          bundleRadiusMm: null,
+          epRadiusMm: Number.isFinite(Number(nominalBundle?.epRadiusMm)) ? Number(nominalBundle.epRadiusMm) : null,
+          xStartMm: Number.isFinite(Number(nominalBundle?.xStartMm)) ? Number(nominalBundle.xStartMm) : null,
+          xAimMm: Number.isFinite(Number(nominalBundle?.xAimMm)) ? Number(nominalBundle.xAimMm) : null,
+          mode: "nominal_debug_center_fallback",
+        };
+        nominalTraces = nominalRays.map((r, ri) => traceRayForward(clone(r), nominalTraceSurfaces, wavePreset, { rayIndex: ri, debugTrace: false }));
+        nominalReachedIMS = nominalTraces.filter((t) => t.reachedIMS).length;
+      }
+      if (nominalReachedIMS > reachedIMSCount) {
+        activeTraceSurfaces = nominalTraceSurfaces;
+        activeTraceSensorX = nominalTraceSensorX;
+        rayBundle = nominalBundle;
+        rays = nominalRays;
+        traces = nominalTraces;
+        reachedIMSCount = nominalReachedIMS;
+        console.warn("[ray-bundle] Fallback to nominal-pose tracing (focused pose produced zero IMS hits).", {
+          activeZoomConfig: Number.isFinite(Number(lens?.zoom?.activeConfig)) ? Number(lens.zoom.activeConfig) : null,
+          activeZoomLabel: String(lens?.zemax?.currentConfigLabel || "—"),
+        });
+      }
+    }
+
+    const displaySurfaces = activeTraceSurfaces;
+    const displaySensorX = activeTraceSensorX;
+    const plX = displaySensorX - PL_FFD;
+
+    const vCount = traces.filter((t) => t.vignetted).length;
+    const tirCount = traces.filter((t) => t.tir).length;
+    const validCount = traces.filter((t) => !t.vignetted && !t.tir).length;
+    reachedIMSCount = traces.filter((t) => t.reachedIMS).length;
+    const failReasonCounts = traces.reduce((acc, t) => {
+      const key = String(t?.failReason || (t?.reachedIMS ? "ok" : "unknown"));
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const vigPct = traces.length ? Math.round((vCount / traces.length) * 100) : 0;
+
+    let paraxialSource = "focused";
+    let { efl, bfl } = estimateEflBflParaxial(activeTraceSurfaces, wavePreset);
+    let tStopSurfaceRef = activeTraceSurfaces;
+    if (!Number.isFinite(Number(efl))) {
+      const nominalParax = estimateEflBflParaxial(nominalTraceSurfaces, wavePreset);
+      if (Number.isFinite(Number(nominalParax?.efl))) {
+        efl = Number(nominalParax.efl);
+        bfl = Number.isFinite(Number(nominalParax?.bfl)) ? Number(nominalParax.bfl) : null;
+        tStopSurfaceRef = nominalTraceSurfaces;
+        paraxialSource = "nominal_fallback";
+      }
+    }
+    let T = estimateTStopApprox(efl, tStopSurfaceRef, wavePreset);
+    if (!Number.isFinite(Number(T))) {
+      const importedConfigFno = Number(lens?.zemax?.configAperture);
+      if (Number.isFinite(importedConfigFno) && importedConfigFno > 0) T = importedConfigFno;
+    }
+
+    const fov = computeFovDeg(efl, sensorW, sensorH);
+    const fovTxt = !fov
+      ? "FOV: —"
+      : `FOV: H ${fov.hfov.toFixed(1)}° • V ${fov.vfov.toFixed(1)}° • D ${fov.dfov.toFixed(1)}°`;
+
+    const maxField = coverageTestMaxFieldDeg(activeTraceSurfaces, wavePreset, activeTraceSensorX, halfH);
+    const covMode = "v";
+    const { ok: coversGeom, req } = coversSensorYesNo({ fov, maxField, mode: covMode, marginDeg: 0.5 });
+    const sensorDiagMm = Math.hypot(sensorW, sensorH);
+    const coversByIC = !!(preview.usableCircle?.valid && preview.usableCircle.diameterMm >= sensorDiagMm);
+    const covers = coversGeom && coversByIC;
+
+    const covTxt = !fov
+      ? "COV(V): —"
+      : `COV(V): ±${maxField.toFixed(1)}° • REQ(V): ${(req ?? 0).toFixed(1)}° • ${covers ? "COVERS ✅" : "NO ❌"}`;
+
+    const rearVx = lastPhysicalVertexX(displaySurfaces);
+    const intrusion = rearVx - plX;
+    const rearTxt = (intrusion > 0)
+      ? `REAR INTRUSION: +${intrusion.toFixed(2)}mm ❌`
+      : `REAR CLEAR: ${Math.abs(intrusion).toFixed(2)}mm ✅`;
+
+    const frontVx = firstPhysicalVertexX(displaySurfaces);
+    const lenToFlange = plX - frontVx;
+    const totalLen = lenToFlange + PL_LENS_LIP;
+    const lenTxt = (Number.isFinite(totalLen) && totalLen > 0)
+      ? `LEN≈ ${totalLen.toFixed(1)}mm (front→PL + mount)`
+      : `LEN≈ —`;
+
+    if (ui.efl) ui.efl.textContent = `Focal Length: ${efl == null ? "—" : efl.toFixed(2)}mm`;
+    if (ui.bfl) ui.bfl.textContent = `BFL: ${bfl == null ? "—" : bfl.toFixed(2)}mm`;
+    if (ui.tstop) ui.tstop.textContent = `T≈ ${T == null ? "—" : "T" + T.toFixed(2)}`;
+    if (ui.vig) ui.vig.textContent = `Vignette: ${vigPct}%`;
+    if (ui.fov) ui.fov.textContent = fovTxt;
+    if (ui.cov) ui.cov.textContent = covers ? "COV: YES" : "COV: NO";
+
+    if (ui.eflTop) ui.eflTop.textContent = ui.efl?.textContent || `EFL: ${efl == null ? "—" : efl.toFixed(2)}mm`;
+    if (ui.bflTop) ui.bflTop.textContent = ui.bfl?.textContent || `BFL: ${bfl == null ? "—" : bfl.toFixed(2)}mm`;
+    if (ui.tstopTop) ui.tstopTop.textContent = ui.tstop?.textContent || `T≈ ${T == null ? "—" : "T" + T.toFixed(2)}`;
+    if (ui.fovTop) ui.fovTop.textContent = fovTxt;
+    if (ui.covTop) ui.covTop.textContent = ui.cov?.textContent || (covers ? "COV: YES" : "COV: NO");
+
+    if (!_safeModeActive && reachedIMSCount === 0 && ui.footerWarn) {
+      const reasonTxt = Object.entries(failReasonCounts)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(", ");
+      ui.footerWarn.textContent = `No rays reached IMS (${reasonTxt || "unknown"}).`;
+    } else if (!_safeModeActive && tirCount > 0 && ui.footerWarn) {
+      ui.footerWarn.textContent = `TIR on ${tirCount} rays (check glass / curvature).`;
+    }
+
+    if (ui.status) {
+      ui.status.textContent =
+        `Selected: ${selectedIndex} • Traced ${traces.length} rays • field ${fieldAngle.toFixed(2)}° • vignetted ${vCount} • IMS hits ${reachedIMSCount} • ${covTxt}`;
+    }
+    if (ui.metaInfo) ui.metaInfo.textContent = `sensor ${sensorW.toFixed(2)}×${sensorH.toFixed(2)}mm`;
+    updateZemaxVerifyPanel({ sensorX: displaySensorX });
+
+    const eflTxt = efl == null ? "—" : `${efl.toFixed(2)}mm`;
+    const tTxt   = T == null ? "—" : `T${T.toFixed(2)}`;
+    const focusTxt = `Focus shift: ${focusCtx.focusShiftMm.toFixed(2)}mm (${focusMode}/${focusMechanism}, optical pose)`;
+    const flangeTxt = `Flange reference: 52.00mm from displayed sensor plane`;
+
+    const titleParts = [
+      lens?.name || "Lens",
+      `EFL ${eflTxt}`,
+      `BFL ${bfl == null ? "—" : bfl.toFixed(2) + "mm"}`,
+      tTxt,
+      fovTxt,
+      covTxt,
+      rearTxt,
+      lenTxt,
+      flangeTxt,
+      focusTxt,
+      `Paraxial source: ${paraxialSource}`,
+      `Rays valid: ${validCount}/${traces.length} • IMS: ${reachedIMSCount}/${traces.length} • TIR: ${tirCount}`,
+      `EP radius: ${Number.isFinite(Number(rayBundle?.epRadiusMm)) ? Number(rayBundle.epRadiusMm).toFixed(3) + "mm" : "—"} • Bundle radius: ${Number.isFinite(Number(rayBundle?.bundleRadiusMm)) ? Number(rayBundle.bundleRadiusMm).toFixed(3) + "mm" : "—"} (${String(rayBundle?.mode || "default")})`,
+    ];
+    _lastRayPaneRedraw = () => {
+      if (!canvas || !ctx) return;
+      resizeCanvasToCSS();
+      const r = canvas.getBoundingClientRect();
+      drawBackgroundCSS(r.width, r.height);
+      const world = makeWorldTransform();
+      drawAxes(world);
+      drawRuler(world, 0, -200);
+      const xMinPL = Math.min(frontVx - 20, plX - 20);
+      drawRulerFrom(world, plX, xMinPL, null, "", +12);
+      drawPLFlange(world, plX);
+      drawLens(world, displaySurfaces);
+      drawStop(world, displaySurfaces);
+      drawRays(world, traces, displaySensorX);
+      drawPLMountCutout(world, plX);
+      drawSensor(world, displaySensorX, halfH);
+      drawTitleOverlay(titleParts);
+    };
+    _lastRayPaneRedraw();
+    if (isImportedZemax) {
+      const zoomConfigs = Array.isArray(lens?.zoom?.configs) ? lens.zoom.configs : [];
+      const activeIdx = Number(lens?.zoom?.activeConfig);
+      const activeCfg = zoomConfigs.find((c) => Number(c?.index) === activeIdx) || null;
+      const activeCfgLabel = activeCfg
+        ? formatZoomConfigLabel(activeCfg, Math.max(0, zoomConfigs.findIndex((c) => c === activeCfg)), zoomConfigs.length)
+        : "—";
+      const imsSurfaceIndex = activeTraceSurfaces.findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+      const sig = [
+        String(activeIdx),
+        activeCfgLabel,
+        Number.isFinite(Number(efl)) ? Number(efl).toFixed(6) : "null",
+        Number.isFinite(Number(bfl)) ? Number(bfl).toFixed(6) : "null",
+        String(reachedIMSCount),
+        String(vCount),
+        String(tirCount),
+        JSON.stringify(failReasonCounts),
+      ].join("|");
+      if (sig !== _lastZemaxTraceDebugSignature) {
+        _lastZemaxTraceDebugSignature = sig;
+        console.groupCollapsed("[zemax-trace-debug] renderAll");
+        console.log("selectedConfig", {
+          index: activeIdx,
+          label: activeCfgLabel,
+          thicknessOverrides: activeCfg?.thicknessOverrides || {},
+        });
+        console.log("imsDetection", {
+          imsSurfaceIndex,
+          imsZmxSurf: imsSurfaceIndex >= 0 ? Number(activeTraceSurfaces?.[imsSurfaceIndex]?.zmx?.surf) : null,
+          imsVx: imsSurfaceIndex >= 0 ? Number(activeTraceSurfaces?.[imsSurfaceIndex]?.vx) : null,
+        });
+        console.log("rayStats", {
+          traced: traces.length,
+          reachedIMS: reachedIMSCount,
+          vignetted: vCount,
+          tir: tirCount,
+          failReasonCounts,
+          paraxialSource,
+          activeTracePose: activeTraceSurfaces === traceSurfaces ? "focused" : "nominal",
+        });
+        console.table(activeTraceSurfaces.map((s, i) => ({
+          row: i,
+          type: String(s?.type || ""),
+          zmxSurf: Number.isFinite(Number(s?.zmx?.surf)) ? Number(s.zmx.surf) : null,
+          vx: Number.isFinite(Number(s?.vx)) ? Number(s.vx) : null,
+          t: Number.isFinite(Number(s?.t)) ? Number(s.t) : null,
+          R: Number.isFinite(Number(s?.R)) ? Number(s.R) : null,
+          ap: Number.isFinite(Number(getSurfaceOpticalAp(s))) ? Number(getSurfaceOpticalAp(s)) : null,
+          glass: String(s?.glass || "AIR"),
+          nd: Number.isFinite(Number(s?.nd)) ? Number(s.nd) : null,
+          vd: Number.isFinite(Number(s?.vd)) ? Number(s.vd) : null,
+          stop: !!s?.stop,
+        })));
+        console.groupEnd();
+      }
+    }
+    const autoMetricMm = Number(focusCtx?.autoRun?.bestMetricRmsMm);
+    updateFocusShiftStatus(
+      focusCtx.autoRun?.ok
+        ? `auto metric ${Number.isFinite(autoMetricMm) ? autoMetricMm.toFixed(4) : "—"}mm`
+        : ""
+    );
+  }
+
+  // -------------------- view controls (RAYS canvas) --------------------
+  function redrawRayPaneOnly() {
+    if (_lastRayPaneRedraw) {
+      try {
+        _lastRayPaneRedraw();
+        return;
+      } catch (e) {
+        console.warn("Ray pane redraw failed, scheduling full render.", e);
+      }
+    }
+    scheduleRenderAll({ immediate: true });
+  }
+
+  function bindViewControls() {
+    if (!canvas) return;
+
+    canvas.addEventListener("mousedown", (e) => {
+      view.dragging = true;
+      view.lastX = e.clientX;
+      view.lastY = e.clientY;
+    });
+    window.addEventListener("mouseup", () => { view.dragging = false; });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!view.dragging) return;
+      const dx = e.clientX - view.lastX;
+      const dy = e.clientY - view.lastY;
+      view.lastX = e.clientX;
+      view.lastY = e.clientY;
+      view.panX += dx;
+      view.panY += dy;
+      redrawRayPaneOnly();
+    });
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const delta = Math.sign(e.deltaY);
+      const factor = delta > 0 ? 0.92 : 1.08;
+      view.zoom = Math.max(0.12, Math.min(12, view.zoom * factor));
+      redrawRayPaneOnly();
+    }, { passive: false });
+
+    canvas.addEventListener("dblclick", () => {
+      view.panX = 0; view.panY = 0; view.zoom = 1.0;
+      redrawRayPaneOnly();
+    });
+  }
+
+  // -------------------- preview viewport (PAN/ZOOM) --------------------
+  function getSensorRectBaseInPane() {
+    if (!previewCanvasEl) return { x: 0, y: 0, w: 0, h: 0 };
+
+    const r = previewCanvasEl.getBoundingClientRect();
+    const pad = 22;
+    const paneW = r.width, paneH = r.height;
+
+    const { w: sensorW, h: sensorH } = getSensorWH();
+    const asp = sensorW / sensorH;
+
+    let rw = paneW - pad * 2;
+    let rh = rw / asp;
+
+    if (rh > paneH - pad * 2) {
+      rh = paneH - pad * 2;
+      rw = rh * asp;
+    }
+
+    const x = (paneW - rw) * 0.5;
+    const y = (paneH - rh) * 0.5;
+    return { x, y, w: rw, h: rh };
+  }
+
+  function applyViewToSensorRect(sr0, v) {
+    const cx0 = sr0.x + sr0.w * 0.5;
+    const cy0 = sr0.y + sr0.h * 0.5;
+
+    const cx = cx0 + v.panX;
+    const cy = cy0 + v.panY;
+
+    const w = sr0.w * v.zoom;
+    const h = sr0.h * v.zoom;
+
+    return { x: cx - w * 0.5, y: cy - h * 0.5, w, h };
+  }
+
+  function drawPreviewViewport() {
+    if (!previewCanvasEl || !pctx) return;
+
+    resizePreviewCanvasToCSS();
+
+    const Wc = previewCanvasEl._cssW || previewCanvasEl.getBoundingClientRect().width;
+    const Hc = previewCanvasEl._cssH || previewCanvasEl.getBoundingClientRect().height;
+
+    pctx.clearRect(0, 0, Wc, Hc);
+
+    const hasImg = !!(preview.imgData && preview.imgCanvas.width > 0 && preview.imgCanvas.height > 0);
+    pctx.fillStyle = hasImg ? "#000" : "#fff";
+    pctx.fillRect(0, 0, Wc, Hc);
+
+    if (!preview.worldReady) {
+      pctx.fillStyle = "rgba(255,255,255,.65)";
+      pctx.font = "12px " + (getComputedStyle(document.documentElement).getPropertyValue("--mono") || "ui-monospace");
+      pctx.fillText("Preview: render first", 18, 24);
+      return;
+    }
+
+    const sr0 = getSensorRectBaseInPane();
+
+    const cx = sr0.x + sr0.w * 0.5;
+    const cy = sr0.y + sr0.h * 0.5;
+
+    pctx.save();
+    pctx.imageSmoothingEnabled = true;
+    pctx.imageSmoothingQuality = "high";
+
+    pctx.beginPath();
+    pctx.rect(sr0.x, sr0.y, sr0.w, sr0.h);
+    pctx.clip();
+
+    pctx.translate(cx + preview.view.panX, cy + preview.view.panY);
+    pctx.scale(preview.view.zoom, preview.view.zoom);
+
+    pctx.drawImage(
+      preview.worldCanvas,
+      -sr0.w * 0.5, -sr0.h * 0.5,
+      sr0.w, sr0.h
+    );
+
+    pctx.restore();
+
+    pctx.save();
+    pctx.lineWidth = 1;
+    pctx.strokeStyle = "rgba(255,255,255,.20)";
+    pctx.strokeRect(sr0.x, sr0.y, sr0.w, sr0.h);
+
+    const sr = applyViewToSensorRect(sr0, preview.view);
+    pctx.strokeStyle = "rgba(42,110,242,.55)";
+    pctx.strokeRect(sr.x, sr.y, sr.w, sr.h);
+
+    // --- diagonal ruler (toggle) ---
+    if (preview.rulerOn) drawPreviewDiagonalRuler(sr);
+    if (debugOutlineOverlayEnabled) drawPreviewDebugOverlay(sr);
+    pctx.restore();
+  }
+
+  function drawPreviewDebugOverlay(sr) {
+    if (!pctx || !sr) return;
+    const d = preview.debug || {};
+    const lines = [];
+    const focusTxt = (Number.isFinite(d.focusDeltaMm))
+      ? `Focus Δ: ${d.focusDeltaMm >= 0 ? "+" : ""}${d.focusDeltaMm.toFixed(3)}mm`
+      : "Focus Δ: —";
+    const rmsMmTxt = Number.isFinite(d.spotRmsMm) ? `${d.spotRmsMm.toFixed(4)}mm` : "—";
+    const rmsPxTxt = Number.isFinite(d.spotRmsPx) ? `${d.spotRmsPx.toFixed(2)}px` : "—";
+    const kPxTxt = Number.isFinite(d.kernelPx) ? `${d.kernelPx.toFixed(2)}px` : "—";
+    const mppTxt = Number.isFinite(d.mmPerPx) ? `${d.mmPerPx.toFixed(5)} mm/px` : "—";
+    const cTxt = Number.isFinite(d.centerRmsMm) ? `${d.centerRmsMm.toFixed(4)}mm / ${Number(d.centerRmsPx || 0).toFixed(2)}px` : "—";
+    const mTxt = Number.isFinite(d.midRmsMm) ? `${d.midRmsMm.toFixed(4)}mm / ${Number(d.midRmsPx || 0).toFixed(2)}px` : "—";
+    const kTxt = Number.isFinite(d.cornerRmsMm) ? `${d.cornerRmsMm.toFixed(4)}mm / ${Number(d.cornerRmsPx || 0).toFixed(2)}px` : "—";
+    const cHitTxt = Number.isFinite(d.centerHitRate) ? `${(d.centerHitRate * 100).toFixed(1)}%` : "—";
+    const mHitTxt = Number.isFinite(d.midHitRate) ? `${(d.midHitRate * 100).toFixed(1)}%` : "—";
+    const kHitTxt = Number.isFinite(d.cornerHitRate) ? `${(d.cornerHitRate * 100).toFixed(1)}%` : "—";
+    const curvTxt = Number.isFinite(d.fieldCurvatureDeltaMm)
+      ? `${d.fieldCurvatureDeltaMm >= 0 ? "+" : ""}${d.fieldCurvatureDeltaMm.toFixed(3)}mm`
+      : "—";
+    const icTxt = (preview?.usableCircle?.valid && Number.isFinite(Number(preview?.usableCircle?.diameterMm)))
+      ? `Ø${Number(preview.usableCircle.diameterMm).toFixed(2)}mm`
+      : "—";
+
+    lines.push(focusTxt);
+    lines.push(`Spot RMS: ${rmsMmTxt} • ${rmsPxTxt}`);
+    lines.push(`Kernel: ${kPxTxt} • Scale: ${mppTxt}`);
+    lines.push(`RMS C/M/K: ${cTxt} • ${mTxt} • ${kTxt}`);
+    lines.push(`Valid rays C/M/K: ${cHitTxt} • ${mHitTxt} • ${kHitTxt}`);
+    lines.push(`Best focus Δ(center→corner): ${curvTxt}`);
+    lines.push(`Image circle est: ${icTxt}`);
+    if (d.method) lines.push(`Method: ${String(d.method)}`);
+
+    pctx.save();
+    const mono = (getComputedStyle(document.documentElement).getPropertyValue("--mono") || "ui-monospace").trim();
+    pctx.font = `11px ${mono}`;
+    pctx.textAlign = "left";
+    pctx.textBaseline = "top";
+
+    let maxW = 0;
+    for (const ln of lines) maxW = Math.max(maxW, pctx.measureText(ln).width);
+
+    const pad = 8;
+    const lineH = 14;
+    const boxW = Math.ceil(maxW + pad * 2);
+    const boxH = Math.ceil(lines.length * lineH + pad * 2);
+    const x = Math.max(10, sr.x + 10);
+    const y = Math.max(42, sr.y + 10);
+
+    pctx.fillStyle = "rgba(0,0,0,.55)";
+    pctx.strokeStyle = "rgba(255,255,255,.16)";
+    pctx.lineWidth = 1;
+    pctx.beginPath();
+    if (typeof pctx.roundRect === "function") pctx.roundRect(x, y, boxW, boxH, 8);
+    else pctx.rect(x, y, boxW, boxH);
+    pctx.fill();
+    pctx.stroke();
+
+    pctx.fillStyle = "rgba(255,255,255,.90)";
+    for (let i = 0; i < lines.length; i++) {
+      pctx.fillText(lines[i], x + pad, y + pad + i * lineH);
+    }
+    pctx.restore();
+  }
+
+  // ==========================
+  // PREVIEW DIAGONAL RULER (clean, like a physical ruler)
+  // - Diagonal from corner to corner through center.
+  // - 0 at center. Labels show radius (r) and diameter (Ø=2r).
+  // - Scales with sensor W/H.
+  // ==========================
+  function drawPreviewDiagonalRuler(sr){
+    if (!pctx || !sr) return;
+
+    const { w: sensorW, h: sensorH } = getSensorWH();
+    const diagMm = Math.hypot(sensorW, sensorH);
+    if (!(diagMm > 0)) return;
+
+    const xTL = sr.x, yTL = sr.y;
+    const xBR = sr.x + sr.w, yBR = sr.y + sr.h;
+
+    const dx = xBR - xTL;
+    const dy = yBR - yTL;
+    const diagPx = Math.hypot(dx, dy);
+    if (diagPx < 10) return;
+
+    const ux = dx / diagPx;
+    const uy = dy / diagPx;
+    const nx = -uy;
+    const ny = ux;
+
+    const cx = xTL + dx * 0.5;
+    const cy = yTL + dy * 0.5;
+
+    const halfDiagMm = diagMm * 0.5;
+    const halfDiagPx = diagPx * 0.5;
+    const pxPerMm = halfDiagPx / halfDiagMm;
+
+    // tick policy (physical ruler style)
+    // - every 1mm: small tick + label
+    // - every 5mm: medium tick
+    // - every 10mm (1cm): big tick + bigger label
+    const stepMm = 1;
+    const majorMm = 10;  // 1cm
+    const midMm   = 5;   // 5mm
+    const labelEveryMm = 1; // label each mm
+
+    const barHalfW = 7.0;
+    const tick1mm = 4;
+    const tick5mm = 8;
+    const tick10mm = 14;
+
+    const mono = (getComputedStyle(document.documentElement).getPropertyValue("--mono") || "ui-monospace").trim();
+    const minorFont = 9;
+    const majorFont = 13;
+    const labelAngle = Math.atan2(uy, ux) + Math.PI * 0.5;
+
+    // Compact dual-scale label: radius(mm)|diameter(mm)
+    function labelText(mm){
+      const rmm = Math.round(mm);
+      const dmm = Math.round(mm * 2);
+      return `${rmm}|${dmm}`;
+    }
+
+    const P = (tPx) => ({ x: cx + ux * tPx, y: cy + uy * tPx });
+
+    pctx.save();
+    pctx.lineCap = "round";
+    pctx.lineJoin = "round";
+
+    // main dark bar (like a ruler)
+    pctx.strokeStyle = "rgba(0,0,0,.55)";
+    pctx.lineWidth = barHalfW * 2;
+    pctx.beginPath();
+    pctx.moveTo(xTL, yTL);
+    pctx.lineTo(xBR, yBR);
+    pctx.stroke();
+
+    // subtle bright edge
+    pctx.strokeStyle = "rgba(255,255,255,.18)";
+    pctx.lineWidth = 2;
+    pctx.beginPath();
+    pctx.moveTo(xTL, yTL);
+    pctx.lineTo(xBR, yBR);
+    pctx.stroke();
+
+    // ticks + labels
+    pctx.font = `${minorFont}px ${mono}`;
+    pctx.fillStyle = "rgba(255,255,255,.92)";
+    pctx.strokeStyle = "rgba(255,255,255,.85)";
+    pctx.lineWidth = 1.5;
+    pctx.textAlign = "left";
+    pctx.textBaseline = "middle";
+
+    // center zero tick
+    {
+      const p0 = P(0);
+      pctx.beginPath();
+      pctx.moveTo(p0.x - nx * 14, p0.y - ny * 14);
+      pctx.lineTo(p0.x + nx * 14, p0.y + ny * 14);
+      pctx.stroke();
+
+      // legend: radius|diameter (both in mm)
+      const off = barHalfW + tick10mm + 14;
+      pctx.save();
+      pctx.translate(p0.x + nx * off, p0.y + ny * off);
+      pctx.rotate(labelAngle);
+      pctx.textAlign = "center";
+      pctx.textBaseline = "middle";
+      pctx.font = `700 9px ${mono}`;
+      pctx.lineWidth = 2.5;
+      pctx.strokeStyle = "rgba(0,0,0,.70)";
+      pctx.strokeText("r|Ømm", 0, 0);
+      pctx.fillStyle = "rgba(255,255,255,.95)";
+      pctx.fillText("r|Ømm", 0, 0);
+      pctx.restore();
+    }
+
+    const maxMm = Math.floor(halfDiagMm + 1e-6);
+    for (let mm = 0; mm <= maxMm; mm += stepMm){
+      const isMajor = (mm % majorMm) === 0;
+      const isMid = !isMajor && (mm % midMm) === 0;
+      const len = isMajor ? tick10mm : (isMid ? tick5mm : tick1mm);
+      const t = mm * pxPerMm;
+
+      // positive side
+      {
+        const p = P(t);
+        pctx.beginPath();
+        pctx.moveTo(p.x - nx * len, p.y - ny * len);
+        pctx.lineTo(p.x + nx * len, p.y + ny * len);
+        pctx.stroke();
+
+        if ((mm % labelEveryMm) === 0 && mm > 0){
+          const txt = labelText(mm);
+          const off = barHalfW + len + (isMajor ? 14 : 9);
+          const tx = p.x + nx * off;
+          const ty = p.y + ny * off;
+
+          pctx.save();
+          pctx.translate(tx, ty);
+          pctx.rotate(labelAngle);
+          pctx.textAlign = "center";
+          pctx.textBaseline = "middle";
+          pctx.font = `${isMajor ? "700 " : ""}${isMajor ? majorFont : minorFont}px ${mono}`;
+          pctx.lineWidth = isMajor ? 3.5 : 2.5;
+          pctx.strokeStyle = "rgba(0,0,0,.72)";
+          pctx.strokeText(txt, 0, 0);
+          pctx.fillStyle = "rgba(255,255,255,.92)";
+          pctx.fillText(txt, 0, 0);
+          pctx.restore();
+        }
+      }
+
+      // negative side (mirror ticks, no duplicate labels)
+      if (mm === 0) continue;
+      {
+        const p = P(-t);
+        pctx.beginPath();
+        pctx.moveTo(p.x - nx * len, p.y - ny * len);
+        pctx.lineTo(p.x + nx * len, p.y + ny * len);
+        pctx.stroke();
+      }
+    }
+
+    if (preview.usableCircle?.valid) {
+      const cutMm = clamp(preview.usableCircle.radiusMm, 0, maxMm);
+      const tCut = cutMm * pxPerMm;
+      const pPos = P(tCut);
+      const pNeg = P(-tCut);
+
+      pctx.save();
+      pctx.strokeStyle = "rgba(255,194,46,.98)";
+      pctx.fillStyle = "rgba(255,194,46,.98)";
+      pctx.lineWidth = 2.8;
+
+      [pPos, pNeg].forEach((p) => {
+        pctx.beginPath();
+        pctx.moveTo(p.x - nx * 16, p.y - ny * 16);
+        pctx.lineTo(p.x + nx * 16, p.y + ny * 16);
+        pctx.stroke();
+      });
+
+      // visual circle for quick readout of the usable image circle edge
+      pctx.setLineDash([8, 6]);
+      pctx.lineWidth = 1.8;
+      pctx.strokeStyle = "rgba(255,194,46,.85)";
+      pctx.beginPath();
+      pctx.arc(cx, cy, Math.max(0, tCut), 0, Math.PI * 2);
+      pctx.stroke();
+      pctx.setLineDash([]);
+
+      const txt = `usable Ø${preview.usableCircle.diameterMm.toFixed(1)}mm`;
+      const off = barHalfW + tick10mm + 22;
+      const tx = pPos.x + nx * off;
+      const ty = pPos.y + ny * off;
+
+      pctx.font = `700 11px ${mono}`;
+      const padX = 8, padY = 5;
+      const tw = pctx.measureText(txt).width;
+      const bw = tw + padX * 2;
+      const bh = 11 + padY * 2;
+
+      pctx.fillStyle = "rgba(17,17,17,.82)";
+      pctx.strokeStyle = "rgba(255,194,46,.35)";
+      pctx.lineWidth = 1;
+      pctx.beginPath();
+      if (typeof pctx.roundRect === "function") pctx.roundRect(tx, ty - bh * 0.5, bw, bh, 8);
+      else pctx.rect(tx, ty - bh * 0.5, bw, bh);
+      pctx.fill();
+      pctx.stroke();
+
+      pctx.fillStyle = "rgba(255,220,120,.98)";
+      pctx.textAlign = "left";
+      pctx.textBaseline = "middle";
+      pctx.fillText(txt, tx + padX, ty);
+      pctx.restore();
+    }
+
+    pctx.restore();
+  }
+
+  function bindPreviewViewControls() {
+    if (!previewCanvasEl) return;
+    if (previewCanvasEl.dataset._pvBound === "1") return;
+    previewCanvasEl.dataset._pvBound = "1";
+
+    previewCanvasEl.style.touchAction = "none";
+
+    previewCanvasEl.addEventListener("pointerdown", (e) => {
+      preview.view.dragging = true;
+      preview.view.lastX = e.clientX;
+      preview.view.lastY = e.clientY;
+      previewCanvasEl.setPointerCapture(e.pointerId);
+    });
+
+    const up = (e) => {
+      preview.view.dragging = false;
+      try { previewCanvasEl.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    previewCanvasEl.addEventListener("pointerup", up);
+    previewCanvasEl.addEventListener("pointercancel", up);
+
+    previewCanvasEl.addEventListener("pointermove", (e) => {
+      if (!preview.view.dragging) return;
+      const dx = e.clientX - preview.view.lastX;
+      const dy = e.clientY - preview.view.lastY;
+      preview.view.lastX = e.clientX;
+      preview.view.lastY = e.clientY;
+      preview.view.panX += dx;
+      preview.view.panY += dy;
+      drawPreviewViewport();
+    });
+
+    previewCanvasEl.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const delta = Math.sign(e.deltaY);
+      const factor = delta > 0 ? 0.92 : 1.08;
+      preview.view.zoom = Math.max(0.12, Math.min(20, preview.view.zoom * factor));
+      drawPreviewViewport();
+    }, { passive: false });
+
+    previewCanvasEl.addEventListener("dblclick", () => {
+      preview.view.panX = 0;
+      preview.view.panY = 0;
+      preview.view.zoom = 1.0;
+      drawPreviewViewport();
+    });
+  }
+
+  // -------------------- edit helpers --------------------
+  function isProtectedIndex(i) {
+    const t = String(lens.surfaces[i]?.type || "").toUpperCase();
+    return t === "OBJ" || t === "IMS";
+  }
+
+  function getIMSIndex() {
+    return lens.surfaces.findIndex((s) => String(s.type).toUpperCase() === "IMS");
+  }
+
+  function safeInsertAtAfterSelected() {
+    clampSelected();
+    let insertAt = selectedIndex + 1;
+    const imsIdx = getIMSIndex();
+    if (imsIdx >= 0) insertAt = Math.min(insertAt, imsIdx);
+    insertAt = Math.max(1, insertAt);
+    return insertAt;
+  }
+
+  function insertSurface(atIndex, surfaceObj) {
+    lens.surfaces.splice(atIndex, 0, surfaceObj);
+    selectedIndex = atIndex;
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+  }
+  function insertAfterSelected(surfaceObj) {
+    const at = safeInsertAtAfterSelected();
+    insertSurface(at, surfaceObj);
+  }
+
+  // -------------------- basic editing actions --------------------
+  function addSurface() {
+    insertAfterSelected({ type: "", R: 0.0, t: 4.0, ap: 18.0, glass: "AIR", stop: false });
+  }
+
+  function duplicateSelected() {
+    clampSelected();
+    if (isProtectedIndex(selectedIndex)) return toast("Cannot duplicate OBJ/IMS");
+    const s = clone(lens.surfaces[selectedIndex]);
+    s.type = "";
+    const at = safeInsertAtAfterSelected();
+    insertSurface(at, s);
+  }
+
+  function moveSelected(delta) {
+    clampSelected();
+    const i = selectedIndex;
+    const j = i + delta;
+    if (j < 0 || j >= lens.surfaces.length) return;
+    if (isProtectedIndex(i) || isProtectedIndex(j)) return toast("Cannot move OBJ/IMS");
+    const a = lens.surfaces[i];
+    lens.surfaces[i] = lens.surfaces[j];
+    lens.surfaces[j] = a;
+    selectedIndex = j;
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+  }
+
+  function removeSelected() {
+    clampSelected();
+    if (isProtectedIndex(selectedIndex)) return toast("Cannot remove OBJ/IMS");
+    lens.surfaces.splice(selectedIndex, 1);
+    selectedIndex = Math.max(0, selectedIndex - 1);
+
+    // repair: ensure single STOP + IMS last + OBJ first
+    lens = sanitizeLens(lens);
+    clampAllApertures(lens.surfaces);
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+  }
+
+  function newClearLens() {
+    loadLens({
+      name: "Blank",
+      surfaces: [
+        { type: "OBJ", R: 0.0, t: 0.0, ap: 60.0, glass: "AIR", stop: false },
+        { type: "STOP", R: 0.0, t: 20.0, ap: 8.0, glass: "AIR", stop: true },
+        { type: "IMS", R: 0.0, t: 0.0, ap: 12.77, glass: "AIR", stop: false },
+      ],
+    });
+    toast("New / Clear");
+  }
+
+  // -------------------- +ELEMENT MODAL --------------------
+  const EL_UI_IDS = {
+    modal: "#elementModal",
+    type: "#elType",
+    mode: "#elMode",
+    f: "#elF",
+    ap: "#elAp",
+    ct: "#elCt",
+    gap: "#elGap",
+    rear: "#elAir",
+    form: "#elForm",
+    g1: "#elGlass1",
+    g2: "#elGlass2",
+    note: "#elGlassNote",
+    cancel: "#elClose",
+    insert: "#elAdd",
+  };
+
+  const elUI = {
+    modal: $(EL_UI_IDS.modal),
+    type: $(EL_UI_IDS.type),
+    mode: $(EL_UI_IDS.mode),
+    f: $(EL_UI_IDS.f),
+    ap: $(EL_UI_IDS.ap),
+    ct: $(EL_UI_IDS.ct),
+    gap: $(EL_UI_IDS.gap),
+    rear: $(EL_UI_IDS.rear),
+    form: $(EL_UI_IDS.form),
+    g1: $(EL_UI_IDS.g1),
+    g2: $(EL_UI_IDS.g2),
+    note: $(EL_UI_IDS.note),
+    cancel: $(EL_UI_IDS.cancel),
+    insert: $(EL_UI_IDS.insert),
+    front: null,
+  };
+
+  function modalExists() {
+    return !!(elUI.modal && elUI.insert && elUI.cancel && elUI.type && elUI.mode && elUI.f && elUI.ap && elUI.ct);
+  }
+
+  function ensureFrontAirFieldInjected() {
+    if (!modalExists()) return;
+    if (elUI.front) return;
+
+    const grid = elUI.modal.querySelector(".modalGrid");
+    if (!grid) return;
+
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.innerHTML = `
+      <label>Front air (mm)</label>
+      <input id="elFrontAir" class="cellInput" type="number" step="0.01" value="0" />
+    `;
+
+    const rearField = elUI.rear?.closest(".field");
+    if (rearField && rearField.parentElement === grid) grid.insertBefore(wrap, rearField);
+    else grid.appendChild(wrap);
+
+    elUI.front = wrap.querySelector("#elFrontAir");
+  }
+
+  function updateElementModalNote() {
+    if (!elUI.note) return;
+    const t = String(elUI.type?.value || "");
+    const frontAir = Number(elUI.front?.value || 0);
+    const gap = Number(elUI.gap?.value || 0);
+
+    let msg = "";
+    msg += `Front air: ${frontAir.toFixed(2)}mm (inserted as AIR surface before element)\n`;
+    if (t === "achromat_cemented") msg += `Cemented achromat: 3 surfaces (no internal air gap)\n`;
+    if (t === "achromat") msg += `Air-spaced achromat: 4 surfaces, internal gap = ${gap.toFixed(2)}mm\n`;
+    msg += `Tip: displayed T/F# uses entrance pupil (not only physical stop radius)\n`;
+    elUI.note.value = msg;
+  }
+
+  function openElementModal() {
+    if (!modalExists()) return false;
+    ensureFrontAirFieldInjected();
+
+    if (elUI.g1 && elUI.g2 && !elUI.g1.dataset._filled) {
+      const keys = Object.keys(GLASS_DB);
+      elUI.g1.innerHTML = keys.map((k) => `<option value="${k}">${k}</option>`).join("");
+      elUI.g2.innerHTML = keys.map((k) => `<option value="${k}">${k}</option>`).join("");
+      elUI.g1.value = "BK7";
+      elUI.g2.value = "F2";
+      elUI.g1.dataset._filled = "1";
+    }
+
+    if (elUI.f) elUI.f.value = Number(elUI.f.value || 50);
+    if (elUI.ap) elUI.ap.value = Number(elUI.ap.value || 18);
+    if (elUI.ct) elUI.ct.value = Number(elUI.ct.value || 4);
+    if (elUI.gap) elUI.gap.value = Number(elUI.gap.value || 0.2);
+    if (elUI.rear) elUI.rear.value = Number(elUI.rear.value || 4);
+    if (elUI.front) elUI.front.value = Number(elUI.front.value || 0);
+
+    [elUI.type, elUI.gap, elUI.front].forEach((x) => {
+      if (!x || x.dataset._noteBound) return;
+      x.addEventListener("input", updateElementModalNote);
+      x.addEventListener("change", updateElementModalNote);
+      x.dataset._noteBound = "1";
+    });
+    updateElementModalNote();
+
+    elUI.modal.classList.remove("hidden");
+    elUI.modal.style.pointerEvents = "auto";
+    elUI.modal.style.opacity = "1";
+    return true;
+  }
+
+  function closeElementModal() {
+    if (!elUI.modal) return;
+    elUI.modal.classList.add("hidden");
+    elUI.modal.style.pointerEvents = "";
+    elUI.modal.style.opacity = "";
+  }
+
+  function radiusForSymmetricSinglet(f, n) {
+    return 2 * Math.max(0.01, (n - 1)) * Math.max(1e-3, f);
+  }
+
+  function buildSingletAuto({ f, ap, ct, rearAir, form, glass1 }) {
+    const n = GLASS_DB[glass1]?.nd ?? 1.5168;
+    const Rbase = radiusForSymmetricSinglet(f, n);
+
+    let R1 = +Rbase;
+    let R2 = -Rbase;
+
+    if (form === "weakmeniscus") { R1 = +Rbase * 1.25; R2 = -Rbase * 1.05; }
+    if (form === "plano") { R1 = 0.0; R2 = -Rbase * 1.6; }
+
+    const chunk = [
+      { type: "", R: R1, t: ct, ap, glass: glass1, stop: false },
+      { type: "", R: R2, t: rearAir, ap, glass: "AIR", stop: false },
+    ];
+    clampAllApertures(chunk);
+    return chunk;
+  }
+
+  function buildAchromatCementedAuto({ f, ap, ct, rearAir, form, glass1, glass2 }) {
+    const n1 = GLASS_DB[glass1]?.nd ?? 1.5168;
+    const n2 = GLASS_DB[glass2]?.nd ?? 1.62;
+
+    const f1 = f * 0.85;
+    const f2 = -f * 2.6;
+
+    const R1b = radiusForSymmetricSinglet(f1, n1);
+    const R3b = radiusForSymmetricSinglet(Math.abs(f2), n2);
+
+    let R1 = +R1b;
+    let R2 = -R1b * 0.85;
+    let R3 = +R3b * 0.95;
+
+    if (form === "weakmeniscus") { R1 *= 0.9; R2 *= 1.05; R3 *= 1.1; }
+    if (form === "plano") { R1 = 0.0; R2 = -R1b * 1.35; R3 = +R3b * 1.05; }
+
+    const chunk = [
+      { type: "", R: R1, t: ct, ap, glass: glass1, stop: false },
+      { type: "", R: R2, t: ct, ap, glass: glass2, stop: false },
+      { type: "", R: R3, t: rearAir, ap, glass: "AIR", stop: false },
+    ];
+    clampAllApertures(chunk);
+    return chunk;
+  }
+
+  function buildAchromatAirSpacedAuto({ f, ap, ct, gap, rearAir, form, glass1, glass2 }) {
+    const f1 = f * 0.75;
+    const f2 = -f * 2.2;
+
+    const n1 = GLASS_DB[glass1]?.nd ?? 1.5168;
+    const n2 = GLASS_DB[glass2]?.nd ?? 1.62;
+
+    const R1b = radiusForSymmetricSinglet(f1, n1);
+    const R2b = radiusForSymmetricSinglet(Math.abs(f2), n2);
+
+    let R1 = +R1b;
+    let R2 = -R1b * 0.9;
+    let R3 = -R2b * 0.9;
+    let R4 = +R2b;
+
+    if (form === "weakmeniscus") { R1 *= 0.95; R2 *= 1.05; R3 *= 1.05; R4 *= 0.95; }
+    if (form === "plano") { R1 = 0.0; R2 = -R1b * 1.4; R3 = -R2b * 0.9; R4 = +R2b * 1.1; }
+
+    const g = Math.max(0.0, Number(gap || 0));
+
+    const chunk = [
+      { type: "", R: R1, t: ct, ap, glass: glass1, stop: false },
+      { type: "", R: R2, t: g, ap, glass: "AIR", stop: false },
+      { type: "", R: R3, t: ct, ap, glass: glass2, stop: false },
+      { type: "", R: R4, t: rearAir, ap, glass: "AIR", stop: false },
+    ];
+    clampAllApertures(chunk);
+    return chunk;
+  }
+
+  function readElementModalValues() {
+    const f = Number(elUI.f?.value ?? 50);
+    const ap = Number(elUI.ap?.value ?? 18);
+    const ct = Number(elUI.ct?.value ?? 4);
+    const gap = Number(elUI.gap?.value ?? 0);
+    const rearAir = Number(elUI.rear?.value ?? 4);
+    const frontAir = Number(elUI.front?.value ?? 0);
+
+    const type = String(elUI.type?.value ?? "achromat").toLowerCase();
+    const mode = String(elUI.mode?.value ?? "auto").toLowerCase();
+    let form = String(elUI.form?.value ?? "symmetric").toLowerCase();
+    if (form.includes("plano")) form = "plano";
+    else if (form.includes("meniscus")) form = "weakmeniscus";
+    else if (form.includes("biconvex")) form = "symmetric";
+
+    const glass1 = String(elUI.g1?.value ?? "BK7");
+    const glass2 = String(elUI.g2?.value ?? "F2");
+
+    return { f, ap, ct, gap, rearAir, frontAir, type, mode, form, glass1, glass2 };
+  }
+
+  function insertElementFromModal() {
+    const v = readElementModalValues();
+
+    const f = v.f;
+    const ap = Math.max(0.1, v.ap);
+    const ct = Math.max(0.05, v.ct);
+    const gap = Math.max(0.0, v.gap);
+    const rearAir = Math.max(0.0, v.rearAir);
+    const frontAir = Math.max(0.0, v.frontAir);
+
+    function maybeInsertFrontAir(insertAt) {
+      if (frontAir <= 0) return insertAt;
+      lens.surfaces.splice(insertAt, 0, { type: "", R: 0.0, t: frontAir, ap: ap, glass: "AIR", stop: false });
+      return insertAt + 1;
+    }
+
+    if (v.type === "stop") {
+      let insertAt = safeInsertAtAfterSelected();
+      insertAt = maybeInsertFrontAir(insertAt);
+      lens.surfaces.splice(insertAt, 0, { type: "STOP", R: 0.0, t: rearAir, ap, glass: "AIR", stop: true });
+      selectedIndex = insertAt;
+      enforceSingleStop(insertAt);
+      buildTable(); applySensorToIMS(); renderAll(); scheduleRenderPreview();
+      return;
+    }
+
+    if (v.type === "airgap") {
+      let insertAt = safeInsertAtAfterSelected();
+      insertAt = maybeInsertFrontAir(insertAt);
+      lens.surfaces.splice(insertAt, 0, { type: "", R: 0.0, t: rearAir, ap, glass: "AIR", stop: false });
+      selectedIndex = insertAt;
+      buildTable(); applySensorToIMS(); renderAll(); scheduleRenderPreview();
+      return;
+    }
+
+    if (v.mode !== "auto") {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Custom mode not implemented yet (auto only).";
+      return;
+    }
+
+    let chunk = null;
+
+    if (v.type === "achromat_cemented") {
+      chunk = buildAchromatCementedAuto({ f, ap, ct, rearAir, form: v.form, glass1: v.glass1, glass2: v.glass2 });
+    } else if (v.type.includes("achromat")) {
+      chunk = buildAchromatAirSpacedAuto({ f, ap, ct, gap, rearAir, form: v.form, glass1: v.glass1, glass2: v.glass2 });
+    } else {
+      chunk = buildSingletAuto({ f, ap, ct, rearAir, form: v.form, glass1: v.glass1 });
+    }
+
+    if (!chunk || !Array.isArray(chunk) || chunk.length < 2) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Element insert failed (check modal values).";
+      return;
+    }
+
+    let insertAt = safeInsertAtAfterSelected();
+    insertAt = maybeInsertFrontAir(insertAt);
+
+    lens.surfaces.splice(insertAt, 0, ...chunk);
+    selectedIndex = insertAt;
+
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+  }
+
+  if (modalExists()) {
+    elUI.cancel.addEventListener("click", (e) => { e.preventDefault(); closeElementModal(); });
+    elUI.insert.addEventListener("click", (e) => {
+      e.preventDefault();
+      insertElementFromModal();
+      closeElementModal();
+    });
+
+    elUI.modal.addEventListener("mousedown", (e) => { if (e.target === elUI.modal) closeElementModal(); });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && elUI.modal && !elUI.modal.classList.contains("hidden")) closeElementModal();
+    });
+  }
+
+  // -------------------- preview rendering --------------------
+  function setPreviewProgress(p01, txt=""){
+    const host = document.getElementById("previewProgress");
+    const bar  = document.getElementById("previewProgressBar");
+    const lab  = document.getElementById("previewProgressText");
+    if (!host || !bar || !lab) return;
+    host.style.display = "block";
+    const p = Math.max(0, Math.min(1, p01));
+    bar.style.transform = `scaleX(${p})`;
+    lab.textContent = txt || `${Math.round(p*100)}%`;
+  }
+  function hidePreviewProgress(){
+    const host = document.getElementById("previewProgress");
+    if (host) host.style.display = "none";
+  }
+
+  function clamp(x,a,b){ return x < a ? a : (x > b ? b : x); }
+  function srgbToLin(u){
+    u /= 255;
+    return (u <= 0.04045) ? (u/12.92) : Math.pow((u+0.055)/1.055, 2.4);
+  }
+  function linToSrgb(u){
+    u = Math.max(0, Math.min(1, u));
+    const v = (u <= 0.0031308) ? (12.92*u) : (1.055*Math.pow(u, 1/2.4) - 0.055);
+    return Math.round(v*255);
+  }
+
+  function setNoUsableCircle(source = "") {
+    preview.usableCircle = {
+      valid: false,
+      radiusMm: 0,
+      diameterMm: 0,
+      thresholdRel: USABLE_CIRCLE_THRESHOLD_REL,
+      relAtCutoff: 0,
+      source,
+    };
+    updateUsableCircleBadges();
+  }
+
+  function setUsableCircleFromRadialCurve(radialMm, gainCurve, source = "curve") {
+    const n = Math.min(radialMm?.length || 0, gainCurve?.length || 0);
+    if (n < 8) { setNoUsableCircle(source); return; }
+
+    const r = [];
+    const g = [];
+    for (let i = 0; i < n; i++) {
+      const ri = Number(radialMm[i]);
+      const gi = Number(gainCurve[i]);
+      if (!Number.isFinite(ri) || !Number.isFinite(gi)) continue;
+      if (ri < 0) continue;
+      r.push(ri);
+      g.push(Math.max(0, gi));
+    }
+    if (r.length < 8) { setNoUsableCircle(source); return; }
+
+    const m = r.length;
+    const smoothed = new Float64Array(m);
+    const halfWin = 3;
+    for (let i = 0; i < m; i++) {
+      let sum = 0;
+      let cnt = 0;
+      for (let k = -halfWin; k <= halfWin; k++) {
+        const j = i + k;
+        if (j < 0 || j >= m) continue;
+        sum += g[j];
+        cnt++;
+      }
+      smoothed[i] = cnt ? (sum / cnt) : g[i];
+    }
+
+    // Find a stable reference peak near the center region, then search outward.
+    // This avoids tiny false IC when the exact chart center is dark.
+    const peakSearchEnd = Math.max(3, Math.min(m - 1, Math.floor(m * 0.40)));
+    let refIdx = 0;
+    let ref = smoothed[0];
+    for (let i = 1; i <= peakSearchEnd; i++) {
+      if (smoothed[i] > ref) {
+        ref = smoothed[i];
+        refIdx = i;
+      }
+    }
+    if (!(ref > 1e-9)) { setNoUsableCircle(source); return; }
+
+    const rel = new Float64Array(m);
+    for (let i = 0; i < m; i++) rel[i] = smoothed[i] / ref;
+    rel[refIdx] = 1;
+    for (let i = refIdx + 1; i < m; i++) {
+      // enforce non-increasing falloff away from the reference peak
+      rel[i] = Math.min(rel[i], rel[i - 1]);
+    }
+
+    const thr = USABLE_CIRCLE_THRESHOLD_REL;
+    let cutR = r[m - 1];
+    let relAtCut = rel[m - 1];
+
+    for (let i = Math.max(refIdx + 1, 1); i < m; i++) {
+      if (rel[i] > thr) continue;
+      const g0 = rel[i - 1], g1 = rel[i];
+      const r0 = r[i - 1], r1 = r[i];
+      const denom = (g1 - g0);
+      const t = Math.abs(denom) > 1e-9 ? clamp((thr - g0) / denom, 0, 1) : 0;
+      cutR = r0 + (r1 - r0) * t;
+      relAtCut = g0 + (g1 - g0) * t;
+      break;
+    }
+
+    if (!(cutR > 0.1)) { setNoUsableCircle(source); return; }
+    preview.usableCircle = {
+      valid: true,
+      radiusMm: cutR,
+      diameterMm: cutR * 2,
+      thresholdRel: thr,
+      relAtCutoff: relAtCut,
+      source,
+    };
+    updateUsableCircleBadges();
+  }
+
+  function setUsableCircleFromLUT(transCurve, naturalCurve, rMaxSensorMm, overscan = OV_DEFAULT) {
+    const n = Math.min(transCurve?.length || 0, naturalCurve?.length || 0);
+    if (n < 8 || !(rMaxSensorMm > 0)) { setNoUsableCircle("LUT"); return; }
+
+    const rMm = new Float64Array(n);
+    const gain = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = n > 1 ? (i / (n - 1)) : 0;
+      const rSensorMm = a * rMaxSensorMm;
+      // world render can span overscan*sensor dimensions; ruler mm is in sensor-mm space
+      rMm[i] = rSensorMm / Math.max(1e-6, overscan);
+      gain[i] = Math.max(0, Number(transCurve[i]) * Number(naturalCurve[i]));
+    }
+    setUsableCircleFromRadialCurve(rMm, gain, "LUT");
+  }
+
+  const PREVIEW_AUTOFOCUS_DEFAULT_MODE = "chart-center";
+  const PREVIEW_AUTOFOCUS_MODES = new Set([
+    "chart-center",
+    "chart-mid",
+    "chart-edge",
+    "chart-grid",
+    "scene-center",
+  ]);
+  const PREVIEW_ORIENTATION_SET = new Set(["upright", "sensor-real"]);
+
+  const PREVIEW_FOCUS_PUPIL_POINTS = [
+    { y: 0.00, z: 0.00 },
+    { y: 0.65, z: 0.00 },
+    { y: -0.65, z: 0.00 },
+    { y: 0.00, z: 0.65 },
+    { y: 0.00, z: -0.65 },
+    { y: 0.46, z: 0.46 },
+    { y: -0.46, z: 0.46 },
+    { y: 0.46, z: -0.46 },
+    { y: -0.46, z: -0.46 },
+    { y: 0.90, z: 0.00 },
+    { y: -0.90, z: 0.00 },
+    { y: 0.00, z: 0.90 },
+    { y: 0.00, z: -0.90 },
+  ];
+
+  function getPreviewAutofocusMode() {
+    const raw = String(
+      ui.autoFocusMode?.value ??
+      lens?.import_options?.autofocus_mode ??
+      preview.focusAssist.mode ??
+      PREVIEW_AUTOFOCUS_DEFAULT_MODE
+    ).trim().toLowerCase();
+    return PREVIEW_AUTOFOCUS_MODES.has(raw) ? raw : PREVIEW_AUTOFOCUS_DEFAULT_MODE;
+  }
+
+  function getPreviewOrientation() {
+    const raw = String(ui.previewOrientation?.value || "upright").trim().toLowerCase();
+    return PREVIEW_ORIENTATION_SET.has(raw) ? raw : "upright";
+  }
+
+  function getPreviewAutofocusSensorSamples(sensorHv, autofocusMode) {
+    const h = Math.max(0, Number(sensorHv) || 0);
+    if (autofocusMode === "chart-mid" && h > 1e-9) {
+      return [{ sy: h * 0.55, sz: 0, w: 1.00, label: "mid" }];
+    }
+    if (autofocusMode === "chart-edge" && h > 1e-9) {
+      return [{ sy: h * 0.80, sz: h * 0.80, w: 1.00, label: "edge" }];
+    }
+    if (autofocusMode === "chart-grid" && h > 1e-9) {
+      return [
+        { sy: 0,         sz: 0,         w: 1.00, label: "center" },
+        { sy: -h * 0.45, sz: 0,         w: 0.70, label: "left" },
+        { sy: h * 0.45,  sz: 0,         w: 0.70, label: "right" },
+        { sy: 0,         sz: -h * 0.45, w: 0.70, label: "up" },
+        { sy: 0,         sz: h * 0.45,  w: 0.70, label: "down" },
+        { sy: h * 0.62,  sz: h * 0.62,  w: 0.55, label: "corner+" },
+        { sy: -h * 0.62, sz: h * 0.62,  w: 0.55, label: "corner-" },
+      ];
+    }
+    // chart-center + scene-center default to center-only focus target.
+    return [{ sy: 0, sz: 0, w: 1.00, label: "center" }];
+  }
+
+  function evaluatePreviewSpotAtSensorPoint({
+    surfaces,
+    wavePreset,
+    lensShift,
+    sensorX,
+    objDist,
+    sy = 0,
+    sz = 0,
+  }) {
+    computeVertices(surfaces, lensShift, sensorX);
+    const sensorPlaneX = getSensorPlaneX(surfaces, sensorX);
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    const stopSurf = stopIdx >= 0 ? surfaces[stopIdx] : surfaces[0];
+    const stopAp = Math.max(1e-6, getSurfaceOpticalAp(stopSurf));
+    const xStop = Number(stopSurf?.vx || 0);
+    const xObjPlane = Number(surfaces?.[0]?.vx || 0) - objDist;
+    const startX = sensorPlaneX + 0.05;
+
+    const hits = [];
+    let raysUsed = 0;
+    for (const p of PREVIEW_FOCUS_PUPIL_POINTS) {
+      const py = p.y * stopAp;
+      const pz = p.z * stopAp;
+      const dir = normalize3({ x: xStop - startX, y: py - sy, z: pz - sz });
+      const tr = traceRayReverse3D({ p: { x: startX, y: sy, z: sz }, d: dir }, surfaces, wavePreset);
+      raysUsed++;
+      if (!tr || tr.vignetted || tr.tir || !tr.endRay) continue;
+      const hitObj = intersectPlaneX3D(tr.endRay, xObjPlane);
+      if (!hitObj) continue;
+      hits.push(hitObj);
+    }
+
+    const hitRate = raysUsed > 0 ? (hits.length / raysUsed) : 0;
+    if (hits.length < 4) {
+      return {
+        ok: false,
+        sensorPlaneX,
+        rmsMm: null,
+        hitRate,
+        raysUsed,
+        validHits: hits.length,
+        centroidY: null,
+        centroidZ: null,
+      };
+    }
+
+    const centroidY = hits.reduce((s, h) => s + h.y, 0) / hits.length;
+    const centroidZ = hits.reduce((s, h) => s + h.z, 0) / hits.length;
+    const rmsMm = Math.sqrt(
+      hits.reduce((acc, h) => acc + (h.y - centroidY) ** 2 + (h.z - centroidZ) ** 2, 0) / hits.length
+    );
+    return {
+      ok: true,
+      sensorPlaneX,
+      rmsMm,
+      hitRate,
+      raysUsed,
+      validHits: hits.length,
+      centroidY,
+      centroidZ,
+    };
+  }
+
+  function evaluatePreviewFocusAtSensorX({
+    surfaces,
+    wavePreset,
+    lensShift,
+    sensorX,
+    objDist,
+    sensorHv,
+    autofocusMode = PREVIEW_AUTOFOCUS_DEFAULT_MODE,
+  }) {
+    const mode = PREVIEW_AUTOFOCUS_MODES.has(String(autofocusMode || "").toLowerCase())
+      ? String(autofocusMode).toLowerCase()
+      : PREVIEW_AUTOFOCUS_DEFAULT_MODE;
+
+    const sensorSamples = getPreviewAutofocusSensorSamples(sensorHv, mode);
+
+    let weightedRms = 0;
+    let weightSum = 0;
+    let totalHits = 0;
+    let totalRays = 0;
+    let sensorPlaneX = null;
+
+    for (let fi = 0; fi < sensorSamples.length; fi++) {
+      const sample = sensorSamples[fi];
+      const spot = evaluatePreviewSpotAtSensorPoint({
+        surfaces,
+        wavePreset,
+        lensShift,
+        sensorX,
+        objDist,
+        sy: sample.sy,
+        sz: sample.sz,
+      });
+      if (!Number.isFinite(sensorPlaneX) && Number.isFinite(spot?.sensorPlaneX)) {
+        sensorPlaneX = Number(spot.sensorPlaneX);
+      }
+      totalRays += Number(spot?.raysUsed || 0);
+      totalHits += Number(spot?.validHits || 0);
+      if (!spot?.ok || !Number.isFinite(spot?.rmsMm)) continue;
+      weightedRms += Number(spot.rmsMm) * sample.w;
+      weightSum += sample.w;
+    }
+
+    const hitRate = totalRays > 0 ? (totalHits / totalRays) : 0;
+    if (!(weightSum > 0) || hitRate < 0.30) {
+      return {
+        score: Infinity,
+        rmsMm: null,
+        hitRate,
+        sensorPlaneX: Number.isFinite(sensorPlaneX) ? sensorPlaneX : null,
+        raysUsed: totalRays,
+        validHits: totalHits,
+        sampleCount: sensorSamples.length,
+        autofocusMode: mode,
+      };
+    }
+
+    const rmsMm = weightedRms / weightSum;
+    const penalty = (hitRate < 0.95) ? (1 + (0.95 - hitRate) * 4) : 1;
+    return {
+      score: rmsMm * penalty,
+      rmsMm,
+      hitRate,
+      sensorPlaneX: Number.isFinite(sensorPlaneX) ? sensorPlaneX : null,
+      raysUsed: totalRays,
+      validHits: totalHits,
+      sampleCount: sensorSamples.length,
+      autofocusMode: mode,
+    };
+  }
+
+  function autoFocusPreviewSensorForObjectDistance({
+    surfaces,
+    wavePreset,
+    lensShift,
+    sensorX,
+    objDist,
+    sensorHv,
+    autofocusMode = PREVIEW_AUTOFOCUS_DEFAULT_MODE,
+  }) {
+    const objDistMm = Number(objDist);
+    const sensorHvMm = Number(sensorHv);
+    if (!Number.isFinite(objDistMm) || objDistMm <= 0.1) {
+      return {
+        sensorX,
+        sensorPlaneX: null,
+        deltaMm: 0,
+        rmsMm: null,
+        hitRate: null,
+        raysUsed: 0,
+        xObjPlaneMm: null,
+        startRayXMm: null,
+        stopXMm: null,
+        method: "preview_af_invalid_target",
+      };
+    }
+
+    const mode = PREVIEW_AUTOFOCUS_MODES.has(String(autofocusMode || "").toLowerCase())
+      ? String(autofocusMode).toLowerCase()
+      : PREVIEW_AUTOFOCUS_DEFAULT_MODE;
+    preview.focusAssist.mode = mode;
+
+    const keyParts = [
+      mode,
+      wavePreset,
+      objDistMm.toFixed(6),
+      Number.isFinite(sensorHvMm) ? sensorHvMm.toFixed(6) : "nan",
+      lensShift.toFixed(6),
+      String(surfaces?.length || 0),
+      ...((surfaces || []).map((s) => [
+        String(s?.type || ""),
+        Number(s?.R || 0).toFixed(6),
+        Number(s?.t || 0).toFixed(6),
+        Number(getSurfaceOpticalAp(s)).toFixed(6),
+        String(s?.glass || "AIR"),
+        s?.stop ? "1" : "0",
+      ].join(","))),
+    ];
+    const key = keyParts.join("|");
+
+    if (preview.focusAssist.cacheKey === key && Number.isFinite(preview.focusAssist.sensorX)) {
+      const cached = Number(preview.focusAssist.sensorX);
+      const m = preview.focusAssist.metrics || null;
+      computeVertices(surfaces, lensShift, cached);
+      const sensorPlaneXCached = getSensorPlaneX(surfaces, cached);
+      const stopIdxCached = findStopSurfaceIndex(surfaces);
+      const stopSurfCached = stopIdxCached >= 0 ? surfaces[stopIdxCached] : surfaces[0];
+      const xObjPlaneCached = Number(surfaces?.[0]?.vx || 0) - objDistMm;
+      const startXCached = sensorPlaneXCached + 0.05;
+      const xStopCached = Number(stopSurfCached?.vx || 0);
+      return {
+        sensorX: cached,
+        sensorPlaneX: sensorPlaneXCached,
+        deltaMm: cached - sensorX,
+        rmsMm: Number.isFinite(Number(m?.rmsMm)) ? Number(m.rmsMm) : null,
+        hitRate: Number.isFinite(Number(m?.hitRate)) ? Number(m.hitRate) : null,
+        raysUsed: Number.isFinite(Number(m?.raysUsed)) ? Number(m.raysUsed) : 0,
+        xObjPlaneMm: xObjPlaneCached,
+        startRayXMm: startXCached,
+        stopXMm: xStopCached,
+        method: "preview_af_cached",
+      };
+    }
+
+    const efl = estimateEflBflParaxial(surfaces, wavePreset).efl;
+    const range = Math.max(2, Math.min(36, Number.isFinite(efl) && efl > 0 ? efl * 0.26 : 16));
+    const coarseStep = Math.max(0.35, range / 12);
+    const fineStep = Math.max(0.05, coarseStep / 6);
+
+    let iterations = 0;
+    let stoppedByMaxIterations = false;
+    const evaluateAtSensorX = (xMm) => {
+      if (iterations >= MAX_AUTOFOCUS_ITERATIONS) {
+        stoppedByMaxIterations = true;
+        return null;
+      }
+      iterations++;
+      return evaluatePreviewFocusAtSensorX({
+        surfaces, wavePreset, lensShift, sensorX: xMm, objDist: objDistMm, sensorHv: sensorHvMm, autofocusMode: mode,
+      });
+    };
+
+    let bestX = Number.isFinite(Number(sensorX)) ? Number(sensorX) : 0;
+    let best = evaluateAtSensorX(bestX);
+    if (!best || !Number.isFinite(Number(best.score))) {
+      return {
+        sensorX: bestX,
+        sensorPlaneX: null,
+        deltaMm: 0,
+        rmsMm: null,
+        hitRate: null,
+        raysUsed: 0,
+        method: "preview_af_search",
+        iterations,
+        stoppedByMaxIterations,
+      };
+    }
+
+    const searchCenterX = bestX;
+    for (let x = searchCenterX - range; x <= searchCenterX + range + 1e-9; x += coarseStep) {
+      const ev = evaluateAtSensorX(x);
+      if (!ev) break;
+      if (ev.score < best.score) {
+        best = ev;
+        bestX = x;
+      }
+    }
+
+    for (let x = bestX - coarseStep; x <= bestX + coarseStep + 1e-9; x += fineStep) {
+      const ev = evaluateAtSensorX(x);
+      if (!ev) break;
+      if (ev.score < best.score) {
+        best = ev;
+        bestX = x;
+      }
+    }
+
+    preview.focusAssist.cacheKey = key;
+    preview.focusAssist.sensorX = bestX;
+    preview.focusAssist.metrics = best;
+    computeVertices(surfaces, lensShift, bestX);
+    const bestSensorPlaneX = getSensorPlaneX(surfaces, bestX);
+    const stopIdxBest = findStopSurfaceIndex(surfaces);
+    const stopSurfBest = stopIdxBest >= 0 ? surfaces[stopIdxBest] : surfaces[0];
+    const xObjPlaneBest = Number(surfaces?.[0]?.vx || 0) - objDistMm;
+    const startXBest = bestSensorPlaneX + 0.05;
+    const xStopBest = Number(stopSurfBest?.vx || 0);
+    const debugKey = `${key}|${bestX.toFixed(6)}|${Number(best?.rmsMm || 0).toFixed(6)}|${Number(best?.hitRate || 0).toFixed(4)}`;
+    if (preview.focusAssist.debugKey !== debugKey) {
+      preview.focusAssist.debugKey = debugKey;
+      console.log("[autofocus:chart]", {
+        mode,
+        targetChartDistanceMm: objDistMm,
+        raysUsed: Number(best?.raysUsed || 0),
+        xObjPlaneMm: xObjPlaneBest,
+        startRayXMm: startXBest,
+        stopXMm: xStopBest,
+        previousSensorShiftMm: sensorX,
+        bestSensorShiftMm: bestX,
+        bestSensorPositionMm: bestSensorPlaneX,
+        bestMetricRmsMm: Number.isFinite(best?.rmsMm) ? best.rmsMm : null,
+        hitRate: Number.isFinite(best?.hitRate) ? best.hitRate : null,
+      });
+    }
+
+    return {
+      sensorX: bestX,
+      sensorPlaneX: bestSensorPlaneX,
+      deltaMm: bestX - sensorX,
+      rmsMm: best.rmsMm,
+      hitRate: best.hitRate,
+      raysUsed: best.raysUsed,
+      xObjPlaneMm: xObjPlaneBest,
+      startRayXMm: startXBest,
+      stopXMm: xStopBest,
+      method: "preview_af_search",
+      iterations,
+      stoppedByMaxIterations,
+    };
+  }
+
+  function estimatePreviewObjectHalfHeightFromChief({
+    surfaces,
+    wavePreset,
+    sensorX,
+    xStop,
+    xObjPlane,
+    sensorWv,
+    sensorHv,
+    imgAsp,
+  }) {
+    if (!Array.isArray(surfaces) || !surfaces.length) return null;
+    if (!(sensorWv > 0) || !(sensorHv > 0) || !(imgAsp > 0)) return null;
+
+    const startX = sensorX + 0.05;
+    const points = [
+      { sx: -sensorWv * 0.5, sy: -sensorHv * 0.5 },
+      { sx: 0,               sy: -sensorHv * 0.5 },
+      { sx: sensorWv * 0.5,  sy: -sensorHv * 0.5 },
+      { sx: -sensorWv * 0.5, sy: 0 },
+      { sx: 0,               sy: 0 },
+      { sx: sensorWv * 0.5,  sy: 0 },
+      { sx: -sensorWv * 0.5, sy: sensorHv * 0.5 },
+      { sx: 0,               sy: sensorHv * 0.5 },
+      { sx: sensorWv * 0.5,  sy: sensorHv * 0.5 },
+    ];
+
+    let maxObjX = 0;
+    let maxObjY = 0;
+    let used = 0;
+
+    for (const pt of points) {
+      const pS = { x: startX, y: pt.sx, z: pt.sy };
+      const dir = normalize3({ x: xStop - startX, y: -pt.sx, z: -pt.sy });
+      const tr = traceRayReverse3D({ p: pS, d: dir }, surfaces, wavePreset);
+      if (!tr || tr.vignetted || tr.tir || !tr.endRay) continue;
+      const hitObj = intersectPlaneX3D(tr.endRay, xObjPlane);
+      if (!hitObj) continue;
+      maxObjX = Math.max(maxObjX, Math.abs(hitObj.y));
+      maxObjY = Math.max(maxObjY, Math.abs(hitObj.z));
+      used++;
+    }
+
+    if (used < 3) return null;
+    const halfObjH = Math.max(maxObjY, maxObjX / imgAsp);
+    if (!(halfObjH > 1e-9)) return null;
+
+    return { halfObjH: halfObjH * 1.03, used };
+  }
+
+  function setUsableCircleFromRenderedPixels(outD, W, H, sensorW, sensorH) {
+    const baseCircle = (preview.usableCircle && preview.usableCircle.valid)
+      ? { ...preview.usableCircle }
+      : null;
+
+    if (!outD || !(W > 0) || !(H > 0) || !(sensorW > 0) || !(sensorH > 0)) {
+      setNoUsableCircle("pixels");
+      return;
+    }
+
+    const halfDiagMm = Math.hypot(sensorW, sensorH) * 0.5;
+    if (!(halfDiagMm > 0)) { setNoUsableCircle("pixels"); return; }
+
+    const bins = Math.max(96, Math.min(420, Math.round(halfDiagMm * 14)));
+    const sum = new Float64Array(bins);
+    const cnt = new Uint32Array(bins);
+
+    for (let py = 0; py < H; py++) {
+      const yMm = (0.5 - (py + 0.5) / H) * sensorH;
+      for (let px = 0; px < W; px++) {
+        const xMm = ((px + 0.5) / W - 0.5) * sensorW;
+        const rMm = Math.hypot(xMm, yMm);
+        const b = Math.min(bins - 1, Math.max(0, Math.floor((rMm / halfDiagMm) * (bins - 1))));
+        const o = (py * W + px) * 4;
+        const rr = outD[o] / 255;
+        const gg = outD[o + 1] / 255;
+        const bb = outD[o + 2] / 255;
+        const lum = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+        // Penalize clearly blue-dominant fringe, but keep neutral chart detail stable.
+        const blueDom = Math.max(0, bb - Math.max(rr, gg));
+        const usableScore = lum * (1 - 0.65 * blueDom);
+        sum[b] += usableScore;
+        cnt[b]++;
+      }
+    }
+
+    const rCurve = [];
+    const gCurve = [];
+    for (let b = 0; b < bins; b++) {
+      if (cnt[b] < 8) continue;
+      rCurve.push(((b + 0.5) / bins) * halfDiagMm);
+      gCurve.push(sum[b] / cnt[b]);
+    }
+    setUsableCircleFromRadialCurve(rCurve, gCurve, "pixels");
+
+    if (baseCircle && baseCircle.valid) {
+      if (!preview.usableCircle.valid) {
+        preview.usableCircle = baseCircle;
+        updateUsableCircleBadges();
+      } else if (preview.usableCircle.radiusMm > baseCircle.radiusMm) {
+        preview.usableCircle = baseCircle;
+        updateUsableCircleBadges();
+      }
+    }
+  }
+
+ function performRenderPreview() {
+  if (!renderEngineEnabled) {
+    hidePreviewProgress();
+    finishPreviewRender();
+    return;
+  }
+  if (!pctx || !previewCanvasEl) {
+    finishPreviewRender();
+    return;
+  }
+  syncActiveZoomConfigFromUI();
+  if (!preview.worldCtx) preview.worldCtx = preview.worldCanvas.getContext("2d");
+  const jobId = ++_previewRenderJobId;
+  setNoUsableCircle("pending");
+
+  const doCA  = !!document.getElementById("optCA")?.checked;
+  const q     = String(document.getElementById("renderQuality")?.value || "normal");
+  const previewOrientation = getPreviewOrientation();
+  const previewModeRaw = String(ui.previewRenderMode?.value || "").trim().toLowerCase();
+  const previewMode = (previewModeRaw === "quality" || previewModeRaw === "fast")
+    ? previewModeRaw
+    : (document.getElementById("optDOF")?.checked ? "quality" : "fast");
+  const requestedPupilSamples = Math.round(Number(ui.pupilSamples?.value));
+  const sppFallback = (q === "hq" ? 64 : (q === "draft" ? 12 : 28));
+  const spp = previewMode === "quality"
+    ? clamp(Number.isFinite(requestedPupilSamples) ? requestedPupilSamples : sppFallback, 8, 128)
+    : 1;
+  const lutPupilSqrt = (q === "hq" ? 16 : (q === "draft" ? 10 : 14));
+
+  const wavePreset = ui.wavePreset?.value || "d";
+  const focusChartDistanceMm = getFocusChartDistanceMm() ?? 2000;
+  const focusCtx = getFocusContext({
+    objectDistanceMm: focusChartDistanceMm,
+    wavePreset,
+    allowAutoRefocus: true,
+  });
+  const sensorShift = focusCtx.sensorX;
+  const lensShift = focusCtx.lensShift;
+
+  computeVertices(lens.surfaces, lensShift, sensorShift);
+  let sensorX = getSensorPlaneX(lens.surfaces, sensorShift);
+
+  const { w: sensorW, h: sensorH } = getSensorWH();
+
+  let stopIdx = findStopSurfaceIndex(lens.surfaces);
+  let stopSurf = stopIdx >= 0 ? lens.surfaces[stopIdx] : lens.surfaces[0];
+  let xStop = Number(stopSurf?.vx || 0);
+  let stopAp = Math.max(1e-6, getSurfaceOpticalAp(stopSurf));
+
+  let xObjPlane = (lens.surfaces[0]?.vx ?? 0) - focusChartDistanceMm;
+
+  const previewParaxFocused = estimateEflBflParaxial(lens.surfaces, wavePreset);
+  let previewParax = previewParaxFocused;
+  let previewParaxSource = "focused";
+  if (!Number.isFinite(Number(previewParax?.efl))) {
+    const nominalForParax = clone(lens.surfaces);
+    computeVertices(nominalForParax, 0, 0);
+    const previewParaxNominal = estimateEflBflParaxial(nominalForParax, wavePreset);
+    if (Number.isFinite(Number(previewParaxNominal?.efl))) {
+      previewParax = previewParaxNominal;
+      previewParaxSource = "nominal_fallback";
+    }
+  }
+  if (!Number.isFinite(Number(previewParax?.efl))) {
+    resizePreviewCanvasToCSS();
+    const rc = previewCanvasEl.getBoundingClientRect();
+    pctx.clearRect(0, 0, rc.width, rc.height);
+    pctx.fillStyle = "rgba(0,0,0,0.92)";
+    pctx.fillRect(0, 0, rc.width, rc.height);
+    pctx.fillStyle = "rgba(255,255,255,0.9)";
+    pctx.font = "600 16px var(--font-main, sans-serif)";
+    pctx.textAlign = "center";
+    pctx.textBaseline = "middle";
+    pctx.fillText("No valid optical trace yet", rc.width * 0.5, rc.height * 0.5);
+    console.warn("[preview-black]", {
+      reason: "no_valid_optical_trace",
+      efl: previewParax?.efl ?? null,
+      bfl: previewParax?.bfl ?? null,
+      paraxialSource: previewParaxSource,
+      lensShift,
+      sensorShift,
+      activeZoomConfig: Number.isFinite(Number(lens?.zoom?.activeConfig)) ? Number(lens.zoom.activeConfig) : null,
+      activeZoomLabel: String(lens?.zemax?.currentConfigLabel || "—"),
+    });
+    hidePreviewProgress();
+    finishPreviewRender();
+    return;
+  }
+
+  const baseRaw = Number(ui.prevRes?.value || 720);
+  const base = Math.max(64, Number.isFinite(baseRaw) ? baseRaw : 720);
+  const aspect = sensorW / sensorH;
+  const W = Math.max(64, Math.round(base * aspect));
+  const H = Math.max(64, base);
+
+  const previewOverscan = OV_DEFAULT;
+  const sensorWv = sensorW * previewOverscan;
+  const sensorHv = sensorH * previewOverscan;
+  const halfWv = sensorWv * 0.5;
+  const halfHv = sensorHv * 0.5;
+  const rMaxSensor = Math.hypot(halfWv, halfHv);
+
+  const hasImg = !!(preview.ready && preview.imgData && preview.imgCanvas.width > 0 && preview.imgCanvas.height > 0);
+  const imgW = preview.imgCanvas.width;
+  const imgH = preview.imgCanvas.height;
+  const imgData = hasImg ? preview.imgData : null;
+  const autoFill = !!ui.previewAutoFit?.checked;
+  const previewRenderKey = JSON.stringify({
+    mode: previewMode,
+    q,
+    doCA,
+    spp,
+    lutPupilSqrt,
+    wavePreset,
+    focusChartDistanceMm,
+    focusMode: focusCtx.focusMode,
+    focusMechanism: focusCtx.focusMechanism,
+    focusShiftMm: Number(focusCtx.focusShiftMm).toFixed(6),
+    sensorW: Number(sensorW).toFixed(6),
+    sensorH: Number(sensorH).toFixed(6),
+    res: Number(base).toFixed(3),
+    autoFill,
+    orientation: previewOrientation,
+    objW: String(ui.prevObjW?.value || ""),
+    objH: String(ui.prevObjH?.value || ""),
+    imgW,
+    imgH,
+    sourceMode: preview.sourceMode,
+    surfaces: (lens.surfaces || []).map((s) => [
+      String(s?.type || ""),
+      Number(s?.R ?? 0).toFixed(6),
+      Number(s?.t ?? 0).toFixed(6),
+      Number(s?.ap ?? 0).toFixed(6),
+      Number(s?.ap_optical ?? s?.ap ?? 0).toFixed(6),
+      String(s?.glass || "AIR"),
+      s?.stop ? 1 : 0,
+    ]),
+  });
+  if (!_forcePreviewRender && preview.worldReady && preview.dirtyKey === previewRenderKey) {
+    drawPreviewViewport();
+    finishPreviewRender();
+    return;
+  }
+  _forcePreviewRender = false;
+  preview.dirtyKey = previewRenderKey;
+
+  let focusInfo = {
+    sensorX,
+    deltaMm: 0,
+    rmsMm: null,
+    hitRate: null,
+    method: `preview_focus_${focusCtx.focusMode}`,
+  };
+  if (Number.isFinite(focusChartDistanceMm) && focusChartDistanceMm > 0.1 && focusChartDistanceMm < 1e8) {
+    const autofocusMode = getPreviewAutofocusMode();
+    const ev = evaluatePreviewFocusAtSensorX({
+      surfaces: lens.surfaces,
+      wavePreset,
+      lensShift,
+      sensorX: sensorShift,
+      objDist: focusChartDistanceMm,
+      sensorHv,
+      autofocusMode,
+    });
+    const evSensorX = Number.isFinite(Number(ev?.sensorPlaneX)) ? Number(ev.sensorPlaneX) : sensorX;
+    focusInfo = {
+      sensorX: evSensorX,
+      deltaMm: 0,
+      rmsMm: Number.isFinite(ev?.rmsMm) ? Number(ev.rmsMm) : null,
+      hitRate: Number.isFinite(ev?.hitRate) ? Number(ev.hitRate) : null,
+      method: focusCtx.autoRun?.ok
+        ? `preview_focus_eval_only (auto ${focusCtx.focusMechanism})`
+        : "preview_focus_eval_only",
+    };
+  }
+
+  if (focusCtx.autoRun?.ok) _renderAllAfterPreview = true;
+  const metricTxt = Number.isFinite(focusCtx?.autoRun?.bestMetricRmsMm)
+    ? `auto metric ${Number(focusCtx.autoRun.bestMetricRmsMm).toFixed(4)}mm`
+    : "";
+  updateFocusShiftStatus(metricTxt);
+
+  preview.debug.focusDeltaMm = Number.isFinite(focusInfo?.deltaMm) ? focusInfo.deltaMm : null;
+  preview.debug.spotRmsMm = Number.isFinite(focusInfo?.rmsMm) ? focusInfo.rmsMm : null;
+  preview.debug.spotRmsPx = null;
+  preview.debug.kernelPx = null;
+  preview.debug.mmPerPx = (H > 0) ? (sensorH / H) : null;
+  preview.debug.method = `${String(focusInfo?.method || "")} • ${previewMode}${previewMode === "quality" ? ` • spp=${spp}` : ""}`;
+  preview.debug.centerRmsMm = null;
+  preview.debug.centerRmsPx = null;
+  preview.debug.centerHitRate = null;
+  preview.debug.midRmsMm = null;
+  preview.debug.midRmsPx = null;
+  preview.debug.midHitRate = null;
+  preview.debug.cornerRmsMm = null;
+  preview.debug.cornerRmsPx = null;
+  preview.debug.cornerHitRate = null;
+  preview.debug.bestFocusCenterShiftMm = null;
+  preview.debug.bestFocusCornerShiftMm = null;
+  preview.debug.fieldCurvatureDeltaMm = null;
+
+  function sample(u, v) {
+    if (!hasImg) return [255, 255, 255, 255];
+    if (autoFill) {
+      u = clamp(u, 0, 1);
+      v = clamp(v, 0, 1);
+    } else if (u < 0 || u > 1 || v < 0 || v > 1) {
+      return [0, 0, 0, 255];
+    }
+
+    const x = u * (imgW - 1);
+    const y = v * (imgH - 1);
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const x1 = Math.min(imgW - 1, x0 + 1);
+    const y1 = Math.min(imgH - 1, y0 + 1);
+    const tx = x - x0, ty = y - y0;
+
+    function px(ix, iy) {
+      const o = (iy * imgW + ix) * 4;
+      return [imgData[o], imgData[o + 1], imgData[o + 2], imgData[o + 3]];
+    }
+
+    const c00 = px(x0, y0), c10 = px(x1, y0), c01 = px(x0, y1), c11 = px(x1, y1);
+    const lerp = (a, b, t) => a + (b - a) * t;
+
+    const c0 = c00.map((v0, i) => lerp(v0, c10[i], tx));
+    const c1 = c01.map((v0, i) => lerp(v0, c11[i], tx));
+    return c0.map((v0, i) => lerp(v0, c1[i], ty));
+  }
+
+  const imgAsp = hasImg ? (imgW / imgH) : (16 / 9);
+  const objHManual = Number(ui.prevObjH?.value || 1650);
+  const objWManual = Number(ui.prevObjW?.value || (objHManual * imgAsp));
+  const autoFitObj = autoFill
+    ? estimatePreviewObjectHalfHeightFromChief({
+        surfaces: lens.surfaces,
+        wavePreset,
+        sensorX,
+        xStop,
+        xObjPlane,
+        sensorWv,
+        sensorHv,
+        imgAsp,
+      })
+    : null;
+  const halfObjH = (autoFitObj && Number.isFinite(autoFitObj.halfObjH) && autoFitObj.halfObjH > 1e-6)
+    ? autoFitObj.halfObjH
+    : Math.max(1e-3, objHManual * 0.5);
+  const halfObjW = autoFill
+    ? (halfObjH * imgAsp)
+    : Math.max(1e-3, objWManual * 0.5);
+  if (autoFill && autoFitObj && Number.isFinite(autoFitObj.halfObjH) && autoFitObj.halfObjH > 1e-6) {
+    setAutoObjectSizeMm(halfObjW * 2, halfObjH * 2);
+  }
+
+  function objectMmToUV(xmm, ymm) {
+    const u = 0.5 + (xmm / (2 * halfObjW));
+    const v = 0.5 - (ymm / (2 * halfObjH));
+    return { u, v };
+  }
+
+  function objectHitToPreviewUV(xmm, ymm) {
+    let x = Number(xmm) || 0;
+    let y = Number(ymm) || 0;
+    if (previewOrientation === "upright") {
+      x = -x;
+      y = -y;
+    }
+    return objectMmToUV(x, y);
+  }
+
+  function rmsMmToPreviewPx(rmsMm) {
+    const mm = Number(rmsMm);
+    if (!Number.isFinite(mm)) return null;
+    const pxPerMmX = W / Math.max(1e-9, 2 * halfObjW);
+    const pxPerMmY = H / Math.max(1e-9, 2 * halfObjH);
+    const pxPerMm = Math.sqrt(pxPerMmX * pxPerMmY);
+    return mm * pxPerMm;
+  }
+
+  function findBestSensorShiftForSpot({ sy = 0, sz = 0, startShift = sensorShift }) {
+    const efl = estimateEflBflParaxial(lens.surfaces, wavePreset).efl;
+    const range = Math.max(1.5, Math.min(18, Number.isFinite(efl) && efl > 0 ? efl * 0.16 : 8));
+    const coarseStep = Math.max(0.25, range / 10);
+    const fineStep = Math.max(0.05, coarseStep / 6);
+
+    let bestShift = Number(startShift) || 0;
+    let iterations = 0;
+    const evaluateSpotAtShift = (xMm) => {
+      if (iterations >= MAX_AUTOFOCUS_ITERATIONS) return null;
+      iterations++;
+      return evaluatePreviewSpotAtSensorPoint({
+        surfaces: lens.surfaces,
+        wavePreset,
+        lensShift,
+        sensorX: xMm,
+        objDist: focusChartDistanceMm,
+        sy,
+        sz,
+      });
+    };
+    let best = evaluateSpotAtShift(bestShift);
+    if (!best) {
+      return {
+        bestShiftMm: bestShift,
+        bestRmsMm: null,
+        bestSensorPlaneX: null,
+      };
+    }
+
+    for (let x = bestShift - range; x <= bestShift + range + 1e-9; x += coarseStep) {
+      const ev = evaluateSpotAtShift(x);
+      if (!ev) break;
+      const evRms = Number(ev?.rmsMm);
+      const bestRms = Number(best?.rmsMm);
+      if (Number.isFinite(evRms) && (!Number.isFinite(bestRms) || evRms < bestRms)) {
+        best = ev;
+        bestShift = x;
+      }
+    }
+
+    for (let x = bestShift - coarseStep; x <= bestShift + coarseStep + 1e-9; x += fineStep) {
+      const ev = evaluateSpotAtShift(x);
+      if (!ev) break;
+      const evRms = Number(ev?.rmsMm);
+      const bestRms = Number(best?.rmsMm);
+      if (Number.isFinite(evRms) && (!Number.isFinite(bestRms) || evRms < bestRms)) {
+        best = ev;
+        bestShift = x;
+      }
+    }
+
+    return {
+      bestShiftMm: bestShift,
+      bestRmsMm: Number.isFinite(best?.rmsMm) ? Number(best.rmsMm) : null,
+      bestSensorPlaneX: Number.isFinite(best?.sensorPlaneX) ? Number(best.sensorPlaneX) : null,
+    };
+  }
+
+  function updatePreviewFieldSpotDebug() {
+    const halfW = sensorW * 0.5;
+    const halfH = sensorH * 0.5;
+
+    let midSy = halfW * 0.55;
+    let midSz = 0;
+    let cornerSy = halfW * 0.92;
+    let cornerSz = halfH * 0.92;
+
+    if (ui.useZemaxFields?.checked && Array.isArray(lens?.zemax?.fields) && lens.zemax.fields.length > 1) {
+      const angs = lens.zemax.fields
+        .map((f) => Math.abs(Number(f?.angleDeg)))
+        .filter((v) => Number.isFinite(v));
+      const maxA = angs.length ? Math.max(...angs) : 0;
+      if (maxA > 1e-9) {
+        const sorted = [...angs].sort((a, b) => a - b);
+        const midA = sorted[Math.floor(sorted.length * 0.5)] || (0.5 * maxA);
+        const midFrac = clamp(midA / maxA, 0, 1);
+        const cornerFrac = clamp(1.0, 0, 1);
+        midSy = halfW * midFrac;
+        midSz = 0;
+        cornerSy = halfW * cornerFrac * 0.98;
+        cornerSz = halfH * cornerFrac * 0.98;
+      }
+    }
+
+    const center = evaluatePreviewSpotAtSensorPoint({
+      surfaces: lens.surfaces,
+      wavePreset,
+      lensShift,
+      sensorX: sensorShift,
+      objDist: focusChartDistanceMm,
+      sy: 0,
+      sz: 0,
+    });
+    const mid = evaluatePreviewSpotAtSensorPoint({
+      surfaces: lens.surfaces,
+      wavePreset,
+      lensShift,
+      sensorX: sensorShift,
+      objDist: focusChartDistanceMm,
+      sy: midSy,
+      sz: midSz,
+    });
+    const corner = evaluatePreviewSpotAtSensorPoint({
+      surfaces: lens.surfaces,
+      wavePreset,
+      lensShift,
+      sensorX: sensorShift,
+      objDist: focusChartDistanceMm,
+      sy: cornerSy,
+      sz: cornerSz,
+    });
+
+    preview.debug.centerRmsMm = Number.isFinite(center?.rmsMm) ? Number(center.rmsMm) : null;
+    preview.debug.centerRmsPx = Number.isFinite(preview.debug.centerRmsMm) ? rmsMmToPreviewPx(preview.debug.centerRmsMm) : null;
+    preview.debug.centerHitRate = Number.isFinite(center?.hitRate) ? Number(center.hitRate) : null;
+    preview.debug.midRmsMm = Number.isFinite(mid?.rmsMm) ? Number(mid.rmsMm) : null;
+    preview.debug.midRmsPx = Number.isFinite(preview.debug.midRmsMm) ? rmsMmToPreviewPx(preview.debug.midRmsMm) : null;
+    preview.debug.midHitRate = Number.isFinite(mid?.hitRate) ? Number(mid.hitRate) : null;
+    preview.debug.cornerRmsMm = Number.isFinite(corner?.rmsMm) ? Number(corner.rmsMm) : null;
+    preview.debug.cornerRmsPx = Number.isFinite(preview.debug.cornerRmsMm) ? rmsMmToPreviewPx(preview.debug.cornerRmsMm) : null;
+    preview.debug.cornerHitRate = Number.isFinite(corner?.hitRate) ? Number(corner.hitRate) : null;
+
+    const centerBest = findBestSensorShiftForSpot({ sy: 0, sz: 0, startShift: sensorShift });
+    const cornerBest = findBestSensorShiftForSpot({ sy: cornerSy, sz: cornerSz, startShift: sensorShift });
+    preview.debug.bestFocusCenterShiftMm = Number.isFinite(centerBest?.bestShiftMm) ? Number(centerBest.bestShiftMm) : null;
+    preview.debug.bestFocusCornerShiftMm = Number.isFinite(cornerBest?.bestShiftMm) ? Number(cornerBest.bestShiftMm) : null;
+    preview.debug.fieldCurvatureDeltaMm = (
+      Number.isFinite(preview.debug.bestFocusCenterShiftMm) &&
+      Number.isFinite(preview.debug.bestFocusCornerShiftMm)
+    ) ? (preview.debug.bestFocusCornerShiftMm - preview.debug.bestFocusCenterShiftMm) : null;
+
+    // Restore current preview pose after spot diagnostics (helper traces move vertices).
+    computeVertices(lens.surfaces, lensShift, sensorShift);
+  }
+
+  function naturalCos4(rS) {
+    const dirChief0 = normalize3({ x: xStop - (sensorX + 0.05), y: -rS, z: 0 });
+    const cosT = clamp(Math.abs(dirChief0.x), 0, 1);
+    return Math.pow(cosT, 4);
+  }
+
+  function samplePupilDisk(u, v) {
+    // Shirley/Chiu concentric mapping
+    const a = (u * 2 - 1);
+    const b = (v * 2 - 1);
+    let r, phi;
+    if (a === 0 && b === 0) { r = 0; phi = 0; }
+    else if (Math.abs(a) > Math.abs(b)) { r = a; phi = (Math.PI / 4) * (b / a); }
+    else { r = b; phi = (Math.PI / 2) - (Math.PI / 4) * (a / b); }
+
+    const rr = Math.abs(r) * stopAp; // stopAp = semi-diameter
+    return { y: rr * Math.cos(phi), z: rr * Math.sin(phi) };
+  }
+
+  const taps = [
+    [0, 0],
+    [0.55, 0.15],
+    [-0.48, 0.36],
+    [0.25, -0.58],
+    [-0.28, -0.18],
+    [0.78, -0.22],
+    [-0.72, -0.44],
+    [0.12, 0.74],
+    [-0.14, -0.82],
+  ];
+
+  function requestPreviewFrame(fn) {
+    requestAnimationFrame(() => {
+      try {
+        fn();
+      } catch (e) {
+        finishPreviewRender();
+        handleRuntimeError("Preview stopped", e);
+      }
+    });
+  }
+
+  if (Number.isFinite(focusChartDistanceMm) && focusChartDistanceMm > 0.1 && focusChartDistanceMm < 1e8) {
+    updatePreviewFieldSpotDebug();
+    sensorX = getSensorPlaneX(lens.surfaces, sensorShift);
+    if (ui.useZemaxFields?.checked && Array.isArray(lens?.zemax?.fields) && lens.zemax.fields.length) {
+      preview.debug.method = `${preview.debug.method} • fields=zemax`;
+    }
+  } else {
+    preview.debug.centerRmsMm = null;
+    preview.debug.centerRmsPx = null;
+    preview.debug.centerHitRate = null;
+    preview.debug.midRmsMm = null;
+    preview.debug.midRmsPx = null;
+    preview.debug.midHitRate = null;
+    preview.debug.cornerRmsMm = null;
+    preview.debug.cornerRmsPx = null;
+    preview.debug.cornerHitRate = null;
+    preview.debug.bestFocusCenterShiftMm = null;
+    preview.debug.bestFocusCornerShiftMm = null;
+    preview.debug.fieldCurvatureDeltaMm = null;
+  }
+
+  function renderFastLUT() {
+    const LUT_N = 900;
+    const WAVES = doCA ? ["c", "d", "g"] : [wavePreset, wavePreset, wavePreset];
+
+    const rObjLUT   = [new Float32Array(LUT_N), new Float32Array(LUT_N), new Float32Array(LUT_N)];
+    const transLUT  = [new Float32Array(LUT_N), new Float32Array(LUT_N), new Float32Array(LUT_N)];
+    const sigmaRadLUT = [new Float32Array(LUT_N), new Float32Array(LUT_N), new Float32Array(LUT_N)];
+    const sigmaTanLUT = [new Float32Array(LUT_N), new Float32Array(LUT_N), new Float32Array(LUT_N)];
+    const sigmaLUT  = [new Float32Array(LUT_N), new Float32Array(LUT_N), new Float32Array(LUT_N)];
+    const naturalLUT = new Float32Array(LUT_N);
+
+    const epsX = 0.05;
+    const startX = sensorX + epsX;
+
+    function lookup(ch, absR) {
+      const t = clamp(absR / rMaxSensor, 0, 1);
+      const x = t * (LUT_N - 1);
+      const i0 = Math.floor(x);
+      const i1 = Math.min(LUT_N - 1, i0 + 1);
+      const u = x - i0;
+      return {
+        rObj:   rObjLUT[ch][i0]   * (1 - u) + rObjLUT[ch][i1]   * u,
+        trans:  transLUT[ch][i0]  * (1 - u) + transLUT[ch][i1]  * u,
+        sigmaRad: sigmaRadLUT[ch][i0] * (1 - u) + sigmaRadLUT[ch][i1] * u,
+        sigmaTan: sigmaTanLUT[ch][i0] * (1 - u) + sigmaTanLUT[ch][i1] * u,
+        sigma:  sigmaLUT[ch][i0]  * (1 - u) + sigmaLUT[ch][i1]  * u,
+        nat:    naturalLUT[i0]    * (1 - u) + naturalLUT[i1]    * u,
+      };
+    }
+
+    // Build LUT in chunks (prevents freezing)
+    let k = 0;
+    const kPerFrame = (q === "hq") ? 18 : (q === "draft" ? 40 : 26);
+
+    function buildStep() {
+      if (!renderEngineEnabled || jobId !== _previewRenderJobId) {
+        hidePreviewProgress();
+        finishPreviewRender();
+        return;
+      }
+      const end = Math.min(LUT_N, k + kPerFrame);
+      setPreviewProgress(k / LUT_N, `LUT ${Math.round((k / LUT_N) * 100)}%`);
+
+      for (; k < end; k++) {
+        const a = k / (LUT_N - 1);
+        const rS = a * rMaxSensor;
+        const pS = { x: startX, y: rS, z: 0 };
+
+        naturalLUT[k] = naturalCos4(rS);
+
+        for (let ch = 0; ch < 3; ch++) {
+          const wave = WAVES[ch];
+
+          // chief ray -> object radius
+          {
+            const dirChief = normalize3({ x: xStop - startX, y: -rS, z: 0 });
+            const trC = traceRayReverse3D({ p: pS, d: dirChief }, lens.surfaces, wave);
+            if (!trC.vignetted && !trC.tir) {
+              const hitObj = intersectPlaneX3D(trC.endRay, xObjPlane);
+              rObjLUT[ch][k] = hitObj ? Math.hypot(hitObj.y, hitObj.z) : 0;
+            } else {
+              rObjLUT[ch][k] = 0;
+            }
+          }
+
+          // pupil sampling -> transmission + sigma
+          let ok = 0, total = 0;
+          let sumY = 0, sumZ = 0, sumYY = 0, sumZZ = 0;
+
+          for (let iy = 0; iy < lutPupilSqrt; iy++) {
+            for (let ix = 0; ix < lutPupilSqrt; ix++) {
+              const uu = (ix + Math.random()) / lutPupilSqrt;
+              const vv = (iy + Math.random()) / lutPupilSqrt;
+
+              const pp = samplePupilDisk(uu, vv);
+              const target = { x: xStop, y: pp.y, z: pp.z };
+              const dir = normalize3({ x: target.x - pS.x, y: target.y - pS.y, z: target.z - pS.z });
+
+              const tr = traceRayReverse3D({ p: pS, d: dir }, lens.surfaces, wave);
+              total++;
+              if (tr.vignetted || tr.tir) continue;
+
+              const hitObj = intersectPlaneX3D(tr.endRay, xObjPlane);
+              if (!hitObj) continue;
+
+              ok++;
+              sumY += hitObj.y; sumZ += hitObj.z;
+              sumYY += hitObj.y * hitObj.y;
+              sumZZ += hitObj.z * hitObj.z;
+            }
+          }
+
+          transLUT[ch][k] = total ? (ok / total) : 0;
+
+          if (ok > 2) {
+            const my = sumY / ok, mz = sumZ / ok;
+            const varY = Math.max(0, sumYY / ok - my * my);
+            const varZ = Math.max(0, sumZZ / ok - mz * mz);
+            sigmaRadLUT[ch][k] = Math.sqrt(varY);
+            sigmaTanLUT[ch][k] = Math.sqrt(varZ);
+            sigmaLUT[ch][k] = Math.sqrt(varY + varZ);
+            // Use centroid radius for mapping to preserve coma/field-curvature shifts
+            // better than chief-only mapping in fast mode.
+            rObjLUT[ch][k] = Math.hypot(my, mz);
+          } else {
+            sigmaRadLUT[ch][k] = 0;
+            sigmaTanLUT[ch][k] = 0;
+            sigmaLUT[ch][k] = 0;
+          }
+        }
+      }
+
+      if (k < LUT_N) {
+        requestPreviewFrame(buildStep);
+        return;
+      }
+
+      setUsableCircleFromLUT(transLUT[1], naturalLUT, rMaxSensor, previewOverscan);
+      const centerL = lookup(1, 0);
+      const centerSigmaRad = Number.isFinite(centerL?.sigmaRad) ? Number(centerL.sigmaRad) : Number(centerL?.sigma || 0);
+      const centerSigmaTan = Number.isFinite(centerL?.sigmaTan) ? Number(centerL.sigmaTan) : Number(centerL?.sigma || 0);
+      const pxPerMmX = W / Math.max(1e-9, 2 * halfObjW);
+      const pxPerMmY = H / Math.max(1e-9, 2 * halfObjH);
+      const centerKernelPx = (Number.isFinite(centerSigmaRad) || Number.isFinite(centerSigmaTan))
+        ? Math.max(centerSigmaRad * pxPerMmX, centerSigmaTan * pxPerMmY)
+        : null;
+      preview.debug.kernelPx = Number.isFinite(centerKernelPx) ? centerKernelPx : null;
+      if (!Number.isFinite(preview.debug.spotRmsPx) && Number.isFinite(centerKernelPx)) {
+        preview.debug.spotRmsPx = centerKernelPx;
+      }
+
+      // Allocate world canvas AFTER LUT is ready
+      preview.worldCanvas.width = W;
+      preview.worldCanvas.height = H;
+      preview.worldCtx = preview.worldCanvas.getContext("2d", { willReadFrequently: true });
+      const wctx = preview.worldCtx;
+
+      const out = wctx.createImageData(W, H);
+      const outD = out.data;
+      let litPixels = 0;
+
+      function objXYPhysical(L, sx, sy, rS) {
+        if (rS <= 1e-9) return { ox: 0, oy: 0 };
+        const s = L.rObj / rS;
+        // LUT gives radial magnitude only; reconstruct physical object-plane sign
+        // from sensor coords (sensor-real convention = inverted image).
+        return { ox: -sx * s, oy: -sy * s };
+      }
+
+      for (let py = 0; py < H; py++) {
+        const sy = (0.5 - (py + 0.5) / H) * sensorHv;
+
+        for (let px = 0; px < W; px++) {
+          const sx = ((px + 0.5) / W - 0.5) * sensorWv;
+          const rS = Math.hypot(sx, sy);
+          const idx = (py * W + px) * 4;
+
+          if (!doCA) {
+            const L = lookup(1, rS); // green basis
+            const gain = clamp(L.trans * L.nat, 0, 1);
+
+            if (gain < 1e-4) {
+              outD[idx] = 0; outD[idx + 1] = 0; outD[idx + 2] = 0; outD[idx + 3] = 255;
+              continue;
+            }
+
+            const p = objXYPhysical(L, sx, sy, rS);
+            const uv0 = objectHitToPreviewUV(p.ox, p.oy);
+            const sigmaBoost = 1.15;
+            const sigR = Math.max(0, Number(L.sigmaRad || L.sigma || 0) * sigmaBoost);
+            const sigT = Math.max(0, Number(L.sigmaTan || L.sigma || 0) * sigmaBoost);
+            const pNorm = Math.hypot(p.ox, p.oy);
+            const urx = pNorm > 1e-9 ? (p.ox / pNorm) : 1;
+            const ury = pNorm > 1e-9 ? (p.oy / pNorm) : 0;
+            const utx = -ury;
+            const uty = urx;
+
+            if (sigR < 1e-4 && sigT < 1e-4) {
+              const c = sample(uv0.u, uv0.v);
+              outD[idx]     = clamp(c[0] * gain, 0, 255);
+              outD[idx + 1] = clamp(c[1] * gain, 0, 255);
+              outD[idx + 2] = clamp(c[2] * gain, 0, 255);
+              outD[idx + 3] = 255;
+              if (outD[idx] > 0 || outD[idx + 1] > 0 || outD[idx + 2] > 0) litPixels++;
+            } else {
+              let r = 0, g = 0, b = 0;
+              for (let t = 0; t < taps.length; t++) {
+                const o = taps[t];
+                const ox = p.ox + urx * (o[0] * sigR) + utx * (o[1] * sigT);
+                const oy = p.oy + ury * (o[0] * sigR) + uty * (o[1] * sigT);
+                const uv = objectHitToPreviewUV(ox, oy);
+                const c = sample(uv.u, uv.v);
+                r += c[0]; g += c[1]; b += c[2];
+              }
+              const inv = 1 / taps.length;
+              outD[idx]     = clamp(r * inv * gain, 0, 255);
+              outD[idx + 1] = clamp(g * inv * gain, 0, 255);
+              outD[idx + 2] = clamp(b * inv * gain, 0, 255);
+              outD[idx + 3] = 255;
+              if (outD[idx] > 0 || outD[idx + 1] > 0 || outD[idx + 2] > 0) litPixels++;
+            }
+            continue;
+          }
+
+          // CA path (with sigma blur per channel)
+          const Lr = lookup(0, rS);
+          const Lg = lookup(1, rS);
+          const Lb = lookup(2, rS);
+
+          const gr = clamp(Lr.trans * Lr.nat, 0, 1);
+          const gg = clamp(Lg.trans * Lg.nat, 0, 1);
+          const gb = clamp(Lb.trans * Lb.nat, 0, 1);
+
+          if (gr < 1e-4 && gg < 1e-4 && gb < 1e-4) {
+            outD[idx] = 0; outD[idx + 1] = 0; outD[idx + 2] = 0; outD[idx + 3] = 255;
+            continue;
+          }
+
+          function chanSample(L, sx, sy, rS, chGain, chIndex){
+            const p = objXYPhysical(L, sx, sy, rS);
+            const uv0 = objectHitToPreviewUV(p.ox, p.oy);
+            const sigmaBoost = 1.15;
+            const sigR = Math.max(0, Number(L.sigmaRad || L.sigma || 0) * sigmaBoost);
+            const sigT = Math.max(0, Number(L.sigmaTan || L.sigma || 0) * sigmaBoost);
+            const pNorm = Math.hypot(p.ox, p.oy);
+            const urx = pNorm > 1e-9 ? (p.ox / pNorm) : 1;
+            const ury = pNorm > 1e-9 ? (p.oy / pNorm) : 0;
+            const utx = -ury;
+            const uty = urx;
+
+            if (sigR < 1e-4 && sigT < 1e-4) {
+              const c = sample(uv0.u, uv0.v);
+              return clamp(c[chIndex] * chGain, 0, 255);
+            }
+
+            let acc = 0;
+            for (let t = 0; t < taps.length; t++){
+              const o = taps[t];
+              const ox = p.ox + urx * (o[0] * sigR) + utx * (o[1] * sigT);
+              const oy = p.oy + ury * (o[0] * sigR) + uty * (o[1] * sigT);
+              const uv = objectHitToPreviewUV(ox, oy);
+              const c = sample(uv.u, uv.v);
+              acc += c[chIndex];
+            }
+            return clamp((acc / taps.length) * chGain, 0, 255);
+          }
+
+          outD[idx]     = chanSample(Lr, sx, sy, rS, gr, 0);
+          outD[idx + 1] = chanSample(Lg, sx, sy, rS, gg, 1);
+          outD[idx + 2] = chanSample(Lb, sx, sy, rS, gb, 2);
+          outD[idx + 3] = 255;
+          if (outD[idx] > 0 || outD[idx + 1] > 0 || outD[idx + 2] > 0) litPixels++;
+        }
+      }
+
+      setUsableCircleFromRenderedPixels(outD, W, H, sensorW, sensorH);
+
+      wctx.putImageData(out, 0, 0);
+      preview.worldReady = true;
+      if (litPixels <= 0) {
+        console.warn("[preview-black]", {
+          reason: "all_pixels_black_fast_lut",
+          mode: "fast",
+          activeZoomConfig: Number.isFinite(Number(lens?.zoom?.activeConfig)) ? Number(lens.zoom.activeConfig) : null,
+          activeZoomLabel: String(lens?.zemax?.currentConfigLabel || "—"),
+        });
+      }
+      hidePreviewProgress();
+      drawPreviewViewport();
+      finishPreviewRender();
+    }
+
+    requestPreviewFrame(buildStep);
+  }
+
+  function renderDOFPath() {
+    // allocate render target
+    preview.worldCanvas.width  = W;
+    preview.worldCanvas.height = H;
+    const wctx = preview.worldCanvas.getContext("2d", { willReadFrequently: true });
+    preview.worldCtx = wctx;
+
+    const out  = wctx.createImageData(W, H);
+    const outD = out.data;
+    let litPixels = 0;
+
+    const epsX   = 0.05;
+    const startX = sensorX + epsX;
+
+    const WAVES = doCA ? ["c","d","g"] : [wavePreset, wavePreset, wavePreset];
+
+    let row = 0;
+    const rowsPerChunk = (q === "hq") ? 10 : (q === "draft" ? 24 : 16);
+
+    function step() {
+      if (!renderEngineEnabled || jobId !== _previewRenderJobId) {
+        hidePreviewProgress();
+        finishPreviewRender();
+        return;
+      }
+      const yEnd = Math.min(H, row + rowsPerChunk);
+      setPreviewProgress(row / H, `DOF ${Math.round((row / H) * 100)}%`);
+
+      for (; row < yEnd; row++) {
+        const sy = (0.5 - (row + 0.5) / H) * sensorHv;
+
+        for (let col = 0; col < W; col++) {
+          const sx = ((col + 0.5) / W - 0.5) * sensorWv;
+          const rS = Math.hypot(sx, sy);
+
+          const nat = naturalCos4(rS);
+
+          let accR = 0, accG = 0, accB = 0;
+          let wSum = 0;
+
+          for (let s = 0; s < spp; s++) {
+            const jx = (Math.random() - 0.5) * (sensorWv / W) * 0.6;
+            const jy = (Math.random() - 0.5) * (sensorHv / H) * 0.6;
+
+            const pS = { x: startX, y: sx + jx, z: sy + jy };
+
+            const pp = samplePupilDisk(Math.random(), Math.random());
+            const target = { x: xStop, y: pp.y, z: pp.z };
+            const dir0 = normalize3({ x: target.x - pS.x, y: target.y - pS.y, z: target.z - pS.z });
+
+            let colLin = [0, 0, 0];
+            let okAny = false;
+
+            for (let ch = 0; ch < 3; ch++) {
+              const wave = WAVES[ch];
+              const tr = traceRayReverse3D({ p: pS, d: dir0 }, lens.surfaces, wave);
+              if (tr.vignetted || tr.tir) continue;
+
+              const hitObj = intersectPlaneX3D(tr.endRay, xObjPlane);
+              if (!hitObj) continue;
+
+              const uv = objectHitToPreviewUV(hitObj.y, hitObj.z);
+              const c  = sample(uv.u, uv.v);
+
+              colLin[ch] = srgbToLin(c[ch]);
+              okAny = true;
+            }
+
+            if (!okAny) continue;
+
+            const w = nat;
+            accR += colLin[0] * w;
+            accG += colLin[1] * w;
+            accB += colLin[2] * w;
+            wSum += w;
+          }
+
+          const idx = (row * W + col) * 4;
+          if (wSum <= 1e-9) {
+            outD[idx] = 0; outD[idx + 1] = 0; outD[idx + 2] = 0; outD[idx + 3] = 255;
+          } else {
+            outD[idx]     = linToSrgb(accR / wSum);
+            outD[idx + 1] = linToSrgb(accG / wSum);
+            outD[idx + 2] = linToSrgb(accB / wSum);
+            outD[idx + 3] = 255;
+            if (outD[idx] > 0 || outD[idx + 1] > 0 || outD[idx + 2] > 0) litPixels++;
+          }
+        }
+      }
+
+      wctx.putImageData(out, 0, 0);
+      preview.worldReady = true;
+      drawPreviewViewport();
+
+      if (row < H) requestPreviewFrame(step);
+      else {
+        setUsableCircleFromRenderedPixels(outD, W, H, sensorW, sensorH);
+        if (litPixels <= 0) {
+          console.warn("[preview-black]", {
+            reason: "all_pixels_black_quality_dof",
+            mode: "quality",
+            activeZoomConfig: Number.isFinite(Number(lens?.zoom?.activeConfig)) ? Number(lens.zoom.activeConfig) : null,
+            activeZoomLabel: String(lens?.zemax?.currentConfigLabel || "—"),
+          });
+        }
+        hidePreviewProgress();
+        drawPreviewViewport();
+        finishPreviewRender();
+      }
+    }
+
+    requestPreviewFrame(step);
+  }
+
+  // --- run ---
+  preview.worldReady = false;
+
+  if (previewMode === "fast") {
+    renderFastLUT();
+  } else {
+    renderDOFPath();
+  }
+  }
+
+  // -------------------- toolbar actions: Scale → FL, Set T --------------------
+  function scaleSurfaceDimensions(s, k) {
+    if (!s || !Number.isFinite(k) || k <= 0) return;
+
+    const t = String(s.type || "").toUpperCase();
+    if (t !== "OBJ" && t !== "IMS") s.t = Number(s.t || 0) * k;
+    if (Math.abs(Number(s.R || 0)) > 1e-9) s.R = Number(s.R) * k;
+
+    const ap = Number(s.ap);
+    if (Number.isFinite(ap)) s.ap = Math.max(AP_MIN, ap * k);
+
+    const apOpt = Number(s.ap_optical);
+    if (Number.isFinite(apOpt)) s.ap_optical = Math.max(AP_MIN, apOpt * k);
+
+    if (s.ap_mech != null && String(s.ap_mech).trim() !== "") {
+      const apMech = Number(s.ap_mech);
+      if (Number.isFinite(apMech)) s.ap_mech = Math.max(AP_MIN, apMech * k);
+    }
+
+    const shoulder = Number(s.shoulder_depth);
+    if (Number.isFinite(shoulder)) s.shoulder_depth = Math.max(0, shoulder * k);
+
+    const bevel = Number(s.bevel);
+    if (Number.isFinite(bevel)) s.bevel = Math.max(0, bevel * k);
+
+    if (String(s.edge_thickness_mode || "").toLowerCase() === "explicit") {
+      const et = Number(s.edge_thickness);
+      if (Number.isFinite(et)) s.edge_thickness = Math.max(0, et * k);
+    }
+  }
+
+  function scaleToTargetFocal() {
+    const wavePreset = ui.wavePreset?.value || "d";
+    const cur = estimateEflBflParaxial(lens.surfaces, wavePreset).efl;
+    if (!Number.isFinite(cur) || cur <= 0) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Scale→FL: current EFL not solvable (try a valid stop + lens).";
+      return;
+    }
+
+    const target = num(prompt("Target focal length (mm)?", String(Math.round(cur))), cur);
+    if (!Number.isFinite(target) || target <= 0) return;
+
+    const k = target / cur;
+
+    for (let i = 0; i < lens.surfaces.length; i++) {
+      scaleSurfaceDimensions(lens.surfaces[i], k);
+    }
+
+    computeVertices(lens.surfaces, 0, 0);
+    clampAllApertures(lens.surfaces);
+    buildTable();
+    renderAll();
+    scheduleRenderPreview();
+
+    if (ui.footerWarn) ui.footerWarn.textContent = `Scale→FL: EFL ${cur.toFixed(2)} → target ${target.toFixed(2)} (k=${k.toFixed(4)}).`;
+  }
+
+  function setTargetTStop() {
+    const wavePreset = ui.wavePreset?.value || "d";
+    const { efl } = estimateEflBflParaxial(lens.surfaces, wavePreset);
+    if (!Number.isFinite(efl) || efl <= 0) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Set T: EFL unknown (try Scale→FL or fix geometry).";
+      return;
+    }
+
+    const stopIdx = findStopSurfaceIndex(lens.surfaces);
+    if (stopIdx < 0) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Set T: no STOP surface marked.";
+      return;
+    }
+
+    const currentT = estimateTStopApprox(efl, lens.surfaces, wavePreset);
+    const targetT = num(prompt("Target T-stop? (approx)", currentT ? currentT.toFixed(2) : "2.00"), currentT || 2.0);
+    if (!Number.isFinite(targetT) || targetT <= 0) return;
+
+    const stopSurf = lens.surfaces[stopIdx];
+    const loMin = AP_MIN;
+    const hiMax = maxApForSurface(stopSurf);
+    const prevAp = getSurfaceOpticalAp(stopSurf);
+
+    let lo = loMin;
+    let hi = hiMax;
+    let bestAp = prevAp;
+    let bestErr = Infinity;
+
+    const evalAtAp = (ap) => {
+      stopSurf.ap = ap;
+      stopSurf.ap_optical = ap;
+      const t = estimateTStopApprox(efl, lens.surfaces, wavePreset);
+      return Number.isFinite(t) ? t : null;
+    };
+
+    const tLo = evalAtAp(lo);
+    const tHi = evalAtAp(hi);
+
+    if (tLo == null || tHi == null) {
+      const guessAp = Math.max(loMin, Math.min(efl / (2 * targetT), hiMax));
+      bestAp = guessAp;
+    } else {
+      for (let iter = 0; iter < 28; iter++) {
+        const mid = 0.5 * (lo + hi);
+        const tMid = evalAtAp(mid);
+        if (tMid == null) { hi = mid; continue; }
+
+        const err = Math.abs(tMid - targetT);
+        if (err < bestErr) {
+          bestErr = err;
+          bestAp = mid;
+        }
+
+        // Larger aperture -> lower T, so tMid > target means aperture must grow.
+        if (tMid > targetT) lo = mid;
+        else hi = mid;
+      }
+    }
+
+    const stopAp = Math.max(loMin, Math.min(bestAp, hiMax));
+    lens.surfaces[stopIdx].ap = stopAp;
+    lens.surfaces[stopIdx].ap_optical = stopAp;
+
+    clampAllApertures(lens.surfaces);
+    buildTable();
+    renderAll();
+    scheduleRenderPreview();
+
+    if (ui.footerWarn) ui.footerWarn.textContent = `Set T: stop ap → ${lens.surfaces[stopIdx].ap.toFixed(2)}mm (semi-diam) for T${targetT.toFixed(2)} @ EFL ${efl.toFixed(2)}mm.`;
+  }
+
+  // -------------------- New Lens modal --------------------
+  function openNewLensModal() {
+    if (!ui.newLensModal) return;
+    ui.newLensModal.classList.remove("hidden");
+  }
+  function closeNewLensModal() {
+    if (!ui.newLensModal) return;
+    ui.newLensModal.classList.add("hidden");
+  }
+
+  function makeTemplate(templateName) {
+    const t = String(templateName || "blank");
+    if (t === "doubleGauss" || t === "omit50v1") return omit50ConceptV1();
+    if (t === "tessar") {
+      return sanitizeLens({
+        name: "Tessar-ish (simple)",
+        surfaces: [
+          { type: "OBJ", R: 0, t: 0, ap: 60, glass: "AIR", stop: false },
+          { type: "1", R: 70, t: 4.5, ap: 18, glass: "BK7", stop: false },
+          { type: "2", R: -35, t: 1.2, ap: 18, glass: "AIR", stop: false },
+          { type: "STOP", R: 0, t: 6.0, ap: 8, glass: "AIR", stop: true },
+          { type: "4", R: -50, t: 3.8, ap: 16, glass: "F2", stop: false },
+          { type: "5", R: 120, t: 18, ap: 16, glass: "AIR", stop: false },
+          { type: "IMS", R: 0, t: 0, ap: 12.77, glass: "AIR", stop: false },
+        ],
+      });
+    }
+    return sanitizeLens({
+      name: "Blank",
+      surfaces: [
+        { type: "OBJ", R: 0.0, t: 0.0, ap: 60.0, glass: "AIR", stop: false },
+        { type: "STOP", R: 0.0, t: 20.0, ap: 8.0, glass: "AIR", stop: true },
+        { type: "IMS", R: 0.0, t: 0.0, ap: 12.77, glass: "AIR", stop: false },
+      ],
+    });
+  }
+
+  function createNewLensFromModal() {
+    const template = ui.nlTemplate?.value || "blank";
+    const targetF = num(ui.nlFocal?.value, 50);
+    const targetT = num(ui.nlT?.value, 2.8);
+    const stopPos = ui.nlStopPos?.value || "keep";
+    const name = (ui.nlName?.value || "New lens").trim();
+
+    let L = sanitizeLens(makeTemplate(template));
+    L.name = name || L.name;
+
+    if (stopPos === "middle") {
+      const stopIdx = findStopSurfaceIndex(L.surfaces);
+      if (stopIdx >= 0) L.surfaces[stopIdx].stop = false;
+      const mid = Math.max(1, Math.min(L.surfaces.length - 2, Math.floor(L.surfaces.length / 2)));
+      L.surfaces[mid].stop = true;
+      L.surfaces[mid].type = "STOP";
+      const f = findStopSurfaceIndex(L.surfaces);
+      L.surfaces.forEach((s, i) => { if (i !== f) s.stop = false; });
+    }
+
+    loadLens(L);
+
+    {
+      const wavePreset = ui.wavePreset?.value || "d";
+      const cur = estimateEflBflParaxial(lens.surfaces, wavePreset).efl;
+      if (Number.isFinite(cur) && cur > 0 && Number.isFinite(targetF) && targetF > 0) {
+        const k = targetF / cur;
+        for (let i = 0; i < lens.surfaces.length; i++) {
+          scaleSurfaceDimensions(lens.surfaces[i], k);
+        }
+      }
+    }
+
+    {
+      const wavePreset = ui.wavePreset?.value || "d";
+      const { efl } = estimateEflBflParaxial(lens.surfaces, wavePreset);
+      const stopIdx = findStopSurfaceIndex(lens.surfaces);
+      if (stopIdx >= 0 && Number.isFinite(efl) && efl > 0 && Number.isFinite(targetT) && targetT > 0) {
+        const newAp = efl / (2 * targetT);
+        const stopAp = Math.max(AP_MIN, Math.min(newAp, maxApForSurface(lens.surfaces[stopIdx])));
+        lens.surfaces[stopIdx].ap = stopAp;
+        lens.surfaces[stopIdx].ap_optical = stopAp;
+      }
+    }
+
+    clampAllApertures(lens.surfaces);
+    buildTable();
+    renderAll();
+    scheduleRenderPreview();
+    closeNewLensModal();
+  }
+
+  // -------------------- fullscreen helpers --------------------
+  async function togglePaneFullscreen(pane) {
+    if (!pane) return;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await pane.requestFullscreen();
+    } catch (e) {
+      if (ui.footerWarn) ui.footerWarn.textContent = `Fullscreen failed: ${e?.message || e}`;
+    }
+  }
+
+  async function togglePreviewFullscreen() {
+    await togglePaneFullscreen(ui.previewPane);
+    setTimeout(() => {
+      resizePreviewCanvasToCSS();
+      if (preview.ready) scheduleRenderPreview();
+    }, 50);
+  }
+
+  async function toggleRaysFullscreen() {
+    await togglePaneFullscreen(ui.raysPane);
+    setTimeout(() => {
+      resizeCanvasToCSS();
+      redrawRayPaneOnly();
+    }, 50);
+  }
+
+  function isZmxPasteModalOpen() {
+    return !!(ui.zmxPasteModal && !ui.zmxPasteModal.classList.contains("hidden"));
+  }
+
+  function openZmxPasteModal() {
+    if (!ui.zmxPasteModal) return;
+    ui.zmxPasteModal.classList.remove("hidden");
+    ui.zmxPasteModal.setAttribute("aria-hidden", "false");
+    setTimeout(() => {
+      if (ui.zmxPasteText) ui.zmxPasteText.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function closeZmxPasteModal() {
+    if (!ui.zmxPasteModal) return;
+    ui.zmxPasteModal.classList.add("hidden");
+    ui.zmxPasteModal.setAttribute("aria-hidden", "true");
+  }
+
+  function clearZmxPasteText() {
+    if (!ui.zmxPasteText) return;
+    ui.zmxPasteText.value = "";
+    ui.zmxPasteText.focus({ preventScroll: true });
+  }
+
+  async function importFromZmxPasteModal() {
+    const raw = String(ui.zmxPasteText?.value || "");
+    if (!raw.trim()) {
+      const msg = "Paste Zemax text first.";
+      if (ui.footerWarn) ui.footerWarn.textContent = msg;
+      toast(msg);
+      return false;
+    }
+
+    if (!/(^|\n)\s*SURF\s+-?\d+/im.test(raw)) {
+      const msg = "This does not look like a Zemax sequential file.";
+      if (ui.footerWarn) ui.footerWarn.textContent = msg;
+      toast(msg);
+      return false;
+    }
+
+    try {
+      importZemaxText(raw, "pasted_zmx", { importSource: "zmx_text" });
+      closeZmxPasteModal();
+      return true;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (ui.footerWarn) ui.footerWarn.textContent = `ZMX paste import failed: ${msg}`;
+      toast(`ZMX import failed: ${msg}`);
+      return false;
+    }
+  }
+
+  // -------------------- preview source + image load --------------------
+  function syncPreviewFitUI() {
+    if (!ui.prevObjH || !ui.prevObjW || !ui.previewAutoFit) return;
+    const autoFit = !!ui.previewAutoFit.checked;
+    ui.prevObjH.disabled = false;
+    ui.prevObjW.disabled = false;
+    ui.prevObjH.readOnly = autoFit;
+    ui.prevObjW.readOnly = autoFit;
+    ui.prevObjH.title = autoFit
+      ? "Auto-filled from current distance/focus/framing"
+      : "Manual object height in mm";
+    ui.prevObjW.title = autoFit
+      ? "Auto-filled from current distance/focus/framing"
+      : "Manual object width in mm";
+  }
+
+  function setAutoObjectSizeMm(nextWidthMm, nextHeightMm) {
+    const w = Number(nextWidthMm);
+    const h = Number(nextHeightMm);
+    if (ui.prevObjW && Number.isFinite(w) && w > 1e-6) {
+      const prevW = Number(ui.prevObjW.value);
+      if (!Number.isFinite(prevW) || Math.abs(prevW - w) >= 0.05) {
+        ui.prevObjW.value = w.toFixed(2);
+      }
+    }
+    if (ui.prevObjH && Number.isFinite(h) && h > 1e-6) {
+      const prevH = Number(ui.prevObjH.value);
+      if (!Number.isFinite(prevH) || Math.abs(prevH - h) >= 0.05) {
+        ui.prevObjH.value = h.toFixed(2);
+      }
+    }
+  }
+
+  function getPreviewSourceUrl(modeRaw) {
+    const mode = String(modeRaw || "").toLowerCase() === "custom" ? "custom" : "chart";
+    return preview.sourceUrls[mode] || null;
+  }
+
+  async function setPreviewSourceMode(modeRaw) {
+    const mode = String(modeRaw || "").toLowerCase() === "custom" ? "custom" : "chart";
+    const url = getPreviewSourceUrl(mode);
+    if (!url) {
+      if (mode === "custom") {
+        preview.sourceMode = "chart";
+        if (ui.previewSourceMode) ui.previewSourceMode.value = "chart";
+        toast("Load eerst een custom image.");
+      }
+      return false;
+    }
+
+    preview.sourceMode = mode;
+    if (ui.previewSourceMode) ui.previewSourceMode.value = mode;
+    await loadPreviewImageFromURL(url, { announce: false });
+    return true;
+  }
+
+  function loadPreviewImageFromURL(url, opts = {}) {
+    return new Promise((resolve, reject) => {
+      const sourceUrl = String(url || "").trim();
+      if (!sourceUrl) {
+        reject(new Error("Empty preview URL"));
+        return;
+      }
+      const announce = opts.announce !== false;
+      const noCacheBust =
+        opts.noCacheBust === true ||
+        /^data:/i.test(sourceUrl) ||
+        /^blob:/i.test(sourceUrl);
+      const imgSrc = noCacheBust
+        ? sourceUrl
+        : sourceUrl + (sourceUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        preview.img = img;
+
+        preview.imgCanvas.width = img.naturalWidth || img.width;
+        preview.imgCanvas.height = img.naturalHeight || img.height;
+        preview.imgCtx.setTransform(1, 0, 0, 1, 0, 0);
+        preview.imgCtx.imageSmoothingEnabled = true;
+        preview.imgCtx.imageSmoothingQuality = "high";
+        preview.imgCtx.clearRect(0, 0, preview.imgCanvas.width, preview.imgCanvas.height);
+        preview.imgCtx.drawImage(img, 0, 0);
+
+        const id = preview.imgCtx.getImageData(0, 0, preview.imgCanvas.width, preview.imgCanvas.height);
+        preview.imgData = id.data;
+        preview.ready = true;
+        preview.worldReady = false;
+        preview.dirtyKey = "";
+
+        if (announce && ui.footerWarn) {
+          ui.footerWarn.textContent =
+            `Preview image loaded: ${preview.imgCanvas.width}×${preview.imgCanvas.height} (${preview.sourceMode})`;
+        }
+        scheduleRenderPreview();
+        resolve(true);
+      };
+      img.onerror = (e) => {
+        if (ui.footerWarn) ui.footerWarn.textContent = `Preview image load failed: ${sourceUrl}`;
+        reject(e);
+      };
+      img.src = imgSrc;
+    });
+  }
+
+  function loadPreviewImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = String(reader.result || "");
+        preview.sourceUrls.custom = url;
+        setPreviewSourceMode("custom").then(resolve).catch(reject);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // -------------------- load lens JSON --------------------
+  function parseZemaxFirstNumber(s) {
+    const m = String(s ?? "").replace(/,/g, ".").match(/[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/);
+    return m ? Number(m[0]) : NaN;
+  }
+
+  function parseZemaxNumberList(s) {
+    const m = String(s ?? "").replace(/,/g, ".").match(/[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/g);
+    if (!m) return [];
+    return m
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v));
+  }
+
+  function unitTokenToMmScale(token) {
+    const u = String(token ?? "").trim().toUpperCase();
+    if (u === "MM" || u === "MILLIMETER" || u === "MILLIMETERS") return 1;
+    if (u === "CM" || u === "CENTIMETER" || u === "CENTIMETERS") return 10;
+    if (u === "M" || u === "METER" || u === "METERS") return 1000;
+    if (u === "IN" || u === "INCH" || u === "INCHES") return 25.4;
+    return 1;
+  }
+
+  function stripOptionalQuotes(s) {
+    const raw = String(s ?? "").trim();
+    if (!raw) return "";
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      return raw.slice(1, -1).trim();
+    }
+    return raw;
+  }
+
+  function sourceNameToLensName(sourceName = "Zemax import") {
+    return String(sourceName || "Zemax import").replace(/\.(zmx|seq|txt)$/i, "");
+  }
+
+  function isLikelyZemaxSequentialText(txt) {
+    if (!txt) return false;
+    const s = String(txt);
+    const hasSurf = /(^|\n)\s*SURF\s+-?\d+/im.test(s);
+    const hasModeSeq = /(^|\n)\s*MODE\s+SEQ\b/im.test(s);
+    const hasCurv = /(^|\n)\s*CURV\s+/im.test(s);
+    return hasSurf && (hasModeSeq || hasCurv);
+  }
+
+  function parseZemaxGlassLine(line) {
+    const parts = String(line || "").trim().split(/\s+/).filter(Boolean);
+    const glass = parts[1] ? String(parts[1]).trim() : "AIR";
+    const glassUp = glass.toUpperCase();
+
+    if (glassUp === "___BLANK") {
+      const ndFixed = parseZemaxFirstNumber(parts[4]);
+      const vdFixed = parseZemaxFirstNumber(parts[5]);
+      let nd = (Number.isFinite(ndFixed) && ndFixed > 1) ? ndFixed : NaN;
+      let vd = (Number.isFinite(vdFixed) && vdFixed > 0) ? vdFixed : NaN;
+
+      // Fallback for variant formatting; still prefer the explicit slots above.
+      if (!Number.isFinite(nd) || !Number.isFinite(vd)) {
+        const nums = parts
+          .slice(2)
+          .map((p) => parseZemaxFirstNumber(p))
+          .filter((n) => Number.isFinite(n));
+        for (let i = 0; i < nums.length; i++) {
+          const n = nums[i];
+          if (n > 1.2 && n < 3.0) {
+            nd = n;
+            for (let j = i + 1; j < nums.length; j++) {
+              if (nums[j] > 1) { vd = nums[j]; break; }
+            }
+            break;
+          }
+        }
+      }
+
+      return {
+        glass,
+        nd: Number.isFinite(nd) ? nd : null,
+        vd: Number.isFinite(vd) ? vd : null,
+      };
+    }
+
+    const nums = parts
+      .slice(2)
+      .map((p) => parseZemaxFirstNumber(p))
+      .filter((n) => Number.isFinite(n));
+
+    let nd = NaN;
+    let ndIdx = -1;
+    for (let i = 0; i < nums.length; i++) {
+      const n = nums[i];
+      if (n > 1.2 && n < 3.0) {
+        nd = n;
+        ndIdx = i;
+        break;
+      }
+    }
+
+    let vd = NaN;
+    if (ndIdx >= 0) {
+      for (let i = ndIdx + 1; i < nums.length; i++) {
+        const v = nums[i];
+        if (v > 1) {
+          vd = v;
+          break;
+        }
+      }
+    }
+
+    if (!Number.isFinite(nd) && nums.length >= 2) {
+      const ndTail = nums[nums.length - 2];
+      const vdTail = nums[nums.length - 1];
+      if (ndTail > 1.2 && ndTail < 3.0 && vdTail > 1) {
+        nd = ndTail;
+        vd = vdTail;
+      }
+    }
+
+    if (Number.isFinite(nd) && !Number.isFinite(vd)) vd = 999;
+
+    return {
+      glass,
+      nd: Number.isFinite(nd) ? nd : null,
+      vd: Number.isFinite(vd) ? vd : null,
+    };
+  }
+
+  function extractLikelyZemaxLinesFromText(txt) {
+    const all = String(txt || "").replace(/\r/g, "").split("\n");
+    if (!all.length) return [];
+    const idxVers = all.findIndex((ln) => /^\s*VERS\b/i.test(ln));
+    const idxModeSeq = all.findIndex((ln) => /^\s*MODE\s+SEQ\b/i.test(ln));
+    const idxModeAny = all.findIndex((ln) => /^\s*MODE\b/i.test(ln));
+    const idxSurf = all.findIndex((ln) => /^\s*SURF\s+-?\d+/i.test(ln));
+    let start = -1;
+
+    const preferred = [idxVers, idxModeSeq].filter((n) => n >= 0);
+    if (preferred.length) {
+      start = Math.min(...preferred);
+    } else if (idxModeAny >= 0) {
+      start = idxModeAny;
+    } else if (idxSurf >= 0) {
+      start = idxSurf;
+    }
+
+    if (start < 0) return all;
+    return all.slice(start);
+  }
+
+  function parseZemaxMultiConfigLines(lines, unitScaleDefault = 1) {
+    const out = {
+      count: 1,
+      configsByIndex: new Map(),
+    };
+    if (!Array.isArray(lines) || !lines.length) return out;
+
+    let unitScaleToMm = Number.isFinite(Number(unitScaleDefault)) ? Number(unitScaleDefault) : 1;
+    const ensureConfig = (cfgIndex) => {
+      const idx = Number.isFinite(Number(cfgIndex)) ? Math.max(1, Math.trunc(Number(cfgIndex))) : 1;
+      if (!out.configsByIndex.has(idx)) {
+        out.configsByIndex.set(idx, {
+          index: idx,
+          label: null,
+          aperture: null,
+          thicknessOverrides: {},
+          fieldOverrides: { vdx: {}, vdy: {}, vcx: {}, vcy: {} },
+        });
+      }
+      return out.configsByIndex.get(idx);
+    };
+
+    for (const raw of lines) {
+      const line = String(raw || "").trim();
+      if (!line) continue;
+
+      const mUnit = line.match(/^UNIT\s+([A-Za-z]+)/i);
+      if (mUnit) {
+        unitScaleToMm = unitTokenToMmScale(mUnit[1]);
+        continue;
+      }
+
+      const mNum = line.match(/^MNUM\s+(\d+)/i);
+      if (mNum) {
+        out.count = Math.max(out.count, Math.max(1, Math.trunc(Number(mNum[1]))));
+        continue;
+      }
+
+      const mOffQuoted = line.match(/^MOFF\s+0\s+(\d+)\s+"([^"]*)"/i);
+      if (mOffQuoted) {
+        const cfg = ensureConfig(Number(mOffQuoted[1]));
+        const label = String(mOffQuoted[2] || "").trim();
+        if (label) cfg.label = label;
+        continue;
+      }
+      const mOffBare = line.match(/^MOFF\s+0\s+(\d+)\s+(.+)$/i);
+      if (mOffBare) {
+        const cfg = ensureConfig(Number(mOffBare[1]));
+        const label = stripOptionalQuotes(String(mOffBare[2] || "")).trim();
+        if (label) cfg.label = label;
+        continue;
+      }
+
+      const mAper = line.match(/^APER\s+0\s+(\d+)\s+([-+0-9.Ee]+)/i);
+      if (mAper) {
+        const cfg = ensureConfig(Number(mAper[1]));
+        const val = Number(mAper[2]);
+        if (Number.isFinite(val)) cfg.aperture = val;
+        continue;
+      }
+
+      const mThic = line.match(/^THIC\s+(\d+)\s+(\d+)\s+([-+0-9.Ee]+)/i);
+      if (mThic) {
+        const surfNo = Math.max(0, Math.trunc(Number(mThic[1])));
+        const cfg = ensureConfig(Number(mThic[2]));
+        const val = Number(mThic[3]);
+        if (Number.isFinite(val)) cfg.thicknessOverrides[String(surfNo)] = val * unitScaleToMm;
+        continue;
+      }
+
+      const mFv = line.match(/^FV(DX|DY|CX|CY)\s+(\d+)\s+(\d+)\s+([-+0-9.Ee]+)/i);
+      if (mFv) {
+        const axis = String(mFv[1] || "").toLowerCase();
+        const fieldIndex = Math.max(0, Math.trunc(Number(mFv[2])));
+        const cfg = ensureConfig(Number(mFv[3]));
+        const val = Number(mFv[4]);
+        if (!Number.isFinite(val)) continue;
+        const key = `v${axis}`;
+        if (!cfg.fieldOverrides[key]) cfg.fieldOverrides[key] = {};
+        cfg.fieldOverrides[key][String(fieldIndex)] = val;
+      }
+    }
+
+    for (let i = 1; i <= out.count; i++) ensureConfig(i);
+    return out;
+  }
+
+  function buildZoomConfigsFromMeta(multiConfig, surfaces) {
+    if (!multiConfig || typeof multiConfig !== "object") return [];
+    const map = multiConfig.configsByIndex instanceof Map ? multiConfig.configsByIndex : new Map();
+    if (!map.size && !(Number(multiConfig.count) > 1)) return [];
+
+    const knownSurfNos = new Set(
+      (Array.isArray(surfaces) ? surfaces : [])
+        .map((s) => Number(s?.zmx?.surf))
+        .filter((n) => Number.isFinite(n))
+        .map((n) => Math.max(0, Math.trunc(n)))
+    );
+
+    const count = Math.max(1, Number.isFinite(Number(multiConfig.count)) ? Math.trunc(Number(multiConfig.count)) : 1);
+    for (let i = 1; i <= count; i++) {
+      if (!map.has(i)) {
+        map.set(i, {
+          index: i,
+          label: null,
+          aperture: null,
+          thicknessOverrides: {},
+          fieldOverrides: { vdx: {}, vdy: {}, vcx: {}, vcy: {} },
+        });
+      }
+    }
+
+    const list = Array.from(map.values())
+      .map((cfg, arrIdx) => {
+        const index = Math.max(1, Math.trunc(Number(cfg?.index || (arrIdx + 1))));
+        const label = (cfg?.label != null && String(cfg.label).trim() !== "")
+          ? String(cfg.label).trim()
+          : null;
+        const aperture = Number.isFinite(Number(cfg?.aperture)) ? Number(cfg.aperture) : null;
+
+        const thicknessOverrides = {};
+        for (const [k, v] of Object.entries(cfg?.thicknessOverrides || {})) {
+          const surfNo = Math.max(0, Math.trunc(Number(k)));
+          const val = Number(v);
+          if (!Number.isFinite(surfNo) || !Number.isFinite(val)) continue;
+          // Keep known surface overrides, but also keep unknown keys for diagnostics and round-trip.
+          if (knownSurfNos.size > 0 && !knownSurfNos.has(surfNo)) {
+            thicknessOverrides[String(surfNo)] = val;
+            continue;
+          }
+          thicknessOverrides[String(surfNo)] = val;
+        }
+
+        const fieldOverrides = {
+          vdx: sanitizeZoomFieldOverrideMap(cfg?.fieldOverrides?.vdx),
+          vdy: sanitizeZoomFieldOverrideMap(cfg?.fieldOverrides?.vdy),
+          vcx: sanitizeZoomFieldOverrideMap(cfg?.fieldOverrides?.vcx),
+          vcy: sanitizeZoomFieldOverrideMap(cfg?.fieldOverrides?.vcy),
+        };
+
+        const overrideSurfaceNumbers = Object.keys(thicknessOverrides)
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n))
+          .sort((a, b) => a - b);
+
+        return {
+          index,
+          label,
+          aperture,
+          thicknessOverrides,
+          fieldOverrides,
+          overrideSurfaceNumbers,
+        };
+      })
+      .sort((a, b) => a.index - b.index);
+
+    const hasThic = list.some((cfg) => Object.keys(cfg.thicknessOverrides || {}).length > 0);
+    if (!hasThic && list.length <= 1) return [];
+    return list;
+  }
+
+  function parseZemaxSequentialText(txt, sourceName = "Zemax file") {
+    const lines = extractLikelyZemaxLinesFromText(txt);
+    if (!lines.length) throw new Error("Empty file");
+
+    let unitScaleToMm = 1;
+    const parsed = [];
+    let cur = null;
+
+    const zemaxMeta = {
+      source: "zemax",
+      name: null,
+      version: null,
+      mode: null,
+      fieldType: "angle_deg",
+      wavelengthsByIndex: new Map(),
+      primaryWavelengthIndex: null,
+      fieldsRaw: {
+        yfln: [],
+        fwgn: [],
+        vdx: [],
+        vdy: [],
+        vcx: [],
+        vcy: [],
+      },
+      multiConfig: parseZemaxMultiConfigLines(lines, unitScaleToMm),
+    };
+
+    const pushCur = () => {
+      if (!cur) return;
+      parsed.push(cur);
+      cur = null;
+    };
+
+    for (const raw of lines) {
+      const line = String(raw || "").trim();
+      if (!line) continue;
+      if (line.startsWith("!") || line.startsWith("#") || line.startsWith("//")) continue;
+
+      const up = line.toUpperCase();
+
+      if (/^VERS\b/i.test(line)) {
+        zemaxMeta.version = stripOptionalQuotes(line.replace(/^VERS\b/i, ""));
+        continue;
+      }
+      if (/^MODE\b/i.test(line)) {
+        zemaxMeta.mode = stripOptionalQuotes(line.replace(/^MODE\b/i, "")).toUpperCase();
+        continue;
+      }
+      if (/^NAME\b/i.test(line)) {
+        const nm = stripOptionalQuotes(line.replace(/^NAME\b/i, ""));
+        if (nm) zemaxMeta.name = nm;
+        continue;
+      }
+      if (/^PWAV\b/i.test(line)) {
+        const nums = parseZemaxNumberList(line.replace(/^PWAV\b/i, ""));
+        if (nums.length) zemaxMeta.primaryWavelengthIndex = Math.max(1, Math.round(nums[0]));
+        continue;
+      }
+      if (/^WAVM\b/i.test(line)) {
+        const nums = parseZemaxNumberList(line.replace(/^WAVM\b/i, ""));
+        if (nums.length) {
+          let idx = 0;
+          // Zemax WAVM format is typically: WAVM <idx> <lambda_um> <weight>
+          // Use the wavelength slot (2nd numeric token), not the weight token.
+          let lam = (nums.length >= 2) ? nums[1] : nums[nums.length - 1];
+          if (nums.length >= 2) idx = Math.round(nums[0]);
+          if (!Number.isFinite(idx) || idx <= 0) idx = zemaxMeta.wavelengthsByIndex.size + 1;
+          if (Number.isFinite(lam) && lam > 0) {
+            const lamNm = lam < 10 ? lam * 1000 : lam;
+            zemaxMeta.wavelengthsByIndex.set(idx, lamNm);
+          }
+        }
+        continue;
+      }
+      if (/^FTYP\b/i.test(line)) {
+        const nums = parseZemaxNumberList(line.replace(/^FTYP\b/i, ""));
+        const ftyp = nums.length ? Math.round(nums[0]) : 0;
+        // 0 in Zemax is angular fields; keep default as angle_deg.
+        if (ftyp === 0) zemaxMeta.fieldType = "angle_deg";
+        else if (ftyp === 1) zemaxMeta.fieldType = "image_height";
+        continue;
+      }
+      if (/^YFLN\b/i.test(line)) {
+        zemaxMeta.fieldsRaw.yfln = parseZemaxNumberList(line.replace(/^YFLN\b/i, ""));
+        continue;
+      }
+      if (/^FWGN\b/i.test(line)) {
+        zemaxMeta.fieldsRaw.fwgn = parseZemaxNumberList(line.replace(/^FWGN\b/i, ""));
+        continue;
+      }
+      if (/^VDXN?\b/i.test(line)) {
+        zemaxMeta.fieldsRaw.vdx = parseZemaxNumberList(line.replace(/^VDXN?\b/i, ""));
+        continue;
+      }
+      if (/^VDYN?\b/i.test(line)) {
+        zemaxMeta.fieldsRaw.vdy = parseZemaxNumberList(line.replace(/^VDYN?\b/i, ""));
+        continue;
+      }
+      if (/^VCXN?\b/i.test(line)) {
+        zemaxMeta.fieldsRaw.vcx = parseZemaxNumberList(line.replace(/^VCXN?\b/i, ""));
+        continue;
+      }
+      if (/^VCYN?\b/i.test(line)) {
+        zemaxMeta.fieldsRaw.vcy = parseZemaxNumberList(line.replace(/^VCYN?\b/i, ""));
+        continue;
+      }
+
+      if (up.startsWith("UNIT")) {
+        const parts = up.split(/\s+/);
+        unitScaleToMm = unitTokenToMmScale(parts[1] || "MM");
+        continue;
+      }
+
+      const mSurf = up.match(/^SURF\s+(-?\d+)/);
+      if (mSurf) {
+        pushCur();
+        cur = {
+          idx: Number(mSurf[1]),
+          CURV: 0,
+          DISZ: 0,
+          DIAM: NaN,
+          GLAS: "AIR",
+          ORIGINAL_GLASS: "AIR",
+          nd: null,
+          vd: null,
+          GLAS_ND: null,
+          GLAS_VD: null,
+          STOP: false,
+        };
+        continue;
+      }
+
+      if (!cur) continue;
+
+      if (up.startsWith("CURV")) {
+        const v = parseZemaxFirstNumber(line.slice(4));
+        if (Number.isFinite(v)) cur.CURV = v;
+        continue;
+      }
+
+      if (up.startsWith("DISZ")) {
+        const v = parseZemaxFirstNumber(line.slice(4));
+        if (Number.isFinite(v)) cur.DISZ = v;
+        continue;
+      }
+
+      if (up.startsWith("DIAM")) {
+        const v = parseZemaxFirstNumber(line.slice(4));
+        if (Number.isFinite(v)) cur.DIAM = Math.abs(v);
+        continue;
+      }
+
+      if (up.startsWith("GLAS")) {
+        const parsedGlass = parseZemaxGlassLine(line);
+        const glassName = String(parsedGlass.glass || "AIR").trim();
+        const isBlank = glassName.toUpperCase() === "___BLANK";
+        cur.ORIGINAL_GLASS = glassName || "AIR";
+        cur.GLAS = isBlank ? "CUSTOM" : glassName;
+        cur.nd = parsedGlass.nd;
+        cur.vd = parsedGlass.vd;
+        cur.GLAS_ND = parsedGlass.nd;
+        cur.GLAS_VD = parsedGlass.vd;
+        continue;
+      }
+
+      if (/^STOP\b/i.test(line)) {
+        cur.STOP = true;
+        continue;
+      }
+    }
+
+    pushCur();
+    if (!parsed.length) throw new Error("No SURF blocks found");
+
+    parsed.sort((a, b) => a.idx - b.idx);
+    const surfaces = parsed.map((s, i) => {
+      const isFirst = i === 0;
+      const isLast = i === parsed.length - 1;
+      const curv = Number(s.CURV || 0);
+      const R = Math.abs(curv) < 1e-12 ? 0 : (1 / curv) * unitScaleToMm;
+      const t = Number.isFinite(Number(s.DISZ)) ? Number(s.DISZ) * unitScaleToMm : 0;
+      const apSemi = Number.isFinite(Number(s.DIAM)) ? Math.max(0.01, Number(s.DIAM) * unitScaleToMm) : 10;
+
+      const g = String(s.GLAS || "AIR").trim();
+      const glass = (!g || g === "-" || /^MIRROR$/i.test(g)) ? "AIR" : g;
+      const originalGlass = String(s.ORIGINAL_GLASS || g || "AIR").trim();
+      const glassNd = (Number.isFinite(Number(s.nd ?? s.GLAS_ND)) && Number(s.nd ?? s.GLAS_ND) > 1)
+        ? Number(s.nd ?? s.GLAS_ND)
+        : null;
+      const glassVd = (glassNd != null)
+        ? ((Number.isFinite(Number(s.vd ?? s.GLAS_VD)) && Number(s.vd ?? s.GLAS_VD) > 0) ? Number(s.vd ?? s.GLAS_VD) : 999)
+        : null;
+
+      return {
+        type: isFirst ? "OBJ" : (isLast ? "IMS" : String(i)),
+        R,
+        t,
+        ap: apSemi,
+        ap_optical: apSemi,
+        ap_mech: null,
+        draw_mode: "optical",
+        shoulder_mode: "none",
+        shoulder_depth: 0,
+        bevel: 0,
+        edge_thickness_mode: "auto",
+        glass,
+        originalGlass,
+        nd: glassNd,
+        vd: glassVd,
+        glass_nd: glassNd,
+        glass_vd: glassVd,
+        stop: isLast ? false : !!s.STOP,
+        zmx: {
+          surf: s.idx,
+          curv: curv,
+          baseCurv: curv,
+          disz: t,
+          disz_raw: Number(s.DISZ),
+          baseDisz: t,
+          diam: Number(s.DIAM),
+          glass_name: originalGlass,
+          nd: glassNd,
+          vd: glassVd,
+          glass_nd: glassNd,
+          glass_vd: glassVd,
+        },
+      };
+    });
+    if (!surfaces.length) throw new Error("No valid surfaces after parse");
+
+    const sortedWaveIdx = Array.from(zemaxMeta.wavelengthsByIndex.keys()).sort((a, b) => a - b);
+    const wavelengthsNm = sortedWaveIdx
+      .map((idx) => Number(zemaxMeta.wavelengthsByIndex.get(idx)))
+      .filter((v) => Number.isFinite(v) && v > 0);
+
+    const primaryWavelengthIndex = Number.isFinite(Number(zemaxMeta.primaryWavelengthIndex))
+      ? Math.max(1, Math.round(Number(zemaxMeta.primaryWavelengthIndex)))
+      : null;
+    const primaryWavelengthNm = (primaryWavelengthIndex != null && zemaxMeta.wavelengthsByIndex.has(primaryWavelengthIndex))
+      ? Number(zemaxMeta.wavelengthsByIndex.get(primaryWavelengthIndex))
+      : null;
+
+    const yfln = Array.isArray(zemaxMeta.fieldsRaw.yfln) ? zemaxMeta.fieldsRaw.yfln : [];
+    const fwgn = Array.isArray(zemaxMeta.fieldsRaw.fwgn) ? zemaxMeta.fieldsRaw.fwgn : [];
+    const vdx = Array.isArray(zemaxMeta.fieldsRaw.vdx) ? zemaxMeta.fieldsRaw.vdx : [];
+    const vdy = Array.isArray(zemaxMeta.fieldsRaw.vdy) ? zemaxMeta.fieldsRaw.vdy : [];
+    const vcx = Array.isArray(zemaxMeta.fieldsRaw.vcx) ? zemaxMeta.fieldsRaw.vcx : [];
+    const vcy = Array.isArray(zemaxMeta.fieldsRaw.vcy) ? zemaxMeta.fieldsRaw.vcy : [];
+    const fieldCount = Math.max(yfln.length, fwgn.length, vdx.length, vdy.length, vcx.length, vcy.length, 0);
+    const fields = [];
+    for (let i = 0; i < fieldCount; i++) {
+      const angleDegRaw = Number(yfln[i]);
+      const angleDeg = Number.isFinite(angleDegRaw) ? angleDegRaw : (i === 0 ? 0 : null);
+      if (angleDeg == null) continue;
+      const weightRaw = Number(fwgn[i]);
+      fields.push({
+        index: i,
+        angleDeg,
+        weight: Number.isFinite(weightRaw) ? Math.max(0, weightRaw) : 1,
+        vdx: Number.isFinite(Number(vdx[i])) ? Number(vdx[i]) : 0,
+        vdy: Number.isFinite(Number(vdy[i])) ? Number(vdy[i]) : 0,
+        vcx: Number.isFinite(Number(vcx[i])) ? Number(vcx[i]) : 0,
+        vcy: Number.isFinite(Number(vcy[i])) ? Number(vcy[i]) : 0,
+      });
+    }
+
+    const zoomConfigs = buildZoomConfigsFromMeta(zemaxMeta.multiConfig, surfaces);
+    const zoom = zoomConfigs.length
+      ? { activeConfig: Number(zoomConfigs[0]?.index || 1), configs: zoomConfigs }
+      : null;
+    const imsSurfaceNumber = Number(surfaces?.[surfaces.length - 1]?.zmx?.surf);
+
+    const lensName = zemaxMeta.name || sourceNameToLensName(sourceName);
+    return {
+      name: lensName,
+      zemaxName: zemaxMeta.name || null,
+      zemaxVersion: zemaxMeta.version || null,
+      notes: [
+        "Imported from Zemax sequential text.",
+        "Mapping: R = 1/CURV, t = DISZ, glass = GLAS, ap = DIAM (semi-diameter).",
+        "GLAS lines with explicit nd/Vd are preserved per surface (e.g. ___BLANK).",
+        "Default draw mode for Zemax import is optical-only (no inferred mechanical shoulders).",
+      ],
+      import_options: {
+        use_same_ap_for_optics_and_mechanics: false,
+        preserve_ims_aperture: true,
+        use_zemax_fields: fields.length > 0,
+        match_zemax_wavelength: false,
+      },
+      zemax: {
+        source: "zemax",
+        name: zemaxMeta.name || null,
+        version: zemaxMeta.version || null,
+        mode: zemaxMeta.mode || null,
+        fieldType: zemaxMeta.fieldType || "angle_deg",
+        wavelengthsNm,
+        primaryWavelengthIndex,
+        primaryWavelengthNm,
+        fields,
+        zoomConfigCount: zoomConfigs.length,
+        currentConfigIndex: zoom ? zoom.activeConfig : null,
+        currentConfigLabel: zoom ? (zoom.configs[0]?.label || `Config ${zoom.activeConfig}`) : null,
+        configAperture: zoom ? (Number.isFinite(Number(zoom.configs[0]?.aperture)) ? Number(zoom.configs[0].aperture) : null) : null,
+        imsSurfaceNumber: Number.isFinite(imsSurfaceNumber) ? imsSurfaceNumber : null,
+      },
+      ...(zoom ? { zoom } : {}),
+      surfaces,
+    };
+  }
+
+  function importZemaxText(rawText, sourceName = "pasted_zmx", opts = {}) {
+    const text = String(rawText ?? "").trim();
+    if (!text) throw new Error("Paste Zemax text first.");
+
+    const normalizedBlock = extractLikelyZemaxLinesFromText(text).join("\n").trim();
+    if (!normalizedBlock) throw new Error("Paste Zemax text first.");
+
+    const hasSurf = /(^|\n)\s*SURF\s+-?\d+/im.test(normalizedBlock);
+    if (!hasSurf) throw new Error("This does not look like a Zemax sequential file.");
+
+    const hasModeSeq = /(^|\n)\s*MODE\s+SEQ\b/im.test(normalizedBlock);
+    const hasVers = /(^|\n)\s*VERS\b/im.test(normalizedBlock);
+    if (!hasModeSeq && !hasVers && !/(^|\n)\s*CURV\s+/im.test(normalizedBlock)) {
+      throw new Error("This does not look like a Zemax sequential file.");
+    }
+
+    const parsed = parseZemaxSequentialText(normalizedBlock, sourceName);
+    parsed.importSource = String(opts.importSource || "zmx_text");
+    parsed.originalZmxText = text;
+    parsed.zemaxName = parsed.zemaxName || parsed.zemax?.name || null;
+    parsed.zemaxVersion = parsed.zemaxVersion || parsed.zemax?.version || null;
+    if (parsed.zemaxName) parsed.name = parsed.zemaxName;
+
+    loadLens(parsed);
+
+    ensureZemaxPrimaryWaveOption();
+    setVisibleDefaultWavePresetAfterZemaxImport();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+
+    const displayName = parsed.zemaxName || parsed.name || sourceNameToLensName(sourceName);
+    toast(`Loaded Zemax lens: ${displayName}`);
+    return parsed;
+  }
+
+  async function loadLensFromURL(url) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      const txt = await r.text();
+
+      try {
+        const obj = JSON.parse(txt);
+        loadLens(obj);
+        toast("Loaded lens JSON");
+        return true;
+      } catch (_) {}
+
+      if (isLikelyZemaxSequentialText(txt) || /\.(zmx|seq|txt)(\?|$)/i.test(url)) {
+        importZemaxText(txt, url.split("/").pop() || "Zemax import", { importSource: "zmx_file" });
+        return true;
+      }
+
+      throw new Error("Unknown lens format (expected JSON or Zemax sequential text)");
+    } catch (e) {
+      if (ui.footerWarn) ui.footerWarn.textContent = `Lens load failed: ${url} (${e?.message || e})`;
+      return false;
+    }
+  }
+
+ function loadLensFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const txt = String(reader.result || "");
+      const name = String(file?.name || "");
+      const lower = name.toLowerCase();
+
+      const parseAttempts = [];
+      const tryJson = () => {
+        const obj = JSON.parse(txt);
+        loadLens(obj);
+        toast("Loaded lens JSON (file)");
+        return true;
+      };
+      const tryZemax = () => {
+        if (!isLikelyZemaxSequentialText(txt) && !/\.(zmx|seq|txt)$/i.test(lower)) {
+          throw new Error("Not Zemax sequential text");
+        }
+        importZemaxText(txt, name || "Zemax import", { importSource: "zmx_file" });
+        return true;
+      };
+
+      const order = /\.(zmx|seq)$/i.test(lower) ? [tryZemax, tryJson] : [tryJson, tryZemax];
+      for (const fn of order) {
+        try {
+          fn();
+          resolve(true);
+          return;
+        } catch (e) {
+          parseAttempts.push(e?.message || String(e));
+        }
+      }
+
+      const msg = `Lens parse failed (${parseAttempts.join(" | ")})`;
+      if (ui.footerWarn) ui.footerWarn.textContent = msg;
+      reject(new Error(msg));
+    };
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+}
+
+  // -------------------- save lens JSON --------------------
+  function saveLensToFile() {
+    try {
+      const out = clone(lens);
+      if (out?.originalZmxText) {
+        const keep = window.confirm("Include original ZMX text in saved JSON? (larger file)");
+        if (!keep) delete out.originalZmxText;
+      }
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+      const safeName = String(lens?.name || "lens").replace(/[^\w\-]+/g, "_");
+      a.download = `${safeName}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        a.remove();
+      }, 0);
+      toast("Saved lens JSON");
+    } catch (e) {
+      if (ui.footerWarn) ui.footerWarn.textContent = `Save failed: ${e?.message || e}`;
+    }
+  }
+
+// -------------------- init + bindings --------------------
+function wireUI() {
+  // sensor presets
+  populateSensorPresetsSelect();
+
+  if (ui.sensorPreset) {
+    ui.sensorPreset.addEventListener("change", (e) => {
+      applyPreset(e.target.value);
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+  }
+
+  // manual sensor dims
+  if (ui.sensorW) ui.sensorW.addEventListener("change", () => {
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+  });
+  if (ui.sensorH) ui.sensorH.addEventListener("change", () => {
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+  });
+
+  // live render controls
+  [
+    "fieldAngle","rayCount","wavePreset",
+    "focusMode","focusMechanism","lensFocus","focusShiftSlider","autoRefocusOnDistanceChange",
+    "renderScale","prevObjDist","prevObjH","prevObjW","prevRes",
+    "previewAutoFit","previewOrientation","previewRenderMode","pupilSamples"
+  ].forEach((id) => {
+    const el = ui[id];
+    if (!el) return;
+    el.addEventListener("input", () => { scheduleRenderAll(); scheduleRenderPreview(); });
+    el.addEventListener("change", () => { scheduleRenderAll(); scheduleRenderPreview(); });
+  });
+
+  if (ui.lensFocus) {
+    ui.lensFocus.addEventListener("input", () => {
+      setFocusShiftMm(ui.lensFocus.value, { updateStatus: true });
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+    ui.lensFocus.addEventListener("change", () => {
+      setFocusShiftMm(ui.lensFocus.value, { updateStatus: true });
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+  }
+  if (ui.focusShiftSlider) {
+    ui.focusShiftSlider.addEventListener("input", () => {
+      setFocusShiftMm(ui.focusShiftSlider.value, { updateStatus: true });
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+    ui.focusShiftSlider.addEventListener("change", () => {
+      setFocusShiftMm(ui.focusShiftSlider.value, { updateStatus: true });
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+  }
+  if (ui.focusMode || ui.focusMechanism) {
+    const focusModeHandler = () => {
+      syncFocusControlsUI();
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    };
+    if (ui.focusMode) ui.focusMode.addEventListener("change", focusModeHandler);
+    if (ui.focusMechanism) ui.focusMechanism.addEventListener("change", focusModeHandler);
+  }
+  if (ui.autoRefocusOnDistanceChange) {
+    ui.autoRefocusOnDistanceChange.addEventListener("change", () => {
+      syncFocusStateToLens();
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+  }
+  if (ui.autoFocusMode) {
+    ui.autoFocusMode.addEventListener("change", () => {
+      if (!lens.import_options || typeof lens.import_options !== "object") lens.import_options = {};
+      lens.import_options.autofocus_mode = getPreviewAutofocusMode();
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    });
+  }
+  if (ui.zoomConfigSelect) {
+    ui.zoomConfigSelect.addEventListener("change", () => {
+      const idx = Number(ui.zoomConfigSelect.value);
+      applyZoomConfigToLens(idx, { silent: false, skipBuild: false, skipRender: false });
+      scheduleRenderPreview();
+    });
+  }
+
+  // preview options (DOF/CA/quality)
+  ["optDOF","optCA","renderQuality"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", () => scheduleRenderPreview());
+  });
+
+  // toolbar buttons
+  on("#btnNew", "click", newClearLens);
+  on("#btnLoadOmit", "click", () => loadLens(omit50ConceptV1()));
+  on("#btnLoadDemo", "click", () => loadLens(demoLensSimple()));
+  on("#btnPasteZmx", "click", openZmxPasteModal);
+
+  on("#btnAdd", "click", addSurface);
+  on("#btnAddElement", "click", () => {
+  if (typeof openElementModal === "function") {
+    const ok = openElementModal();
+    if (ok === false) toast("Element modal missing");
+  } else {
+    toast("Element modal missing");
+  }
+});
+
+  on("#btnDuplicate", "click", duplicateSelected);
+  on("#btnMoveUp", "click", () => moveSelected(-1));
+  on("#btnMoveDown", "click", () => moveSelected(+1));
+  on("#btnRemove", "click", removeSelected);
+
+  on("#btnScaleToFocal", "click", scaleToTargetFocal);
+  on("#btnSetTStop", "click", setTargetTStop);
+  on("#btnAutoFocus", "click", autoFocus);
+  on("#btnRenderEngine", "click", toggleRenderEngine);
+  on("#btnDebugOverlay", "click", toggleDebugOverlay);
+
+  on("#btnSave", "click", saveLensToFile);
+
+  // lens JSON file picker
+  if (ui.fileLoad) {
+    ui.fileLoad.addEventListener("change", async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      await loadLensFromFile(f);
+      ui.fileLoad.value = "";
+    });
+  }
+
+  if (ui.zmxPasteImport) {
+    ui.zmxPasteImport.addEventListener("click", (e) => {
+      e.preventDefault();
+      importFromZmxPasteModal();
+    });
+  }
+  if (ui.zmxPasteCancel) {
+    ui.zmxPasteCancel.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeZmxPasteModal();
+    });
+  }
+  if (ui.zmxPasteClose) {
+    ui.zmxPasteClose.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeZmxPasteModal();
+    });
+  }
+  if (ui.zmxPasteClear) {
+    ui.zmxPasteClear.addEventListener("click", (e) => {
+      e.preventDefault();
+      clearZmxPasteText();
+    });
+  }
+  if (ui.zmxPasteText) {
+    ui.zmxPasteText.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        importFromZmxPasteModal();
+      }
+    });
+  }
+  if (ui.zmxPasteModal) {
+    ui.zmxPasteModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.zmxPasteModal) closeZmxPasteModal();
+    });
+  }
+
+  // preview image picker
+  if (ui.prevImg) {
+    ui.prevImg.addEventListener("change", async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      try { await loadPreviewImageFromFile(f); }
+      catch (_) {}
+      ui.prevImg.value = "";
+    });
+  }
+
+  if (ui.previewSourceMode) {
+    ui.previewSourceMode.addEventListener("change", async (e) => {
+      const mode = String(e.target.value || "chart");
+      try { await setPreviewSourceMode(mode); }
+      catch (_) {}
+    });
+  }
+  if (ui.previewAutoFit) {
+    ui.previewAutoFit.addEventListener("change", () => {
+      syncPreviewFitUI();
+      scheduleRenderPreview();
+    });
+  }
+  if (ui.verifyMatchZemaxWave) {
+    ui.verifyMatchZemaxWave.addEventListener("change", () => {
+      if (lens?.import_options) lens.import_options.match_zemax_wavelength = !!ui.verifyMatchZemaxWave.checked;
+      scheduleRenderAll();
+    });
+  }
+  if (ui.btnToggleVerifyPanel) {
+    ui.btnToggleVerifyPanel.addEventListener("click", () => {
+      verifyPanelExpanded = !verifyPanelExpanded;
+      updateZemaxVerifyChrome();
+      scheduleRenderAll();
+    });
+  }
+  syncPreviewFitUI();
+
+  // preview buttons
+  if (ui.btnRenderPreview) ui.btnRenderPreview.addEventListener("click", () => scheduleRenderPreview({ force: true, immediate: true }));
+  if (ui.btnPreviewFS) ui.btnPreviewFS.addEventListener("click", togglePreviewFullscreen);
+  if (ui.btnPreviewRuler) ui.btnPreviewRuler.addEventListener("click", () => {
+    preview.rulerOn = !preview.rulerOn;
+    ui.btnPreviewRuler.classList.toggle("isOn", preview.rulerOn);
+    drawPreviewViewport();
+  });
+  if (ui.btnRaysFS) ui.btnRaysFS.addEventListener("click", toggleRaysFullscreen);
+
+  // New Lens modal buttons (optional)
+  on("#btnNewLens", "click", () => (typeof openNewLensModal === "function") && openNewLensModal());
+  if (ui.nlClose) ui.nlClose.addEventListener("click", (e) => { e.preventDefault(); closeNewLensModal(); });
+  if (ui.nlCreate) ui.nlCreate.addEventListener("click", (e) => { e.preventDefault(); createNewLensFromModal(); });
+  if (ui.newLensModal) {
+    ui.newLensModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.newLensModal) closeNewLensModal();
+    });
+  }
+
+  // selection hotkeys
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isZmxPasteModalOpen()) {
+      e.preventDefault();
+      closeZmxPasteModal();
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (document.activeElement && ["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) return;
+      removeSelected();
+    }
+    if (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); moveSelected(-1); }
+    if (e.key === "ArrowDown" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); moveSelected(+1); }
+  });
+
+  // resize
+  window.addEventListener("resize", () => {
+    resizeCanvasToCSS();
+    resizePreviewCanvasToCSS();
+    scheduleRenderAll();
+    if (preview.ready) scheduleRenderPreview();
+  });
+
+  window.addEventListener("pagehide", () => {
+    persistLensSession();
+  });
+  window.addEventListener("beforeunload", () => {
+    persistLensSession();
+  });
+}
+
+// -------------------- boot --------------------
+function boot() {
+  normalizeInitialAnchorScroll();
+  wireUI();
+  updateZemaxVerifyChrome();
+  updateRenderEngineButton();
+  updateDebugOverlayButton();
+  bindViewControls();
+  bindPreviewViewControls();
+  setFocusShiftMm(getFocusShiftMm(), { updateStatus: false });
+  syncFocusControlsUI();
+  const previousBusy = readRuntimeBusyMarker();
+  if (previousBusy) {
+    clearRuntimeBusy();
+    enterSafeMode(`previous ${String(previousBusy.reason || "render")} did not finish`);
+  }
+
+  if (typeof window !== "undefined") {
+    window.runFiniteDistanceFocusDiagnostics = (opts = {}) => {
+      const wavePreset = String(opts.wavePreset || ui.wavePreset?.value || "d");
+      const autofocusMode = String(opts.autofocusMode || getPreviewAutofocusMode());
+      const { h: sensorH } = getSensorWH();
+      const sensorHv = Number.isFinite(Number(opts.sensorHv))
+        ? Number(opts.sensorHv)
+        : Math.max(1e-6, sensorH * OV_DEFAULT * 0.5);
+      const focusMechanism = normalizeFocusMechanism(opts.focusMechanism || ui.focusMechanism?.value || "move-lens");
+      const focusShiftMm = Number(opts.focusShiftMm ?? opts.lensShift ?? ui.lensFocus?.value ?? 0);
+      const pose = focusPoseFromShift(focusShiftMm, focusMechanism);
+      const report = runFiniteDistanceFocusDiagnostics({
+        surfaces: lens.surfaces,
+        wavePreset,
+        lensShift: Number(opts.lensShift ?? pose.lensShift),
+        sensorX: Number(opts.sensorX ?? pose.sensorX),
+        focusMechanism,
+        autofocusMode,
+        sensorHv,
+        distancesMm: Array.isArray(opts.distancesMm) ? opts.distancesMm : [2000, 20000],
+        targetDistanceMm: Number(opts.targetDistanceMm ?? ui.prevObjDist?.value ?? 2000),
+        printToConsole: opts.printToConsole !== false,
+      });
+      return report;
+    };
+  }
+
+  // default sensor preset -> use current select or Mini LF
+  if (ui.sensorPreset && SENSOR_PRESETS?.[ui.sensorPreset.value]) applyPreset(ui.sensorPreset.value);
+  else applyPreset(DEFAULT_SENSOR_PRESET);
+
+  // initial table + draw
+  clampAllApertures(lens.surfaces);
+  buildTable();
+  applySensorToIMS();
+  renderAll();
+
+  // load default assets (non-blocking)
+  preview.sourceUrls.chart = DEFAULT_PREVIEW_URL;
+  preview.sourceMode = "chart";
+  if (ui.previewSourceMode) ui.previewSourceMode.value = "chart";
+  loadPreviewImageFromURL(DEFAULT_PREVIEW_URL, { announce: false }).catch(() => {});
+
+  const restoredSession = restoreLensSession();
+  if (!restoredSession) {
+    loadLensFromURL(DEFAULT_LENS_URL).catch(() => {});
+  } else {
+    toast("Laatste lens hersteld");
+  }
+}
+
+boot();
+})();
