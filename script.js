@@ -168,6 +168,7 @@
     btnLoadDemo: $("#btnLoadDemo"),
     btnAdd: $("#btnAdd"),
     btnAddElement: $("#btnAddElement"),
+    btnAddFieldFlattener: $("#btnAddFieldFlattener"),
     btnDuplicate: $("#btnDuplicate"),
     btnMoveUp: $("#btnMoveUp"),
     btnMoveDown: $("#btnMoveDown"),
@@ -178,6 +179,7 @@
     btnPasteZmx: $("#btnPasteZmx"),
     fileLoad: $("#fileLoad"),
     btnAutoFocus: $("#btnAutoFocus"),
+    btnCornerFocus: $("#btnCornerFocus"),
     btnAutoTuner: $("#btnAutoTuner"),
     btnRenderEngine: $("#btnRenderEngine"),
     btnDebugOverlay: $("#btnDebugOverlay"),
@@ -210,6 +212,9 @@
     atGoalCorner: $("#atGoalCorner"),
     atWeightCorner: $("#atWeightCorner"),
     atWeightCornerValue: $("#atWeightCornerValue"),
+    atGoalFieldCurv: $("#atGoalFieldCurv"),
+    atWeightFieldCurv: $("#atWeightFieldCurv"),
+    atWeightFieldCurvValue: $("#atWeightFieldCurvValue"),
     atGoalVig: $("#atGoalVig"),
     atWeightVig: $("#atWeightVig"),
     atWeightVigValue: $("#atWeightVigValue"),
@@ -230,6 +235,9 @@
     atVarFrontGroup: $("#atVarFrontGroup"),
     atVarRearGroup: $("#atVarRearGroup"),
     atVarGlass: $("#atVarGlass"),
+    atVarFFR: $("#atVarFFR"),
+    atVarFFPos: $("#atVarFFPos"),
+    atVarFFThick: $("#atVarFFThick"),
     atIterations: $("#atIterations"),
     atStepSize: $("#atStepSize"),
     atRunSpeed: $("#atRunSpeed"),
@@ -266,12 +274,16 @@
     atMetricIC: $("#atMetricIC"),
     atMetricCOV: $("#atMetricCOV"),
     atMetricBFL: $("#atMetricBFL"),
+    atMetricCenterRMS: $("#atMetricCenterRMS"),
+    atMetricCornerRMS: $("#atMetricCornerRMS"),
+    atMetricFieldCurv: $("#atMetricFieldCurv"),
     atMetricRear: $("#atMetricRear"),
     atStatus: $("#atStatus"),
     atHistoryBody: $("#atHistoryBody"),
     atStart: $("#atStart"),
     atPause: $("#atPause"),
     atStop: $("#atStop"),
+    atPreviewBest: $("#atPreviewBest"),
     atApplyBest: $("#atApplyBest"),
     atRevert: $("#atRevert"),
     atCopyDiagnostics: $("#atCopyDiagnostics"),
@@ -299,6 +311,18 @@
     jsonPasteCancel: $("#jsonPasteCancel"),
     jsonPasteClear: $("#jsonPasteClear"),
     jsonPasteClose: $("#jsonPasteClose"),
+    cornerFocusModal: $("#cornerFocusModal"),
+    cfClose: $("#cfClose"),
+    cfSummary: $("#cfSummary"),
+    cfCenterShift: $("#cfCenterShift"),
+    cfCornerShift: $("#cfCornerShift"),
+    cfFocusDelta: $("#cfFocusDelta"),
+    cfCOV: $("#cfCOV"),
+    cfIC: $("#cfIC"),
+    cfTableBody: $("#cfTableBody"),
+    cfNotes: $("#cfNotes"),
+    cfRun: $("#cfRun"),
+    cfCopy: $("#cfCopy"),
 
     verifyPanel: $("#verifyPanel"),
     verifyControls: $("#verifyControls"),
@@ -6393,6 +6417,81 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     insertAfterSelected({ type: "", R: 0.0, t: 4.0, ap: 18.0, glass: "AIR", stop: false });
   }
 
+  function isFieldFlattenerSurface(surface) {
+    const label = String(surface?.surfaceLabel ?? surface?.label ?? surface?.type ?? "").toUpperCase();
+    return label.includes("FIELD FLATTENER");
+  }
+
+  function isFieldFlattenerAirGapSurface(surfaces, index) {
+    const s = surfaces?.[index];
+    if (!s || !isAirSurfaceMedium(s)) return false;
+    return isFieldFlattenerSurface(s) || isFieldFlattenerSurface(surfaces?.[index + 1]);
+  }
+
+  function findFieldFlattenerIndices(surfaces) {
+    return (surfaces || [])
+      .map((s, i) => isFieldFlattenerSurface(s) ? i : -1)
+      .filter((i) => i >= 0);
+  }
+
+  function addWeakRearFieldFlattener() {
+    try {
+      lens = sanitizeLens(lens);
+      const surfaces = lens.surfaces || [];
+      const imsIdx = getIMSIndex();
+      if (imsIdx <= 1) {
+        toast("Cannot add field flattener before IMS");
+        return;
+      }
+      const frontAir = 12;
+      const rearAir = 12;
+      const ap = 18;
+      let anchorIdx = imsIdx - 1;
+      for (let i = imsIdx - 1; i >= 1; i--) {
+        if (isAirSurfaceMedium(surfaces[i])) {
+          anchorIdx = i;
+          break;
+        }
+      }
+      surfaces[anchorIdx].t = frontAir;
+      const insertAt = anchorIdx + 1;
+      const front = {
+        type: "",
+        R: -250,
+        t: 2.0,
+        ap,
+        ap_optical: ap,
+        glass: "N-BK7HT",
+        stop: false,
+        surfaceLabel: "L5 FIELD FLATTENER FRONT",
+        surfaceLabelAuto: false,
+      };
+      const rear = {
+        type: "",
+        R: 250,
+        t: rearAir,
+        ap,
+        ap_optical: ap,
+        glass: "AIR",
+        stop: false,
+        surfaceLabel: "L5 FIELD FLATTENER REAR",
+        surfaceLabelAuto: false,
+      };
+      surfaces.splice(insertAt, 0, front, rear);
+      selectedIndex = insertAt;
+      lens = sanitizeLens(lens);
+      buildTable();
+      applySensorToIMS();
+      renderAll();
+      scheduleRenderPreview();
+      toast("Added weak rear field flattener");
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (ui.footerWarn) ui.footerWarn.textContent = `Field flattener insert failed: ${msg}`;
+      toast(`Field flattener insert failed: ${msg}`);
+    }
+  }
+
   function duplicateSelected() {
     clampSelected();
     if (isProtectedIndex(selectedIndex)) return toast("Cannot duplicate OBJ/IMS");
@@ -8394,6 +8493,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     stopReason: "",
     diagnostics: "",
     baselineInvalid: false,
+    previewingBest: false,
     consecutiveInvalid: 0,
     invalidByCategory: {},
     disabledMutationGroups: new Set(),
@@ -8881,8 +8981,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return { ok: true, reason: "" };
   }
 
-  function evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null) {
-    computeVertices(surfaces, 0, 0);
+  function evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null, sensorShift = 0) {
+    computeVertices(surfaces, 0, Number(sensorShift) || 0);
     const count = Math.max(5, Math.min(31, Number(rayCount) | 0));
     const finiteObj = Number(objectDistanceMm);
     const objDist = Number.isFinite(finiteObj) && finiteObj > 0.1 ? finiteObj : null;
@@ -8938,6 +9038,259 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     };
   }
 
+  function autoTunerSpotScore(spot) {
+    const rms = Number(spot?.rmsMm);
+    const hitRate = Number(spot?.hitRate || 0);
+    if (!spot?.ok || !Number.isFinite(rms)) return 50 + Math.max(0, 1 - hitRate) * 50;
+    return rms * (1 + Math.max(0, 0.9 - hitRate) * 4);
+  }
+
+  function findBestFocusShiftAtIMS(surfaces, wavePreset, fieldAngleDeg, objectDistanceMm, startShift = 0, rayCount = 11) {
+    const parax = estimateEflBflParaxial(surfaces, wavePreset);
+    const efl = Number(parax?.efl);
+    const range = Math.max(1.2, Math.min(18, Number.isFinite(efl) && efl > 0 ? efl * 0.16 : 8));
+    const coarseStep = Math.max(0.30, range / 8);
+    const fineStep = Math.max(0.06, coarseStep / 5);
+    let bestShift = Number.isFinite(Number(startShift)) ? Number(startShift) : 0;
+    let bestSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, bestShift);
+    let bestScore = autoTunerSpotScore(bestSpot);
+
+    for (let x = bestShift - range; x <= bestShift + range + 1e-9; x += coarseStep) {
+      const spot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, x);
+      const score = autoTunerSpotScore(spot);
+      if (score < bestScore) {
+        bestScore = score;
+        bestSpot = spot;
+        bestShift = x;
+      }
+    }
+
+    for (let x = bestShift - coarseStep; x <= bestShift + coarseStep + 1e-9; x += fineStep) {
+      const spot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, x);
+      const score = autoTunerSpotScore(spot);
+      if (score < bestScore) {
+        bestScore = score;
+        bestSpot = spot;
+        bestShift = x;
+      }
+    }
+
+    computeVertices(surfaces, 0, 0);
+    return {
+      shiftMm: bestShift,
+      score: bestScore,
+      spot: bestSpot,
+      rmsMm: Number.isFinite(Number(bestSpot?.rmsMm)) ? Number(bestSpot.rmsMm) : null,
+      hitRate: Number.isFinite(Number(bestSpot?.hitRate)) ? Number(bestSpot.hitRate) : null,
+    };
+  }
+
+  function getAutoTunerFieldAngles(sensorDiag, efl) {
+    const halfDiag = Math.max(0, Number(sensorDiag) || 0) * 0.5;
+    const f = Number(efl);
+    const cornerFieldDeg = (Number.isFinite(f) && f > 0 && halfDiag > 0)
+      ? Math.max(0, Math.min(55, rad2deg(Math.atan(halfDiag / f))))
+      : 0;
+    return {
+      center: 0,
+      mid: cornerFieldDeg * 0.5,
+      corner: cornerFieldDeg,
+    };
+  }
+
+  function evaluateFieldFocusMetricsAtIMS(lensState, opts = {}) {
+    const L = clone(lensState);
+    const surfaces = L?.surfaces || [];
+    if (!surfaces.length) return null;
+    clampAllApertures(surfaces);
+    recomputeSurfacePositionsForLens(L);
+    const wavePreset = String(opts.wavePreset || ui.wavePreset?.value || "d");
+    const { w: sensorW, h: sensorH } = getSensorWH();
+    const sensorDiag = Math.hypot(sensorW, sensorH);
+    const parax = estimateEflBflParaxial(surfaces, wavePreset);
+    const efl = finiteOrNull(parax?.efl);
+    const angles = getAutoTunerFieldAngles(sensorDiag, efl);
+    const objectDistanceMm = Number.isFinite(Number(opts.objectDistanceMm))
+      ? Number(opts.objectDistanceMm)
+      : getFocusChartDistanceMm();
+    const rayCount = Math.max(7, Math.min(17, Number(opts.rayCount) || 11));
+
+    const current = {
+      center: evaluateSpotSpreadAtIMS(surfaces, wavePreset, angles.center, rayCount, objectDistanceMm, 0),
+      mid: evaluateSpotSpreadAtIMS(surfaces, wavePreset, angles.mid, rayCount, objectDistanceMm, 0),
+      corner: evaluateSpotSpreadAtIMS(surfaces, wavePreset, angles.corner, rayCount, objectDistanceMm, 0),
+    };
+    const focus = {
+      center: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.center, objectDistanceMm, 0, rayCount),
+      mid: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.mid, objectDistanceMm, 0, rayCount),
+      corner: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.corner, objectDistanceMm, 0, rayCount),
+    };
+    const centerShift = Number(focus.center?.shiftMm);
+    const cornerShift = Number(focus.corner?.shiftMm);
+    const delta = Number.isFinite(centerShift) && Number.isFinite(cornerShift) ? (cornerShift - centerShift) : null;
+
+    return {
+      angles,
+      sensorDiag,
+      efl,
+      current,
+      focus,
+      centerBestShiftMm: Number.isFinite(centerShift) ? centerShift : null,
+      cornerBestShiftMm: Number.isFinite(cornerShift) ? cornerShift : null,
+      fieldCurvatureDeltaMm: Number.isFinite(delta) ? delta : null,
+      centerBestRmsMm: Number.isFinite(Number(focus.center?.rmsMm)) ? Number(focus.center.rmsMm) : null,
+      midBestRmsMm: Number.isFinite(Number(focus.mid?.rmsMm)) ? Number(focus.mid.rmsMm) : null,
+      cornerBestRmsMm: Number.isFinite(Number(focus.corner?.rmsMm)) ? Number(focus.corner.rmsMm) : null,
+      centerCurrentRmsMm: Number.isFinite(Number(current.center?.rmsMm)) ? Number(current.center.rmsMm) : null,
+      midCurrentRmsMm: Number.isFinite(Number(current.mid?.rmsMm)) ? Number(current.mid.rmsMm) : null,
+      cornerCurrentRmsMm: Number.isFinite(Number(current.corner?.rmsMm)) ? Number(current.corner.rmsMm) : null,
+    };
+  }
+
+  function pctText(value, digits = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${(n * 100).toFixed(digits)}%` : "—";
+  }
+
+  function summarizeCornerFocusDiagnostic(metrics, autoMetrics = null) {
+    const notes = [];
+    const delta = Number(metrics?.fieldCurvatureDeltaMm);
+    const centerBest = Number(metrics?.centerBestRmsMm);
+    const cornerBest = Number(metrics?.cornerBestRmsMm);
+    const cornerCurrent = Number(metrics?.cornerCurrentRmsMm);
+    const cornerHit = Number(metrics?.current?.corner?.hitRate ?? metrics?.focus?.corner?.hitRate);
+    const cov = autoMetrics?.cov;
+    const efl = Number(metrics?.efl);
+    const curvatureThreshold = Math.max(0.35, Number.isFinite(efl) && efl > 0 ? efl * 0.008 : 0.45);
+
+    if (cov === false || cornerHit < 0.55) {
+      notes.push("Likely coverage/vignetting limitation: corner rays are not reliably reaching IMS.");
+    }
+    if (Number.isFinite(delta) && Math.abs(delta) > curvatureThreshold) {
+      notes.push("Likely field curvature: corners focus at different plane.");
+      notes.push("A weak rear field flattener or rear-group spacing may help before pushing stronger corner RMS optimization.");
+    }
+    if (Number.isFinite(cornerBest) && Number.isFinite(centerBest) && cornerBest > Math.max(0.08, centerBest * 2.5)) {
+      notes.push("Likely coma/astigmatism: corner aberrations remain after refocus.");
+    } else if (Number.isFinite(cornerBest) && Number.isFinite(cornerCurrent) && cornerBest < cornerCurrent * 0.70) {
+      notes.push("Corner refocus improves RMS strongly, so focus-plane matching is worth tuning.");
+    }
+    if (!notes.length) {
+      notes.push("No dominant corner failure detected by this meridional diagnostic. Try tuning stop position and rear group spacing while watching corner RMS.");
+    }
+    return notes;
+  }
+
+  function buildCornerFocusReport(lensState = lens) {
+    const wavePreset = ui.wavePreset?.value || "d";
+    const objectDistanceMm = getFocusChartDistanceMm();
+    const fieldFocus = evaluateFieldFocusMetricsAtIMS(lensState, { wavePreset, objectDistanceMm, rayCount: 13 });
+    const metrics = getAutoTunerMetrics(lensState, { wavePreset, objectDistanceMm, includeFieldFocus: false });
+    const notes = summarizeCornerFocusDiagnostic(fieldFocus, metrics);
+    return {
+      wavePreset,
+      objectDistanceMm,
+      fieldFocus,
+      metrics,
+      notes,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function renderCornerFocusReport(report) {
+    const ff = report?.fieldFocus || {};
+    const metrics = report?.metrics || {};
+    const row = (label, current, best) => `
+      <tr>
+        <td>${escapeAttr(label)}</td>
+        <td>${mmText(current?.rmsMm, 4)}</td>
+        <td>${pctText(current?.hitRate, 0)}</td>
+        <td>${mmText(best?.shiftMm, 3)}</td>
+        <td>${mmText(best?.rmsMm, 4)}</td>
+        <td>${pctText(best?.hitRate, 0)}</td>
+      </tr>
+    `;
+
+    if (ui.cfCenterShift) ui.cfCenterShift.textContent = mmText(ff.centerBestShiftMm, 3);
+    if (ui.cfCornerShift) ui.cfCornerShift.textContent = mmText(ff.cornerBestShiftMm, 3);
+    if (ui.cfFocusDelta) ui.cfFocusDelta.textContent = mmText(ff.fieldCurvatureDeltaMm, 3);
+    if (ui.cfCOV) ui.cfCOV.textContent = metrics?.cov ? "YES" : "NO";
+    if (ui.cfIC) ui.cfIC.textContent = mmText(metrics?.imageCircleMm, 1);
+    if (ui.cfTableBody) {
+      ui.cfTableBody.innerHTML = [
+        row("Center", ff.current?.center, ff.focus?.center),
+        row("Mid field", ff.current?.mid, ff.focus?.mid),
+        row("Corner / edge", ff.current?.corner, ff.focus?.corner),
+      ].join("");
+    }
+    const primary = report?.notes?.[0] || "Corner focus diagnostic complete.";
+    if (ui.cfSummary) ui.cfSummary.textContent = primary;
+    if (ui.cfNotes) {
+      const detail = [
+        ...((report?.notes || []).slice(1)),
+        `Center current RMS: ${mmText(ff.centerCurrentRmsMm, 4)}; corner current RMS: ${mmText(ff.cornerCurrentRmsMm, 4)}.`,
+        `Center best RMS: ${mmText(ff.centerBestRmsMm, 4)}; corner best RMS: ${mmText(ff.cornerBestRmsMm, 4)}.`,
+      ].filter(Boolean).join("\n");
+      ui.cfNotes.textContent = detail;
+    }
+  }
+
+  function formatCornerFocusReportText(report) {
+    const ff = report?.fieldFocus || {};
+    const metrics = report?.metrics || {};
+    const lines = [
+      "Corner Focus Test",
+      `Wave: ${report?.wavePreset || "—"}`,
+      `Image circle: ${mmText(metrics?.imageCircleMm, 1)}; COV: ${metrics?.cov ? "YES" : "NO"}`,
+      `Center best shift: ${mmText(ff.centerBestShiftMm, 3)}`,
+      `Corner best shift: ${mmText(ff.cornerBestShiftMm, 3)}`,
+      `Focus delta: ${mmText(ff.fieldCurvatureDeltaMm, 3)}`,
+      `Center RMS current/best: ${mmText(ff.centerCurrentRmsMm, 4)} / ${mmText(ff.centerBestRmsMm, 4)}`,
+      `Mid RMS current/best: ${mmText(ff.midCurrentRmsMm, 4)} / ${mmText(ff.midBestRmsMm, 4)}`,
+      `Corner RMS current/best: ${mmText(ff.cornerCurrentRmsMm, 4)} / ${mmText(ff.cornerBestRmsMm, 4)}`,
+      "",
+      ...((report?.notes || []).map((n) => `- ${n}`)),
+    ];
+    return lines.join("\n");
+  }
+
+  let lastCornerFocusReport = null;
+
+  function runCornerFocusTest() {
+    try {
+      lastCornerFocusReport = buildCornerFocusReport(lens);
+      renderCornerFocusReport(lastCornerFocusReport);
+      toast("Corner Focus Test complete", 1600);
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (ui.cfSummary) ui.cfSummary.textContent = `Corner Focus Test failed: ${msg}`;
+      if (ui.footerWarn) ui.footerWarn.textContent = `Corner Focus Test failed: ${msg}`;
+    }
+  }
+
+  function openCornerFocusModal() {
+    if (!ui.cornerFocusModal) return;
+    ui.cornerFocusModal.classList.remove("hidden");
+    ui.cornerFocusModal.setAttribute("aria-hidden", "false");
+    runCornerFocusTest();
+  }
+
+  function closeCornerFocusModal() {
+    if (!ui.cornerFocusModal) return;
+    ui.cornerFocusModal.classList.add("hidden");
+    ui.cornerFocusModal.setAttribute("aria-hidden", "true");
+  }
+
+  async function copyCornerFocusReport() {
+    if (!lastCornerFocusReport) lastCornerFocusReport = buildCornerFocusReport(lens);
+    try {
+      await copyTextToClipboard(formatCornerFocusReportText(lastCornerFocusReport));
+      toast("Copied Corner Focus report", 1600);
+    } catch (e) {
+      if (ui.cfSummary) ui.cfSummary.textContent = `Copy failed: ${e?.message || e}`;
+    }
+  }
+
   function getAutoTunerCompactLength(surfaces) {
     computeVertices(surfaces, 0, 0);
     const front = firstPhysicalVertexX(surfaces);
@@ -8979,11 +9332,14 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const objectDistanceMm = Number.isFinite(Number(opts.objectDistanceMm))
       ? Number(opts.objectDistanceMm)
       : getFocusChartDistanceMm();
-    const cornerFieldDeg = efl != null && efl > 0
-      ? Math.max(0, Math.min(55, rad2deg(Math.atan(halfDiag / efl))))
-      : 0;
+    const fieldAngles = getAutoTunerFieldAngles(sensorDiag, efl);
+    const cornerFieldDeg = fieldAngles.corner;
     const centerSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, 0, 13, objectDistanceMm);
+    const midSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngles.mid, 13, objectDistanceMm);
     const cornerSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, cornerFieldDeg, 13, objectDistanceMm);
+    const fieldFocus = opts.includeFieldFocus
+      ? evaluateFieldFocusMetricsAtIMS(L, { wavePreset, objectDistanceMm, rayCount: opts.focusRayCount || 9 })
+      : null;
     return {
       efl,
       bfl,
@@ -8999,7 +9355,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       rearClearance,
       compactLength,
       centerSpot,
+      midSpot,
       cornerSpot,
+      fieldFocus,
       wavePreset,
     };
   }
@@ -9024,9 +9382,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       return createInvalidMerit(validation.reason, invalidMetrics);
     }
 
+    const fieldCurvGoal = goalConfig(targets, weights, "fieldCurvature", null);
     const metrics = getAutoTunerMetrics(lensState, {
       wavePreset: targets?.wavePreset || ui.wavePreset?.value || "d",
       objectDistanceMm: targets?.objectDistanceMm,
+      includeFieldFocus: fieldCurvGoal.enabled,
     });
     const notes = [];
     const warnings = Array.isArray(validation?.warnings) ? validation.warnings.slice() : [];
@@ -9062,6 +9422,28 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       ? (Number(metrics.cornerSpot.rmsMm) / sharpNorm) * (1 + Math.max(0, 0.9 - Number(metrics.cornerSpot.hitRate || 0)) * 4)
       : 35;
     if (cornerGoal.enabled) total += cornerSharpnessScore * cornerGoal.weight;
+
+    const fieldFocus = metrics.fieldFocus;
+    const focusDelta = Number(fieldFocus?.fieldCurvatureDeltaMm);
+    const cornerBestRms = Number(fieldFocus?.cornerBestRmsMm);
+    const centerBestRms = Number(fieldFocus?.centerBestRmsMm);
+    const fcNorm = Math.max(0.10, Number(targets?.fieldCurvatureNormMm) || 0.50);
+    const fieldCurvatureScore = fieldCurvGoal.enabled
+      ? (
+          Number.isFinite(focusDelta)
+            ? Math.abs(focusDelta) / fcNorm
+            : 18
+        ) + (
+          Number.isFinite(cornerBestRms)
+            ? (cornerBestRms / sharpNorm) * 0.85
+            : 18
+        ) + (
+          Number.isFinite(centerBestRms)
+            ? (centerBestRms / sharpNorm) * 0.30
+            : 6
+        )
+      : 0;
+    if (fieldCurvGoal.enabled) total += fieldCurvatureScore * fieldCurvGoal.weight;
 
     const vigGoal = goalConfig(targets, weights, "vignetting", null);
     const cornerHitRate = Number(metrics.cornerSpot?.hitRate || 0);
@@ -9106,6 +9488,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       imageCircleError,
       centerSharpnessScore,
       cornerSharpnessScore,
+      fieldCurvatureScore,
       vignettingPenalty,
       rearIntrusionPenalty,
       invalidPenalty: 0,
@@ -9305,25 +9688,27 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const type = String(s?.type || "").toUpperCase();
       const isStop = !!s?.stop || type === "STOP";
       const isAir = isAirSurfaceMedium(s);
+      const isFF = isFieldFlattenerSurface(s);
+      const isFFGap = isFieldFlattenerAirGapSurface(surfaces, i);
 
-      if (allowed.radii && !isStop && !autoTunerOriginalLock(config, i, "R")) {
+      if (allowed.radii && !isFF && !isStop && !autoTunerOriginalLock(config, i, "R")) {
         const r0 = Number(o?.R ?? s?.R ?? 0);
         if (Math.abs(r0) >= limits.minRadiusAbs && isPhysicalSurfaceType(type)) add({ kind: "R", i });
       }
 
-      if (allowed.airGaps && isAir && !autoTunerOriginalLock(config, i, "t")) add({ kind: "t", i, group: "air" });
-      if (allowed.glassThicknesses && !isAir && !autoTunerOriginalLock(config, i, "t")) add({ kind: "t", i, group: "glass" });
+      if (allowed.airGaps && isAir && !isFFGap && !autoTunerOriginalLock(config, i, "t")) add({ kind: "t", i, group: "air" });
+      if (allowed.glassThicknesses && !isAir && !isFF && !autoTunerOriginalLock(config, i, "t")) add({ kind: "t", i, group: "glass" });
       if (allowed.stopAperture && isStop && !autoTunerOriginalLock(config, i, "ap")) add({ kind: "ap", i, group: "stop" });
-      if (allowed.clearApertures && !isStop && !autoTunerOriginalLock(config, i, "ap")) add({ kind: "ap", i, group: "clear" });
-      if (allowed.glassTypes && !isAir && !autoTunerOriginalLock(config, i, "glass")) add({ kind: "glass", i });
+      if (allowed.clearApertures && !isStop && !isFF && !autoTunerOriginalLock(config, i, "ap")) add({ kind: "ap", i, group: "clear" });
+      if (allowed.glassTypes && !isAir && !isFF && !autoTunerOriginalLock(config, i, "glass")) add({ kind: "glass", i });
 
-      if (allowed.stopPosition && stopIdx >= 0 && (i === stopIdx || i === stopIdx - 1) && isAir && !autoTunerOriginalLock(config, i, "t")) {
+      if (allowed.stopPosition && stopIdx >= 0 && (i === stopIdx || i === stopIdx - 1) && isAir && !isFFGap && !autoTunerOriginalLock(config, i, "t")) {
         add({ kind: "t", i, group: "stop" });
       }
-      if (allowed.rearGroupSpacing && stopIdx >= 0 && i > stopIdx && isAir && !autoTunerOriginalLock(config, i, "t")) {
+      if (allowed.rearGroupSpacing && stopIdx >= 0 && i > stopIdx && isAir && !isFFGap && !autoTunerOriginalLock(config, i, "t")) {
         add({ kind: "t", i, group: "rearGroup" });
       }
-      if (allowed.frontGroupSpacing && stopIdx >= 0 && i < stopIdx && isAir && !autoTunerOriginalLock(config, i, "t")) {
+      if (allowed.frontGroupSpacing && stopIdx >= 0 && i < stopIdx && isAir && !isFFGap && !autoTunerOriginalLock(config, i, "t")) {
         add({ kind: "t", i, group: "frontGroup" });
       }
     }
@@ -9331,9 +9716,42 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (allowed.rearElementSpacing) {
       for (let i = lastIdx - 1; i >= 1; i--) {
         const s = surfaces[i];
-        if (isAirSurfaceMedium(s) && !autoTunerOriginalLock(config, i, "t")) {
+        if (isAirSurfaceMedium(s) && !isFieldFlattenerAirGapSurface(surfaces, i) && !autoTunerOriginalLock(config, i, "t")) {
           add({ kind: "t", i, group: "rearElement" });
           break;
+        }
+      }
+    }
+
+    const ffIndices = findFieldFlattenerIndices(surfaces);
+    if (ffIndices.length) {
+      if (allowed.fieldFlattenerRadii) {
+        for (const i of ffIndices) {
+          const s = surfaces[i];
+          const type = String(s?.type || "").toUpperCase();
+          const r0 = Number(s?.R ?? 0);
+          if (Math.abs(r0) >= limits.minRadiusAbs && isPhysicalSurfaceType(type) && !autoTunerOriginalLock(config, i, "R")) {
+            add({ kind: "R", i, group: "fieldFlattenerR" });
+          }
+        }
+      }
+      if (allowed.fieldFlattenerThickness) {
+        for (const i of ffIndices) {
+          const s = surfaces[i];
+          if (!isAirSurfaceMedium(s) && !autoTunerOriginalLock(config, i, "t")) {
+            add({ kind: "t", i, group: "fieldFlattenerThickness" });
+          }
+        }
+      }
+      if (allowed.fieldFlattenerPosition) {
+        const first = Math.min(...ffIndices);
+        const last = Math.max(...ffIndices);
+        const frontGap = first - 1;
+        if (frontGap >= 1 && isAirSurfaceMedium(surfaces[frontGap]) && !autoTunerOriginalLock(config, frontGap, "t")) {
+          add({ kind: "t", i: frontGap, group: "fieldFlattenerPosition" });
+        }
+        if (last >= 1 && last < lastIdx && isAirSurfaceMedium(surfaces[last]) && !autoTunerOriginalLock(config, last, "t")) {
+          add({ kind: "t", i: last, group: "fieldFlattenerPosition" });
         }
       }
     }
@@ -9419,6 +9837,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       imageCircle: { enabled: !!ui.atGoalIC?.checked, target: num(ui.atTargetIC?.value, 45) },
       centerSharpness: { enabled: !!ui.atGoalCenter?.checked },
       cornerSharpness: { enabled: !!ui.atGoalCorner?.checked },
+      fieldCurvature: { enabled: !!ui.atGoalFieldCurv?.checked },
       vignetting: { enabled: !!ui.atGoalVig?.checked },
       rearClearance: { enabled: !!ui.atGoalRear?.checked, target: num(ui.atTargetRear?.value, 0) },
       compactness: { enabled: !!ui.atGoalCompact?.checked, target: compactLength },
@@ -9429,6 +9848,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       imageCircle: num(ui.atWeightIC?.value, 7),
       centerSharpness: num(ui.atWeightCenter?.value, 6),
       cornerSharpness: num(ui.atWeightCorner?.value, 7),
+      fieldCurvature: num(ui.atWeightFieldCurv?.value, 6),
       vignetting: num(ui.atWeightVig?.value, 7),
       rearClearance: num(ui.atWeightRear?.value, 4),
       compactness: num(ui.atWeightCompact?.value, 3),
@@ -9475,6 +9895,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         frontGroupSpacing: !!ui.atVarFrontGroup?.checked,
         rearGroupSpacing: !!ui.atVarRearGroup?.checked,
         glassTypes: !!ui.atVarGlass?.checked,
+        fieldFlattenerRadii: !!ui.atVarFFR?.checked,
+        fieldFlattenerPosition: !!ui.atVarFFPos?.checked,
+        fieldFlattenerThickness: !!ui.atVarFFThick?.checked,
       },
       locks: (lens.surfaces || []).map((_, i) => getAutoTunerSurfaceLock(i)),
       targets,
@@ -9512,6 +9935,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       ui.atPause.textContent = autoTunerState.paused ? "Resume" : "Pause";
     }
     if (ui.atStop) ui.atStop.disabled = !running;
+    if (ui.atPreviewBest) ui.atPreviewBest.disabled = !hasBest || running;
     if (ui.atApplyBest) ui.atApplyBest.disabled = !hasBest || running;
     if (ui.atRevert) ui.atRevert.disabled = !hasOriginal || running;
     if (ui.atCopyDiagnostics) ui.atCopyDiagnostics.disabled = !autoTunerState.diagnostics;
@@ -9571,6 +9995,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.atMetricIC) ui.atMetricIC.textContent = mmText(best?.metrics?.imageCircleMm, 1);
     if (ui.atMetricCOV) ui.atMetricCOV.textContent = best?.metrics ? (best.metrics.cov ? "YES" : "NO") : "—";
     if (ui.atMetricBFL) ui.atMetricBFL.textContent = mmText(best?.metrics?.bfl);
+    if (ui.atMetricCenterRMS) ui.atMetricCenterRMS.textContent = mmText(best?.metrics?.centerSpot?.rmsMm, 4);
+    if (ui.atMetricCornerRMS) ui.atMetricCornerRMS.textContent = mmText(best?.metrics?.cornerSpot?.rmsMm, 4);
+    if (ui.atMetricFieldCurv) ui.atMetricFieldCurv.textContent = mmText(best?.metrics?.fieldFocus?.fieldCurvatureDeltaMm, 3);
     if (ui.atMetricRear) ui.atMetricRear.textContent = mmText(best?.metrics?.rearClearance);
 
     const statusBits = [];
@@ -9880,6 +10307,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         autoTunerState.hardRejectedIC = 0;
         autoTunerState.stepScale = 1;
         autoTunerState.baselineInvalid = true;
+        autoTunerState.previewingBest = false;
         autoTunerState.consecutiveInvalid = 0;
         autoTunerState.invalidByCategory = {};
         autoTunerState.disabledMutationGroups = new Set();
@@ -9915,6 +10343,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         autoTunerState.hardRejectedIC = 0;
         autoTunerState.stepScale = 1;
         autoTunerState.baselineInvalid = false;
+        autoTunerState.previewingBest = false;
         autoTunerState.consecutiveInvalid = 0;
         autoTunerState.invalidByCategory = {};
         autoTunerState.disabledMutationGroups = new Set();
@@ -9960,6 +10389,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       autoTunerState.hardRejectedIC = 0;
       autoTunerState.stepScale = 1;
       autoTunerState.baselineInvalid = false;
+      autoTunerState.previewingBest = false;
       autoTunerState.consecutiveInvalid = 0;
       autoTunerState.invalidByCategory = {};
       autoTunerState.disabledMutationGroups = new Set();
@@ -9996,11 +10426,34 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     finishAutoTuner("Stopped");
   }
 
+  function previewAutoTunerBest() {
+    if (!autoTunerState.bestLens || autoTunerState.running) return;
+    const liveLens = clone(lens);
+    const liveSelected = selectedIndex;
+    try {
+      lens = sanitizeLens(autoTunerState.bestLens);
+      selectedIndex = Math.min(Math.max(0, liveSelected), lens.surfaces.length - 1);
+      buildTable();
+      applySensorToIMS();
+      renderAll();
+    } finally {
+      lens = sanitizeLens(liveLens);
+      selectedIndex = Math.min(Math.max(0, liveSelected), lens.surfaces.length - 1);
+      buildTable();
+      applySensorToIMS();
+    }
+    autoTunerState.previewingBest = false;
+    autoTunerState.lastMessage = "Previewed best result in the ray pane without applying it.";
+    updateAutoTunerProgress(true);
+    toast("Previewed Auto Tuner best result");
+  }
+
   function applyAutoTunerBest() {
     if (!autoTunerState.bestLens || autoTunerState.running) return;
     loadLens(autoTunerState.bestLens);
     renderAll();
     if (preview.ready) scheduleRenderPreview({ force: true });
+    autoTunerState.previewingBest = false;
     toast("Applied Auto Tuner best result");
     updateAutoTunerButtons();
   }
@@ -10010,6 +10463,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     loadLens(autoTunerState.originalLens);
     renderAll();
     if (preview.ready) scheduleRenderPreview({ force: true });
+    autoTunerState.previewingBest = false;
     toast("Restored original lens");
     updateAutoTunerButtons();
   }
@@ -10113,13 +10567,18 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (el) el.checked = !!checked;
   }
 
+  function setAutoTunerVar(id, checked) {
+    const el = ui[id];
+    if (el) el.checked = !!checked;
+  }
+
   function applyAutoTunerPreset(name) {
     const metrics = getAutoTunerMetrics(lens, { wavePreset: ui.wavePreset?.value || "d" });
     const curFL = metrics.efl || 50;
     const curT = metrics.T || 2;
     const curRear = Number.isFinite(metrics.rearClearance) ? Math.max(0, metrics.rearClearance) : 0;
     [
-      "atGoalFL","atGoalT","atGoalIC","atGoalCenter","atGoalCorner","atGoalVig","atGoalRear","atGoalCompact",
+      "atGoalFL","atGoalT","atGoalIC","atGoalCenter","atGoalCorner","atGoalFieldCurv","atGoalVig","atGoalRear","atGoalCompact",
     ].forEach((id) => setAutoTunerGoal(id, false));
     if (ui.atStrictFLTLock) ui.atStrictFLTLock.checked = true;
     setAutoTunerHard("atHardFL", false);
@@ -10144,6 +10603,46 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       setAutoTunerWeight("atWeightCorner", 9);
       setAutoTunerWeight("atWeightIC", 8);
       setAutoTunerWeight("atWeightVig", 8);
+    } else if (name === "cornerFlatten") {
+      setAutoTunerGoal("atGoalFL", true);
+      setAutoTunerGoal("atGoalT", true);
+      setAutoTunerGoal("atGoalIC", true);
+      setAutoTunerGoal("atGoalCenter", true);
+      setAutoTunerGoal("atGoalCorner", true);
+      setAutoTunerGoal("atGoalFieldCurv", true);
+      setAutoTunerGoal("atGoalVig", true);
+      if (ui.atTargetFL) ui.atTargetFL.value = Number.isFinite(curFL) ? curFL.toFixed(2) : "50";
+      if (ui.atTargetT) ui.atTargetT.value = Number.isFinite(curT) ? curT.toFixed(2) : "2.00";
+      if (ui.atTargetIC) ui.atTargetIC.value = "45";
+      if (ui.atMinIC) ui.atMinIC.value = "45";
+      if (ui.atTolFL) ui.atTolFL.value = "0.75";
+      if (ui.atTolT) ui.atTolT.value = "0.20";
+      setAutoTunerHard("atHardFL", true);
+      setAutoTunerHard("atHardT", true);
+      setAutoTunerHard("atHardIC", false);
+      setAutoTunerWeight("atWeightFL", 5);
+      setAutoTunerWeight("atWeightT", 4);
+      setAutoTunerWeight("atWeightIC", 6);
+      setAutoTunerWeight("atWeightCenter", 4);
+      setAutoTunerWeight("atWeightCorner", 10);
+      setAutoTunerWeight("atWeightFieldCurv", 8);
+      setAutoTunerWeight("atWeightVig", 8);
+      setAutoTunerVar("atVarR", true);
+      setAutoTunerVar("atVarAirT", true);
+      setAutoTunerVar("atVarStopT", true);
+      setAutoTunerVar("atVarFrontGroup", true);
+      setAutoTunerVar("atVarRearGroup", true);
+      setAutoTunerVar("atVarRearSpacing", true);
+      setAutoTunerVar("atVarGlassT", false);
+      setAutoTunerVar("atVarStopAp", false);
+      setAutoTunerVar("atVarAp", false);
+      setAutoTunerVar("atVarGlass", false);
+      setAutoTunerVar("atVarFFR", false);
+      setAutoTunerVar("atVarFFPos", false);
+      setAutoTunerVar("atVarFFThick", false);
+      setAutoTunerVar("atAllowIMSAp", false);
+      setAutoTunerVar("atAllowSensorShift", false);
+      setAutoTunerVar("atAllowRSignFlip", false);
     } else if (name === "clearance") {
       setAutoTunerGoal("atGoalRear", true);
       if (ui.atTargetRear) ui.atTargetRear.value = curRear.toFixed(2);
@@ -10167,6 +10666,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       setAutoTunerWeight("atWeightCenter", 5);
       setAutoTunerWeight("atWeightCorner", 8);
       setAutoTunerWeight("atWeightIC", 7);
+      setAutoTunerWeight("atWeightFieldCurv", 6);
       setAutoTunerWeight("atWeightVig", 6);
     } else {
       setAutoTunerGoal("atGoalFL", true);
@@ -10189,6 +10689,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       setAutoTunerWeight("atWeightIC", 8);
       setAutoTunerWeight("atWeightCenter", 7);
       setAutoTunerWeight("atWeightCorner", 8);
+      setAutoTunerWeight("atWeightFieldCurv", 6);
       setAutoTunerWeight("atWeightVig", 8);
       setAutoTunerWeight("atWeightRear", 4);
     }
@@ -10222,6 +10723,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       ["atWeightIC", "atWeightICValue"],
       ["atWeightCenter", "atWeightCenterValue"],
       ["atWeightCorner", "atWeightCornerValue"],
+      ["atWeightFieldCurv", "atWeightFieldCurvValue"],
       ["atWeightVig", "atWeightVigValue"],
       ["atWeightRear", "atWeightRearValue"],
       ["atWeightCompact", "atWeightCompactValue"],
@@ -10256,13 +10758,14 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.atClose) ui.atClose.addEventListener("click", closeAutoTunerModal);
     if (ui.atApplyPreset) ui.atApplyPreset.addEventListener("click", () => applyAutoTunerPreset(ui.atPreset?.value || "clean50"));
     [
-      "atWeightFL","atWeightT","atWeightIC","atWeightCenter","atWeightCorner","atWeightVig","atWeightRear","atWeightCompact",
+      "atWeightFL","atWeightT","atWeightIC","atWeightCenter","atWeightCorner","atWeightFieldCurv","atWeightVig","atWeightRear","atWeightCompact",
     ].forEach((id) => {
       if (ui[id]) ui[id].addEventListener("input", syncAutoTunerWeightOutputs);
     });
     if (ui.atStart) ui.atStart.addEventListener("click", startAutoTuner);
     if (ui.atPause) ui.atPause.addEventListener("click", pauseAutoTuner);
     if (ui.atStop) ui.atStop.addEventListener("click", stopAutoTuner);
+    if (ui.atPreviewBest) ui.atPreviewBest.addEventListener("click", previewAutoTunerBest);
     if (ui.atApplyBest) ui.atApplyBest.addEventListener("click", applyAutoTunerBest);
     if (ui.atRevert) ui.atRevert.addEventListener("click", revertAutoTunerOriginal);
     if (ui.atCopyDiagnostics) ui.atCopyDiagnostics.addEventListener("click", copyAutoTunerDiagnostics);
@@ -11514,6 +12017,8 @@ function wireUI() {
   on("#btnCopyJson", "click", copyLensJsonToClipboard);
   on("#btnPasteJson", "click", openJsonPasteModal);
   on("#btnPasteZmx", "click", openZmxPasteModal);
+  on("#btnCornerFocus", "click", openCornerFocusModal);
+  on("#btnAddFieldFlattener", "click", addWeakRearFieldFlattener);
 
   on("#btnAdd", "click", addSurface);
   on("#btnAddElement", "click", () => {
@@ -11584,6 +12089,30 @@ function wireUI() {
   if (ui.zmxPasteModal) {
     ui.zmxPasteModal.addEventListener("mousedown", (e) => {
       if (e.target === ui.zmxPasteModal) closeZmxPasteModal();
+    });
+  }
+
+  if (ui.cfRun) {
+    ui.cfRun.addEventListener("click", (e) => {
+      e.preventDefault();
+      runCornerFocusTest();
+    });
+  }
+  if (ui.cfCopy) {
+    ui.cfCopy.addEventListener("click", (e) => {
+      e.preventDefault();
+      copyCornerFocusReport();
+    });
+  }
+  if (ui.cfClose) {
+    ui.cfClose.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeCornerFocusModal();
+    });
+  }
+  if (ui.cornerFocusModal) {
+    ui.cornerFocusModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.cornerFocusModal) closeCornerFocusModal();
     });
   }
 

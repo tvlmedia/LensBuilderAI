@@ -30,6 +30,7 @@
 
       <button id="btnAdd" class="btn" type="button">+ Surface</button>
       <button id="btnAddElement" class="btn" type="button">+ Element</button>
+      <button id="btnAddFieldFlattener" class="btn" type="button">Add rear flattener</button>
       <button id="btnDuplicate" class="btn" type="button">Duplicate</button>
       <button id="btnMoveUp" class="btn" type="button">↑</button>
       <button id="btnMoveDown" class="btn" type="button">↓</button>
@@ -40,6 +41,7 @@
       <button id="btnScaleToFocal" class="btn" type="button">Scale → FL</button>
       <button id="btnSetTStop" class="btn" type="button">Set T</button>
       <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
+      <button id="btnCornerFocus" class="btn" type="button">Corner Focus Test</button>
       <button id="btnAutoTuner" class="btn" type="button">Auto Tuner</button>
       <button id="btnRenderEngine" class="btn btnPrimary" type="button" aria-pressed="true">Preview: ON</button>
       <button id="btnDebugOverlay" class="btn" type="button" aria-pressed="false">Outline Debug: OFF</button>
@@ -423,6 +425,7 @@
                   <option value="clean50">50mm F2 Full Frame Clean</option>
                   <option value="flOnly">Fix focal length only</option>
                   <option value="corners">Improve corners</option>
+                  <option value="cornerFlatten">Improve corners / field flattening</option>
                   <option value="clearance">Improve mechanical clearance</option>
                   <option value="currentImprove">Maintain current FL/T, improve image</option>
                 </select>
@@ -479,6 +482,13 @@
               </label>
 
               <label class="atGoal atGoalNoNumber">
+                <input id="atGoalFieldCurv" type="checkbox">
+                <span>Field curvature correction</span>
+                <input id="atWeightFieldCurv" type="range" min="0" max="10" step="0.5" value="6">
+                <output id="atWeightFieldCurvValue">6</output>
+              </label>
+
+              <label class="atGoal atGoalNoNumber">
                 <input id="atGoalVig" type="checkbox" checked>
                 <span>Vignetting / COV</span>
                 <input id="atWeightVig" type="range" min="0" max="10" step="0.5" value="7">
@@ -515,6 +525,9 @@
               <label><input id="atVarFrontGroup" type="checkbox"> Front group spacing</label>
               <label><input id="atVarRearGroup" type="checkbox" checked> Rear group spacing</label>
               <label><input id="atVarGlass" type="checkbox"> Glass types</label>
+              <label><input id="atVarFFR" type="checkbox"> Tune field flattener radii</label>
+              <label><input id="atVarFFPos" type="checkbox"> Tune field flattener position</label>
+              <label><input id="atVarFFThick" type="checkbox"> Tune field flattener thickness</label>
             </div>
           </section>
 
@@ -631,6 +644,9 @@
               <div><span>Best IC</span><strong id="atMetricIC">—</strong></div>
               <div><span>Best COV</span><strong id="atMetricCOV">—</strong></div>
               <div><span>Best BFL</span><strong id="atMetricBFL">—</strong></div>
+              <div><span>Best center RMS</span><strong id="atMetricCenterRMS">—</strong></div>
+              <div><span>Best corner RMS</span><strong id="atMetricCornerRMS">—</strong></div>
+              <div><span>Best FC delta</span><strong id="atMetricFieldCurv">—</strong></div>
               <div><span>Rear clearance</span><strong id="atMetricRear">—</strong></div>
             </div>
             <div id="atStatus" class="atStatus">Ready</div>
@@ -658,6 +674,7 @@
         <button id="atStart" class="btn btnPrimary" type="button">Start</button>
         <button id="atPause" class="btn" type="button" disabled>Pause</button>
         <button id="atStop" class="btn" type="button" disabled>Stop</button>
+        <button id="atPreviewBest" class="btn" type="button" disabled>Preview best</button>
         <button id="atApplyBest" class="btn" type="button" disabled>Apply best result</button>
         <button id="atRevert" class="btn" type="button" disabled>Revert to original</button>
         <button id="atCopyDiagnostics" class="btn" type="button" disabled>Copy diagnostics</button>
@@ -766,6 +783,47 @@
 
       <div class="modalBottom modalActions">
         <button id="elAdd" class="btn btnPrimary" type="button">Insert element</button>
+      </div>
+    </div>
+  </div>
+  <div id="cornerFocusModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard cornerFocusCard" role="dialog" aria-modal="true" aria-labelledby="cornerFocusTitle">
+      <div class="modalTop">
+        <div>
+          <div id="cornerFocusTitle" class="modalTitle">Corner Focus Test</div>
+          <div class="modalSub">Compares center, mid-field, and corner focus using numeric ray spread at the image plane.</div>
+        </div>
+        <button id="cfClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modalScroll">
+        <div id="cfSummary" class="cornerFocusSummary">Ready.</div>
+        <div class="atMetrics cornerFocusMetrics">
+          <div><span>Center best shift</span><strong id="cfCenterShift">—</strong></div>
+          <div><span>Corner best shift</span><strong id="cfCornerShift">—</strong></div>
+          <div><span>Focus delta</span><strong id="cfFocusDelta">—</strong></div>
+          <div><span>Current COV</span><strong id="cfCOV">—</strong></div>
+          <div><span>Image circle</span><strong id="cfIC">—</strong></div>
+        </div>
+        <div class="atHistoryWrap cornerFocusTableWrap">
+          <table class="atHistory">
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Current RMS</th>
+                <th>Current hit</th>
+                <th>Best shift</th>
+                <th>Best RMS</th>
+                <th>Best hit</th>
+              </tr>
+            </thead>
+            <tbody id="cfTableBody"></tbody>
+          </table>
+        </div>
+        <div id="cfNotes" class="cornerFocusNotes"></div>
+      </div>
+      <div class="modalBottom zmxPasteBottom">
+        <button id="cfCopy" class="btn" type="button">Copy report</button>
+        <button id="cfRun" class="btn btnPrimary" type="button">Run test</button>
       </div>
     </div>
   </div>

@@ -608,6 +608,34 @@ canvas{
 .zmxPasteBottom{
   gap:10px;
 }
+.cornerFocusCard{
+  width:min(980px, calc(100vw - 48px));
+}
+.cornerFocusSummary{
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  background:rgba(255,255,255,.035);
+  padding:10px 12px;
+  margin-bottom:12px;
+  font-size:13px;
+  line-height:1.45;
+  color:rgba(255,255,255,.82);
+}
+.cornerFocusMetrics{
+  grid-template-columns:repeat(5, minmax(120px, 1fr));
+  margin-bottom:12px;
+}
+.cornerFocusTableWrap{
+  max-height:230px;
+  margin-top:0;
+}
+.cornerFocusNotes{
+  margin-top:12px;
+  white-space:pre-wrap;
+  font-size:12px;
+  line-height:1.45;
+  color:rgba(255,255,255,.74);
+}
 
 .modalBottom{
   padding:14px 20px;
