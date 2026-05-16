@@ -8427,12 +8427,13 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return n.toFixed(digits).replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "");
   }
 
-  function checkAutoTunerHardConstraints(merit, config = {}) {
-    if (!merit || merit.invalidPenalty > 0) return { ok: true };
+  function collectAutoTunerHardConstraintViolations(merit, config = {}) {
+    if (!merit || merit.invalidPenalty > 0) return [];
     const hard = config?.hardConstraints || {};
     const metrics = merit?.metrics || {};
     const strictFLT = hard.strictFLTLock !== false;
     const eps = 1e-9;
+    const violations = [];
 
     const flHard = hard.focalLength || {};
     if (strictFLT && flHard.enabled) {
@@ -8440,14 +8441,16 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const target = Number(flHard.target);
       const tolerance = Math.max(0, Number(flHard.tolerance));
       if (!Number.isFinite(efl) || !Number.isFinite(target) || !Number.isFinite(tolerance)) {
-        return { ok: false, category: "fl", reason: "Rejected: EFL unavailable for hard focal length lock" };
-      }
-      if (Math.abs(efl - target) > tolerance + eps) {
-        return {
+        violations.push({ ok: false, category: "fl", reason: "Rejected: EFL unavailable for hard focal length lock" });
+      } else if (Math.abs(efl - target) > tolerance + eps) {
+        violations.push({
           ok: false,
           category: "fl",
           reason: `Rejected: EFL ${compactAutoTunerNumber(efl)}mm outside ${compactAutoTunerNumber(target)} ±${compactAutoTunerNumber(tolerance)}mm`,
-        };
+          current: efl,
+          target,
+          tolerance,
+        });
       }
     }
 
@@ -8457,14 +8460,16 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const target = Number(tHard.target);
       const tolerance = Math.max(0, Number(tHard.tolerance));
       if (!Number.isFinite(tStop) || !Number.isFinite(target) || !Number.isFinite(tolerance)) {
-        return { ok: false, category: "t", reason: "Rejected: T-stop unavailable for hard T lock" };
-      }
-      if (Math.abs(tStop - target) > tolerance + eps) {
-        return {
+        violations.push({ ok: false, category: "t", reason: "Rejected: T-stop unavailable for hard T lock" });
+      } else if (Math.abs(tStop - target) > tolerance + eps) {
+        violations.push({
           ok: false,
           category: "t",
           reason: `Rejected: T${compactAutoTunerNumber(tStop)} outside T${compactAutoTunerNumber(target)} ±${compactAutoTunerNumber(tolerance)}`,
-        };
+          current: tStop,
+          target,
+          tolerance,
+        });
       }
     }
 
@@ -8473,18 +8478,58 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const imageCircle = Number(metrics.imageCircleMm);
       const minimum = Math.max(0, Number(icHard.minimum));
       if (!Number.isFinite(imageCircle) || !Number.isFinite(minimum)) {
-        return { ok: false, category: "ic", reason: "Rejected: image circle unavailable for hard minimum" };
-      }
-      if (imageCircle + eps < minimum) {
-        return {
+        violations.push({ ok: false, category: "ic", reason: "Rejected: image circle unavailable for hard minimum" });
+      } else if (imageCircle + eps < minimum) {
+        violations.push({
           ok: false,
           category: "ic",
           reason: `Rejected: IC ${compactAutoTunerNumber(imageCircle, 1)}mm below ${compactAutoTunerNumber(minimum, 1)}mm minimum`,
-        };
+          current: imageCircle,
+          minimum,
+        });
       }
     }
 
+    return violations;
+  }
+
+  function checkAutoTunerHardConstraints(merit, config = {}) {
+    const violations = collectAutoTunerHardConstraintViolations(merit, config);
+    if (violations.length) return violations[0];
     return { ok: true };
+  }
+
+  function describeAutoTunerBaselineHardViolation(violation) {
+    if (!violation) return "";
+    if (violation.category === "ic") {
+      const cur = compactAutoTunerNumber(violation.current, 1);
+      const min = compactAutoTunerNumber(violation.minimum, 1);
+      return `Current lens is already below hard IC minimum (${cur}mm < ${min}mm). The optimizer may reject all candidates. Use Image Circle as a soft target first.`;
+    }
+    if (violation.category === "fl") {
+      const cur = compactAutoTunerNumber(violation.current);
+      const target = compactAutoTunerNumber(violation.target);
+      const tol = compactAutoTunerNumber(violation.tolerance);
+      return `Current lens is already outside the hard Focal Length range (${cur}mm outside ${target} ±${tol}mm). The optimizer may reject all candidates. Use Focal Length as a soft target first or loosen the tolerance.`;
+    }
+    if (violation.category === "t") {
+      const cur = compactAutoTunerNumber(violation.current);
+      const target = compactAutoTunerNumber(violation.target);
+      const tol = compactAutoTunerNumber(violation.tolerance);
+      return `Current lens is already outside the hard T-stop range (T${cur} outside T${target} ±${tol}). The optimizer may reject all candidates. Use T-stop as a soft target first or loosen the tolerance.`;
+    }
+    return violation.reason || "Current lens is already outside a hard Auto Tuner constraint. The optimizer may reject all candidates.";
+  }
+
+  function confirmAutoTunerBaselineHardConstraints(merit, config) {
+    const violations = collectAutoTunerHardConstraintViolations(merit, config);
+    if (!violations.length) return { ok: true, warning: "" };
+    const warning = violations.map(describeAutoTunerBaselineHardViolation).filter(Boolean).join("\n\n");
+    const message = `${warning}\n\nStart Auto Tuner anyway?`;
+    const proceed = (typeof window !== "undefined" && typeof window.confirm === "function")
+      ? window.confirm(message)
+      : false;
+    return { ok: proceed, warning };
   }
 
   function goalConfig(targets, weights, key, defaultTarget = null) {
@@ -9825,6 +9870,44 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         autoTunerState.diagnostics = createAutoTunerDiagnostics(autoTunerState.stopReason, validation, originalMerit.metrics);
         updateAutoTunerProgress(true);
         toast("Auto Tuner baseline invalid; diagnostics available", 2600);
+        return;
+      }
+      const baselineConfirm = confirmAutoTunerBaselineHardConstraints(originalMerit, cfg);
+      if (!baselineConfirm.ok) {
+        autoTunerState.running = false;
+        autoTunerState.paused = false;
+        autoTunerState.iteration = 0;
+        autoTunerState.lastUiIteration = -1;
+        autoTunerState.originalLens = original;
+        autoTunerState.acceptedLens = clone(original);
+        autoTunerState.bestLens = null;
+        autoTunerState.config = cfg;
+        autoTunerState.originalMerit = originalMerit;
+        autoTunerState.acceptedMerit = originalMerit;
+        autoTunerState.currentMerit = originalMerit;
+        autoTunerState.bestMerit = null;
+        autoTunerState.history = [];
+        autoTunerState.noImprove = 0;
+        autoTunerState.acceptedMoves = 0;
+        autoTunerState.rejectedMoves = 0;
+        autoTunerState.invalidMoves = 0;
+        autoTunerState.hardRejectedFL = 0;
+        autoTunerState.hardRejectedT = 0;
+        autoTunerState.hardRejectedIC = 0;
+        autoTunerState.stepScale = 1;
+        autoTunerState.baselineInvalid = false;
+        autoTunerState.consecutiveInvalid = 0;
+        autoTunerState.invalidByCategory = {};
+        autoTunerState.disabledMutationGroups = new Set();
+        autoTunerState.stopReason = "Baseline outside hard constraint — run cancelled";
+        autoTunerState.lastMessage = baselineConfirm.warning || baselineHardCheck.reason || "";
+        autoTunerState.diagnostics = createAutoTunerDiagnostics(
+          autoTunerState.lastMessage || autoTunerState.stopReason,
+          null,
+          originalMerit.metrics
+        );
+        updateAutoTunerProgress(true);
+        toast("Auto Tuner cancelled; hard baseline warning shown", 2600);
         return;
       }
       const ops = collectAutoTunerMutationOps(original, cfg, original);
