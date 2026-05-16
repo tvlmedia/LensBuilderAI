@@ -181,6 +181,7 @@
     btnAutoFocus: $("#btnAutoFocus"),
     btnCornerFocus: $("#btnCornerFocus"),
     btnAutoTuner: $("#btnAutoTuner"),
+    btnAiAssistant: $("#btnAiAssistant"),
     btnRenderEngine: $("#btnRenderEngine"),
     btnDebugOverlay: $("#btnDebugOverlay"),
 
@@ -323,6 +324,22 @@
     cfNotes: $("#cfNotes"),
     cfRun: $("#cfRun"),
     cfCopy: $("#cfCopy"),
+
+    aiAssistantModal: $("#aiAssistantModal"),
+    aiClose: $("#aiClose"),
+    aiLensSummary: $("#aiLensSummary"),
+    aiCandidateSummary: $("#aiCandidateSummary"),
+    aiPreviewCandidate: $("#aiPreviewCandidate"),
+    aiApplyCandidate: $("#aiApplyCandidate"),
+    aiRevertCandidate: $("#aiRevertCandidate"),
+    aiAllowTools: $("#aiAllowTools"),
+    aiRequireApproval: $("#aiRequireApproval"),
+    aiChatHistory: $("#aiChatHistory"),
+    aiActionQueue: $("#aiActionQueue"),
+    aiChatForm: $("#aiChatForm"),
+    aiChatInput: $("#aiChatInput"),
+    aiSend: $("#aiSend"),
+    aiStatus: $("#aiStatus"),
 
     verifyPanel: $("#verifyPanel"),
     verifyControls: $("#verifyControls"),
@@ -10197,6 +10214,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     autoTunerState.paused = false;
     autoTunerState.stopReason = reason || "Stopped";
     updateAutoTunerProgress(true);
+    updateLensAiCandidateFromAutoTuner();
     if (reason) toast(`Auto Tuner: ${reason}`, 1800);
   }
 
@@ -10776,6 +10794,711 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     });
     syncAutoTunerWeightOutputs();
     updateAutoTunerButtons();
+  }
+
+  // -------------------- AI Lens Assistant --------------------
+  const lensAiState = {
+    messages: [],
+    toolResults: [],
+    latestActions: [],
+    latestCandidateLens: null,
+    latestCandidateMerit: null,
+    originalLens: null,
+    busy: false,
+  };
+
+  const LENS_AI_SAFE_AUTORUN = new Set(["get_lens_state", "get_lens_metrics", "run_corner_focus_test"]);
+  const LENS_AI_STRUCTURAL_ACTIONS = new Set([
+    "apply_candidate",
+    "add_weak_rear_field_flattener",
+    "scale_to_focal_length",
+    "set_surface_value",
+  ]);
+
+  function isLensAiOpen() {
+    return !!(ui.aiAssistantModal && !ui.aiAssistantModal.classList.contains("hidden"));
+  }
+
+  function getLensAiMetrics(opts = {}) {
+    const includeFieldFocus = !!opts.includeFieldFocus;
+    const m = getAutoTunerMetrics(lens, {
+      wavePreset: ui.wavePreset?.value || "d",
+      includeFieldFocus,
+      focusRayCount: opts.focusRayCount || 9,
+    });
+    const fieldFocus = m.fieldFocus || lastCornerFocusReport?.fieldFocus || null;
+    const centerHit = Number(m.centerSpot?.hitRate);
+    const midHit = Number(m.midSpot?.hitRate);
+    const cornerHit = Number(m.cornerSpot?.hitRate);
+    return {
+      efl: finiteOrNull(m.efl),
+      tStop: finiteOrNull(m.T),
+      bfl: finiteOrNull(m.bfl),
+      imageCircleMm: finiteOrNull(m.imageCircleMm),
+      cov: !!m.cov,
+      vignetting: Number.isFinite(cornerHit) ? Math.max(0, 1 - cornerHit) : null,
+      rearClearance: finiteOrNull(m.rearClearance),
+      centerRmsMm: finiteOrNull(m.centerSpot?.rmsMm),
+      midRmsMm: finiteOrNull(m.midSpot?.rmsMm),
+      cornerRmsMm: finiteOrNull(m.cornerSpot?.rmsMm),
+      centerHitRate: Number.isFinite(centerHit) ? centerHit : null,
+      midHitRate: Number.isFinite(midHit) ? midHit : null,
+      cornerHitRate: Number.isFinite(cornerHit) ? cornerHit : null,
+      fieldCurvatureDeltaMm: finiteOrNull(fieldFocus?.fieldCurvatureDeltaMm),
+      centerBestFocusShiftMm: finiteOrNull(fieldFocus?.centerBestShiftMm),
+      cornerBestFocusShiftMm: finiteOrNull(fieldFocus?.cornerBestShiftMm),
+      centerBestRmsMm: finiteOrNull(fieldFocus?.centerBestRmsMm),
+      cornerBestRmsMm: finiteOrNull(fieldFocus?.cornerBestRmsMm),
+    };
+  }
+
+  function compactLensForAiPrompt(lensState) {
+    const L = clone(lensState || lens);
+    recomputeSurfacePositionsForLens(L);
+    return {
+      name: L?.name || "Untitled lens",
+      sensor: {
+        w: num(ui.sensorW?.value, getSensorWH().w),
+        h: num(ui.sensorH?.value, getSensorWH().h),
+      },
+      surfaceCount: Array.isArray(L?.surfaces) ? L.surfaces.length : 0,
+      surfaces: (L?.surfaces || []).map((s, i) => ({
+        index: i,
+        label: displaySurfaceLabel(s, i),
+        type: String(s?.type || ""),
+        R: finiteOrNull(s?.R),
+        t: finiteOrNull(s?.t),
+        ap: finiteOrNull(s?.ap),
+        glass: String(s?.glass || "AIR"),
+        stop: !!s?.stop,
+      })),
+    };
+  }
+
+  function getLensAiPayload(message) {
+    const lensJson = clone(lens);
+    recomputeSurfacePositionsForLens(lensJson);
+    return {
+      message,
+      lensJson,
+      lensSummary: compactLensForAiPrompt(lensJson),
+      metrics: getLensAiMetrics({ includeFieldFocus: false }),
+      recentAutoTuner: getLensAiRecentAutoTuner(),
+      toolResults: lensAiState.toolResults.slice(-5),
+      history: lensAiState.messages.slice(-12).map((m) => ({ role: m.role, content: m.content })),
+    };
+  }
+
+  function getLensAiRecentAutoTuner() {
+    if (!autoTunerState.bestMerit && !autoTunerState.currentMerit) return null;
+    const bestIter = Number(autoTunerState.bestIteration);
+    const iter = Number(autoTunerState.iteration || 0);
+    return {
+      running: !!autoTunerState.running,
+      iteration: iter,
+      bestIteration: Number.isFinite(bestIter) ? bestIter : null,
+      sinceBest: Number.isFinite(bestIter) ? Math.max(0, iter - bestIter) : null,
+      bestScore: finiteOrNull(autoTunerState.bestMerit?.totalScore),
+      bestMetrics: compactLensAiMetrics(autoTunerState.bestMerit?.metrics),
+      accepted: autoTunerState.acceptedMoves || 0,
+      rejected: autoTunerState.rejectedMoves || 0,
+      invalid: autoTunerState.invalidMoves || 0,
+    };
+  }
+
+  function compactLensAiMetrics(metrics) {
+    if (!metrics) return null;
+    return {
+      efl: finiteOrNull(metrics.efl),
+      tStop: finiteOrNull(metrics.T),
+      bfl: finiteOrNull(metrics.bfl),
+      imageCircleMm: finiteOrNull(metrics.imageCircleMm),
+      cov: metrics.cov == null ? null : !!metrics.cov,
+      rearClearance: finiteOrNull(metrics.rearClearance),
+      centerRmsMm: finiteOrNull(metrics.centerSpot?.rmsMm),
+      midRmsMm: finiteOrNull(metrics.midSpot?.rmsMm),
+      cornerRmsMm: finiteOrNull(metrics.cornerSpot?.rmsMm),
+      fieldCurvatureDeltaMm: finiteOrNull(metrics.fieldFocus?.fieldCurvatureDeltaMm),
+    };
+  }
+
+  function lensAiMetricGridHtml(metrics) {
+    const rows = [
+      ["EFL", mmText(metrics?.efl)],
+      ["T", tText(metrics?.tStop)],
+      ["IC", mmText(metrics?.imageCircleMm, 1)],
+      ["COV", metrics?.cov ? "YES" : "NO"],
+      ["BFL", mmText(metrics?.bfl)],
+      ["Rear clr", mmText(metrics?.rearClearance)],
+      ["Center RMS", mmText(metrics?.centerRmsMm, 4)],
+      ["Corner RMS", mmText(metrics?.cornerRmsMm, 4)],
+    ];
+    return rows.map(([label, value]) => `<div><span>${escapeAttr(label)}</span><strong>${escapeAttr(value)}</strong></div>`).join("");
+  }
+
+  function updateLensAiLensSummary() {
+    if (!ui.aiLensSummary) return;
+    try {
+      ui.aiLensSummary.innerHTML = lensAiMetricGridHtml(getLensAiMetrics({ includeFieldFocus: false }));
+    } catch (e) {
+      ui.aiLensSummary.textContent = `Metrics unavailable: ${e?.message || e}`;
+    }
+  }
+
+  function getLensAiCandidateLens() {
+    if (lensAiState.latestCandidateLens) return clone(lensAiState.latestCandidateLens);
+    if (autoTunerState.bestLens && Number(autoTunerState.iteration || 0) > 0) return clone(autoTunerState.bestLens);
+    return null;
+  }
+
+  function getLensAiCandidateMerit() {
+    return lensAiState.latestCandidateMerit || autoTunerState.bestMerit || null;
+  }
+
+  function updateLensAiCandidateFromAutoTuner() {
+    if (!autoTunerState.bestLens || Number(autoTunerState.iteration || 0) <= 0) return;
+    lensAiState.latestCandidateLens = clone(autoTunerState.bestLens);
+    lensAiState.latestCandidateMerit = autoTunerState.bestMerit ? clone(autoTunerState.bestMerit) : null;
+    updateLensAiCandidateSummary();
+  }
+
+  function updateLensAiCandidateSummary() {
+    if (!ui.aiCandidateSummary) return;
+    const candidate = getLensAiCandidateLens();
+    const merit = getLensAiCandidateMerit();
+    const hasCandidate = !!candidate;
+    ui.aiPreviewCandidate.disabled = !hasCandidate || autoTunerState.running;
+    ui.aiApplyCandidate.disabled = !hasCandidate || autoTunerState.running;
+    ui.aiRevertCandidate.disabled = !lensAiState.originalLens && !autoTunerState.originalLens;
+    if (!hasCandidate) {
+      ui.aiCandidateSummary.textContent = "No candidate yet.";
+      return;
+    }
+    const m = merit?.metrics ? compactLensAiMetrics(merit.metrics) : getLensAiMetricsForCandidate(candidate);
+    const iter = Number(autoTunerState.bestIteration);
+    const score = Number(merit?.totalScore);
+    ui.aiCandidateSummary.innerHTML = [
+      `<span>Best candidate</span><strong>${Number.isFinite(score) ? scoreText(score) : "Ready"}</strong>`,
+      `EFL ${escapeAttr(mmText(m?.efl))} • ${escapeAttr(tText(m?.tStop))} • IC ${escapeAttr(mmText(m?.imageCircleMm, 1))}`,
+      `COV ${m?.cov ? "YES" : "NO"} • corner RMS ${escapeAttr(mmText(m?.cornerRmsMm, 4))}`,
+      Number.isFinite(iter) ? `Best iter ${Math.max(0, Math.floor(iter))}` : "",
+    ].filter(Boolean).join("<br>");
+  }
+
+  function getLensAiMetricsForCandidate(candidate) {
+    try {
+      const m = getAutoTunerMetrics(candidate, { wavePreset: ui.wavePreset?.value || "d", includeFieldFocus: false });
+      return compactLensAiMetrics(m);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function appendLensAiMessage(role, content) {
+    const cleanRole = role === "user" || role === "tool" ? role : "assistant";
+    const text = String(content || "").trim();
+    if (!text) return;
+    lensAiState.messages.push({ role: cleanRole, content: text });
+    lensAiState.messages = lensAiState.messages.slice(-40);
+    if (!ui.aiChatHistory) return;
+    const d = document.createElement("div");
+    d.className = `aiMsg aiMsg${cleanRole.charAt(0).toUpperCase()}${cleanRole.slice(1)}`;
+    d.textContent = text;
+    ui.aiChatHistory.appendChild(d);
+    ui.aiChatHistory.scrollTop = ui.aiChatHistory.scrollHeight;
+  }
+
+  function appendLensAiToolResult(title, text, data = null) {
+    const result = { title: String(title || "Tool result"), text: String(text || ""), data, createdAt: new Date().toISOString() };
+    lensAiState.toolResults.push(result);
+    lensAiState.toolResults = lensAiState.toolResults.slice(-12);
+    appendLensAiMessage("tool", `${result.title}\n${result.text}`);
+  }
+
+  function setLensAiBusy(busy, message = "") {
+    lensAiState.busy = !!busy;
+    if (ui.aiSend) ui.aiSend.disabled = !!busy;
+    if (ui.aiStatus) ui.aiStatus.textContent = message || (busy ? "Thinking..." : "Ready.");
+  }
+
+  function openLensAiAssistant() {
+    if (!ui.aiAssistantModal) return;
+    if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
+    ui.aiAssistantModal.classList.remove("hidden");
+    ui.aiAssistantModal.setAttribute("aria-hidden", "false");
+    updateLensAiLensSummary();
+    updateLensAiCandidateSummary();
+    if (!lensAiState.messages.length) {
+      appendLensAiMessage(
+        "assistant",
+        "I can inspect the current lens, run a corner focus diagnostic, and set up safe Auto Tuner runs. I will not apply changes without approval."
+      );
+    }
+    setTimeout(() => ui.aiChatInput?.focus(), 0);
+  }
+
+  function closeLensAiAssistant() {
+    if (!ui.aiAssistantModal) return;
+    ui.aiAssistantModal.classList.add("hidden");
+    ui.aiAssistantModal.setAttribute("aria-hidden", "true");
+  }
+
+  function normalizeLensAiAction(raw, index = 0) {
+    const type = String(raw?.type || raw?.name || raw?.action || "").trim();
+    const args = raw?.args && typeof raw.args === "object"
+      ? raw.args
+      : (raw?.input && typeof raw.input === "object" ? raw.input : {});
+    const structural = LENS_AI_STRUCTURAL_ACTIONS.has(type);
+    return {
+      id: String(raw?.id || `${type || "action"}_${index}`),
+      type,
+      label: String(raw?.label || lensAiDefaultActionLabel(type)),
+      rationale: String(raw?.rationale || raw?.reason || ""),
+      requiresApproval: raw?.requiresApproval == null ? structural : !!raw.requiresApproval,
+      autoRunnable: raw?.autoRunnable == null ? LENS_AI_SAFE_AUTORUN.has(type) : !!raw.autoRunnable,
+      args,
+    };
+  }
+
+  function lensAiDefaultActionLabel(type) {
+    const t = String(type || "");
+    if (t === "get_lens_state") return "Inspect lens JSON";
+    if (t === "get_lens_metrics") return "Read current metrics";
+    if (t === "run_corner_focus_test") return "Run Corner Focus Test";
+    if (t === "run_auto_tuner") return "Run suggested tuner";
+    if (t === "preview_candidate") return "Preview best";
+    if (t === "apply_candidate") return "Apply candidate";
+    if (t === "revert_to_original") return "Revert";
+    if (t === "add_weak_rear_field_flattener") return "Add rear flattener";
+    if (t === "scale_to_focal_length") return "Scale to focal length";
+    if (t === "set_surface_value") return "Set surface value";
+    return "Run action";
+  }
+
+  function renderLensAiActions(actions) {
+    const list = (actions || []).map(normalizeLensAiAction).filter((a) => a.type);
+    lensAiState.latestActions = list;
+    if (!ui.aiActionQueue) return;
+    ui.aiActionQueue.innerHTML = "";
+    for (const action of list) {
+      const card = document.createElement("div");
+      card.className = "aiActionCard";
+      const copy = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "aiActionTitle";
+      title.textContent = action.label;
+      const text = document.createElement("div");
+      text.className = "aiActionText";
+      text.textContent = action.rationale || lensAiActionHint(action);
+      copy.appendChild(title);
+      copy.appendChild(text);
+      const btn = document.createElement("button");
+      btn.className = action.requiresApproval ? "btn" : "btn btnPrimary";
+      btn.type = "button";
+      btn.textContent = action.label;
+      btn.disabled = action.type === "set_surface_value";
+      if (action.type === "set_surface_value") text.textContent = "Disabled in v1. Use manual surface controls for direct edits.";
+      btn.addEventListener("click", () => executeLensAiAction(action));
+      card.appendChild(copy);
+      card.appendChild(btn);
+      ui.aiActionQueue.appendChild(card);
+    }
+    maybeAutoRunLensAiActions(list);
+  }
+
+  function lensAiActionHint(action) {
+    if (action.type === "run_auto_tuner") return "Uses existing Auto Tuner with hard FL/T constraints and no automatic apply.";
+    if (action.type === "run_corner_focus_test") return "Checks whether corner blur looks like field curvature, coma/astigmatism, or coverage.";
+    if (action.requiresApproval) return "Requires approval before changing the lens.";
+    return "Safe read-only action.";
+  }
+
+  function maybeAutoRunLensAiActions(actions) {
+    if (!ui.aiAllowTools?.checked) return;
+    const action = actions.find((a) => a.autoRunnable && LENS_AI_SAFE_AUTORUN.has(a.type) && !a._ran);
+    if (!action) return;
+    action._ran = true;
+    setTimeout(() => executeLensAiAction(action), 80);
+  }
+
+  async function requestLensAiPlan(message) {
+    const payload = getLensAiPayload(message);
+    const response = await fetch("/api/lens-ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(text || `AI endpoint returned ${response.status}`);
+    }
+    return response.json();
+  }
+
+  function lensAiFallbackResponse(message, metrics, error) {
+    const lower = String(message || "").toLowerCase();
+    const wantsCorners = /corner|hoek|sharp|scherp|field|coma|astig|circle|coverage/.test(lower);
+    const wantsFlattener = /flattener|field flatten|rear field|vlakveld|field curvature/.test(lower);
+    const flMatch = lower.match(/(\d+(?:[.,]\d+)?)\s*mm/);
+    const tMatch = lower.match(/\bt\s*([0-9]+(?:[.,][0-9]+)?)/);
+    const targetFL = flMatch ? num(flMatch[1], 50) : (Number.isFinite(Number(metrics?.efl)) ? Number(metrics.efl) : 50);
+    const targetT = tMatch ? num(tMatch[1], 2) : (Number.isFinite(Number(metrics?.tStop)) ? Number(metrics.tStop) : 2);
+    const actions = [];
+    if (wantsCorners) actions.push({
+      type: "run_corner_focus_test",
+      label: "Run Corner Focus Test",
+      rationale: "First separate field curvature from coma/astigmatism or coverage limits.",
+      autoRunnable: false,
+      args: {},
+    });
+    if (wantsFlattener) actions.push({
+      type: "add_weak_rear_field_flattener",
+      label: "Add weak rear flattener",
+      rationale: "Structural change: add a weak N-BK7HT field flattener before IMS, then tune it.",
+      requiresApproval: true,
+      args: {},
+    });
+    actions.push({
+      type: "run_auto_tuner",
+      label: "Run suggested tuner",
+      rationale: "Uses the Improve corners / field flattening preset with hard FL/T locks and clear apertures locked.",
+      args: {
+        preset: "cornerFlatten",
+        iterations: 1000,
+        stepSize: "small",
+        runSpeed: "safe",
+        maxStuckIterations: 350,
+        targets: {
+          focalLength: { enabled: true, target: targetFL },
+          tStop: { enabled: true, target: targetT },
+          imageCircle: { enabled: true, target: 45 },
+        },
+        hardConstraints: {
+          focalLength: { enabled: true, tolerance: 0.75 },
+          tStop: { enabled: true, tolerance: 0.20 },
+          imageCircle: { enabled: false, minimum: 45 },
+        },
+        allowedVariables: {
+          radii: true,
+          airGaps: true,
+          stopPosition: true,
+          frontGroupSpacing: true,
+          rearGroupSpacing: true,
+          rearElementSpacing: true,
+          clearApertures: false,
+          stopAperture: false,
+          glassTypes: false,
+          sensorShift: false,
+          imsAperture: false,
+        },
+      },
+    });
+    return {
+      assistantMessage:
+        `The backend AI endpoint is not available here, so I made a local safe plan instead.\n\n` +
+        `Current lens: EFL ${mmText(metrics?.efl)}, ${tText(metrics?.tStop)}, IC ${mmText(metrics?.imageCircleMm, 1)}, corner RMS ${mmText(metrics?.cornerRmsMm, 4)}.\n\n` +
+        `I recommend diagnosing corner focus first, then running the corner/field-flattening tuner with FL/T hard locked. Endpoint detail: ${error?.message || error}`,
+      actions,
+    };
+  }
+
+  async function submitLensAiMessage() {
+    const message = String(ui.aiChatInput?.value || "").trim();
+    if (!message || lensAiState.busy) return;
+    ui.aiChatInput.value = "";
+    appendLensAiMessage("user", message);
+    setLensAiBusy(true, "Asking AI assistant...");
+    try {
+      const metrics = getLensAiMetrics({ includeFieldFocus: false });
+      let result;
+      try {
+        result = await requestLensAiPlan(message);
+      } catch (e) {
+        result = lensAiFallbackResponse(message, metrics, e);
+      }
+      const assistantMessage = String(result?.assistantMessage || result?.message || "I made a safe plan.");
+      appendLensAiMessage("assistant", assistantMessage);
+      renderLensAiActions(Array.isArray(result?.actions) ? result.actions : []);
+      setLensAiBusy(false, "Ready.");
+    } catch (e) {
+      appendLensAiMessage("assistant", `AI Assistant failed: ${e?.message || e}`);
+      setLensAiBusy(false, "AI Assistant failed.");
+    }
+  }
+
+  function requireLensAiApproval(action, message) {
+    if (!ui.aiRequireApproval?.checked && !action?.requiresApproval) return true;
+    return confirm(message || `${action?.label || "This action"} will change the lens. Continue?`);
+  }
+
+  async function executeLensAiAction(actionRaw) {
+    const action = normalizeLensAiAction(actionRaw);
+    if (!action.type) return;
+    try {
+      if (action.type === "get_lens_state") {
+        const summary = compactLensForAiPrompt(lens);
+        appendLensAiToolResult("Lens state", `${summary.surfaceCount} surfaces loaded. OBJ/IMS are protected; labels are preserved.`, summary);
+      } else if (action.type === "get_lens_metrics") {
+        const metrics = getLensAiMetrics({ includeFieldFocus: false });
+        updateLensAiLensSummary();
+        appendLensAiToolResult("Lens metrics", formatLensAiMetricsText(metrics), metrics);
+      } else if (action.type === "run_corner_focus_test") {
+        lastCornerFocusReport = buildCornerFocusReport(lens);
+        if (isCornerFocusModalOpen()) renderCornerFocusReport(lastCornerFocusReport);
+        const result = lensAiCornerFocusToolResult(lastCornerFocusReport);
+        appendLensAiToolResult("Corner Focus Test", result.text, result.data);
+      } else if (action.type === "run_auto_tuner") {
+        runLensAiAutoTunerAction(action);
+      } else if (action.type === "preview_candidate") {
+        previewLensAiCandidate();
+      } else if (action.type === "apply_candidate") {
+        applyLensAiCandidate(action);
+      } else if (action.type === "revert_to_original") {
+        revertLensAiOriginal();
+      } else if (action.type === "add_weak_rear_field_flattener") {
+        if (!requireLensAiApproval(action, "Add a weak rear field flattener before IMS?")) return;
+        if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
+        addWeakRearFieldFlattener();
+        updateLensAiLensSummary();
+        appendLensAiToolResult("Added field flattener", formatLensAiMetricsText(getLensAiMetrics({ includeFieldFocus: false })));
+      } else if (action.type === "scale_to_focal_length") {
+        if (!requireLensAiApproval(action, "Scale optical geometry to the requested focal length?")) return;
+        scaleLensAiToFocalLength(action);
+      } else if (action.type === "set_surface_value") {
+        appendLensAiToolResult("Surface edit blocked", "set_surface_value is disabled in v1. Use the surface table for direct edits.");
+      } else {
+        appendLensAiToolResult("Unknown action", `Action type "${action.type}" is not implemented in v1.`);
+      }
+      updateLensAiCandidateSummary();
+    } catch (e) {
+      appendLensAiToolResult("Action failed", `${action.label}: ${e?.message || e}`);
+    }
+  }
+
+  function isCornerFocusModalOpen() {
+    return !!(ui.cornerFocusModal && !ui.cornerFocusModal.classList.contains("hidden"));
+  }
+
+  function formatLensAiMetricsText(metrics) {
+    return [
+      `EFL: ${mmText(metrics?.efl)}`,
+      `T-stop: ${tText(metrics?.tStop)}`,
+      `Image circle: ${mmText(metrics?.imageCircleMm, 1)}`,
+      `COV: ${metrics?.cov ? "YES" : "NO"}`,
+      `BFL: ${mmText(metrics?.bfl)}`,
+      `Rear clearance: ${mmText(metrics?.rearClearance)}`,
+      `Center RMS: ${mmText(metrics?.centerRmsMm, 4)}`,
+      `Mid RMS: ${mmText(metrics?.midRmsMm, 4)}`,
+      `Corner RMS: ${mmText(metrics?.cornerRmsMm, 4)}`,
+      `Field curvature delta: ${mmText(metrics?.fieldCurvatureDeltaMm, 3)}`,
+    ].join("\n");
+  }
+
+  function lensAiCornerFocusToolResult(report) {
+    const ff = report?.fieldFocus || {};
+    const notes = report?.notes || summarizeCornerFocusDiagnostic(ff, report?.metrics || null);
+    const likely = lensAiLikelyIssue(notes);
+    const data = {
+      centerBestFocusShiftMm: finiteOrNull(ff.centerBestShiftMm),
+      cornerBestFocusShiftMm: finiteOrNull(ff.cornerBestShiftMm),
+      centerRmsAtCenterFocusMm: finiteOrNull(ff.centerBestRmsMm),
+      cornerRmsAtCenterFocusMm: finiteOrNull(ff.cornerCurrentRmsMm),
+      cornerRmsAtCornerFocusMm: finiteOrNull(ff.cornerBestRmsMm),
+      fieldCurvatureDeltaMm: finiteOrNull(ff.fieldCurvatureDeltaMm),
+      likelyIssue: likely,
+      notes,
+    };
+    const text = [
+      `Likely issue: ${likely}`,
+      `Center best shift: ${mmText(data.centerBestFocusShiftMm, 3)}`,
+      `Corner best shift: ${mmText(data.cornerBestFocusShiftMm, 3)}`,
+      `Focus delta: ${mmText(data.fieldCurvatureDeltaMm, 3)}`,
+      `Corner RMS at current plane: ${mmText(data.cornerRmsAtCenterFocusMm, 4)}`,
+      `Corner RMS after corner refocus: ${mmText(data.cornerRmsAtCornerFocusMm, 4)}`,
+      "",
+      ...notes.map((n) => `- ${n}`),
+    ].join("\n");
+    return { text, data };
+  }
+
+  function lensAiLikelyIssue(notes) {
+    const joined = (notes || []).join(" ").toLowerCase();
+    if (joined.includes("coverage") || joined.includes("vignetting")) return "coverage/vignetting";
+    if (joined.includes("field curvature")) return "field curvature";
+    if (joined.includes("coma") || joined.includes("astigmatism")) return "coma/astigmatism";
+    return "unknown";
+  }
+
+  function runLensAiAutoTunerAction(action) {
+    if (autoTunerState.running) {
+      appendLensAiToolResult("Auto Tuner", "Auto Tuner is already running.");
+      return;
+    }
+    if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
+    configureAutoTunerFromLensAiArgs(action.args || {});
+    openAutoTunerModal();
+    startAutoTuner();
+    appendLensAiToolResult(
+      "Auto Tuner started",
+      "Running suggested tuner with existing Auto Tuner safety checks. It will not apply the best result automatically."
+    );
+  }
+
+  function configureAutoTunerFromLensAiArgs(args) {
+    const preset = String(args?.preset || "cornerFlatten");
+    if (ui.atPreset) ui.atPreset.value = preset === "clean50" ? "clean50" : "cornerFlatten";
+    applyAutoTunerPreset(ui.atPreset?.value || "cornerFlatten");
+
+    if (ui.atIterations && Number.isFinite(Number(args?.iterations))) ui.atIterations.value = String(Math.max(1, Math.floor(Number(args.iterations))));
+    if (ui.atStepSize && args?.stepSize) ui.atStepSize.value = String(args.stepSize);
+    if (ui.atRunSpeed && args?.runSpeed) ui.atRunSpeed.value = String(args.runSpeed);
+    if (ui.atStopStuck && Number.isFinite(Number(args?.maxStuckIterations))) ui.atStopStuck.value = String(Math.max(0, Math.floor(Number(args.maxStuckIterations))));
+
+    const targets = args?.targets || {};
+    const hard = args?.hardConstraints || {};
+    const flTarget = Number(targets?.focalLength?.target ?? targets?.focalLength ?? args?.targetFocalLength);
+    const tTarget = Number(targets?.tStop?.target ?? targets?.tStop ?? args?.targetTStop);
+    const icTarget = Number(targets?.imageCircle?.target ?? targets?.imageCircle ?? args?.targetImageCircle);
+    if (Number.isFinite(flTarget) && flTarget > 0) ui.atTargetFL.value = flTarget.toFixed(2);
+    if (Number.isFinite(tTarget) && tTarget > 0) ui.atTargetT.value = tTarget.toFixed(2);
+    if (Number.isFinite(icTarget) && icTarget > 0) ui.atTargetIC.value = icTarget.toFixed(1);
+
+    if (ui.atGoalFL) ui.atGoalFL.checked = targets?.focalLength?.enabled !== false;
+    if (ui.atGoalT) ui.atGoalT.checked = targets?.tStop?.enabled !== false;
+    if (ui.atGoalIC) ui.atGoalIC.checked = targets?.imageCircle?.enabled !== false;
+    if (ui.atHardFL) ui.atHardFL.checked = hard?.focalLength?.enabled !== false;
+    if (ui.atHardT) ui.atHardT.checked = hard?.tStop?.enabled !== false;
+    if (ui.atHardIC) ui.atHardIC.checked = !!hard?.imageCircle?.enabled;
+    if (ui.atTolFL && Number.isFinite(Number(hard?.focalLength?.tolerance))) ui.atTolFL.value = String(hard.focalLength.tolerance);
+    if (ui.atTolT && Number.isFinite(Number(hard?.tStop?.tolerance))) ui.atTolT.value = String(hard.tStop.tolerance);
+    if (ui.atMinIC && Number.isFinite(Number(hard?.imageCircle?.minimum))) ui.atMinIC.value = String(hard.imageCircle.minimum);
+
+    const allowed = args?.allowedVariables || {};
+    const hasAllowed = allowed && Object.keys(allowed).length > 0;
+    if (hasAllowed) {
+      setAutoTunerVar("atVarR", allowed.radii !== false);
+      setAutoTunerVar("atVarAirT", allowed.airGaps !== false);
+      setAutoTunerVar("atVarStopT", allowed.stopPosition !== false);
+      setAutoTunerVar("atVarFrontGroup", !!allowed.frontGroupSpacing);
+      setAutoTunerVar("atVarRearGroup", allowed.rearGroupSpacing !== false);
+      setAutoTunerVar("atVarRearSpacing", allowed.rearElementSpacing !== false);
+      setAutoTunerVar("atVarGlassT", !!allowed.glassThicknesses);
+      setAutoTunerVar("atVarStopAp", !!allowed.stopAperture);
+      setAutoTunerVar("atVarAp", !!allowed.clearApertures);
+      setAutoTunerVar("atVarGlass", !!allowed.glassTypes);
+      setAutoTunerVar("atVarFFR", !!allowed.fieldFlattenerRadii);
+      setAutoTunerVar("atVarFFPos", !!allowed.fieldFlattenerPosition);
+      setAutoTunerVar("atVarFFThick", !!allowed.fieldFlattenerThickness);
+      setAutoTunerVar("atAllowSensorShift", !!allowed.sensorShift);
+      setAutoTunerVar("atAllowIMSAp", !!allowed.imsAperture);
+    }
+    syncAutoTunerWeightOutputs();
+  }
+
+  function previewLensAiCandidate() {
+    const candidate = getLensAiCandidateLens();
+    if (!candidate || autoTunerState.running) return;
+    const liveLens = clone(lens);
+    const liveSelected = selectedIndex;
+    try {
+      lens = sanitizeLens(candidate);
+      selectedIndex = Math.min(Math.max(0, liveSelected), lens.surfaces.length - 1);
+      buildTable();
+      applySensorToIMS();
+      renderAll();
+    } finally {
+      lens = sanitizeLens(liveLens);
+      selectedIndex = Math.min(Math.max(0, liveSelected), lens.surfaces.length - 1);
+      buildTable();
+      applySensorToIMS();
+    }
+    appendLensAiToolResult("Preview best", "Rendered the candidate in the ray pane without applying it permanently.");
+    toast("Previewed AI candidate");
+  }
+
+  function applyLensAiCandidate(action) {
+    const candidate = getLensAiCandidateLens();
+    if (!candidate || autoTunerState.running) return;
+    if (!requireLensAiApproval(action, "Apply the current best candidate to the lens?")) return;
+    if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
+    loadLens(candidate);
+    renderAll();
+    if (preview.ready) scheduleRenderPreview({ force: true });
+    updateLensAiLensSummary();
+    appendLensAiToolResult("Applied candidate", formatLensAiMetricsText(getLensAiMetrics({ includeFieldFocus: false })));
+  }
+
+  function revertLensAiOriginal() {
+    const original = lensAiState.originalLens || autoTunerState.originalLens;
+    if (!original || autoTunerState.running) return;
+    loadLens(original);
+    renderAll();
+    if (preview.ready) scheduleRenderPreview({ force: true });
+    updateLensAiLensSummary();
+    appendLensAiToolResult("Reverted", "Restored the AI Assistant original lens clone.");
+  }
+
+  function scaleLensAiToFocalLength(action) {
+    const target = Number(action?.args?.targetFocalLength ?? action?.args?.target ?? action?.args?.focalLength);
+    if (!Number.isFinite(target) || target <= 0) {
+      appendLensAiToolResult("Scale blocked", "Missing positive target focal length.");
+      return;
+    }
+    const wavePreset = ui.wavePreset?.value || "d";
+    const cur = estimateEflBflParaxial(lens.surfaces, wavePreset).efl;
+    if (!Number.isFinite(cur) || cur <= 0) {
+      appendLensAiToolResult("Scale blocked", "Current EFL is not solvable.");
+      return;
+    }
+    if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
+    const k = target / cur;
+    const allowClearApertures = !!action?.args?.allowClearApertures;
+    for (const s of lens.surfaces || []) {
+      const type = String(s?.type || "").toUpperCase();
+      if (type !== "OBJ" && type !== "IMS") s.t = Number(s.t || 0) * k;
+      if (Math.abs(Number(s.R || 0)) > 1e-9) s.R = Number(s.R) * k;
+      if (allowClearApertures) {
+        const ap = Number(s.ap);
+        if (Number.isFinite(ap) && type !== "OBJ" && type !== "IMS") s.ap = Math.max(AP_MIN, ap * k);
+        const apOpt = Number(s.ap_optical);
+        if (Number.isFinite(apOpt) && type !== "OBJ" && type !== "IMS") s.ap_optical = Math.max(AP_MIN, apOpt * k);
+      }
+    }
+    computeVertices(lens.surfaces, 0, 0);
+    clampAllApertures(lens.surfaces);
+    buildTable();
+    renderAll();
+    scheduleRenderPreview();
+    updateLensAiLensSummary();
+    appendLensAiToolResult("Scaled focal length", `Scaled EFL ${cur.toFixed(2)}mm -> ${target.toFixed(2)}mm with k=${k.toFixed(4)}. Clear apertures ${allowClearApertures ? "scaled" : "preserved"}.`);
+  }
+
+  function wireLensAiUI() {
+    if (!ui.aiAssistantModal) return;
+    on("#btnAiAssistant", "click", openLensAiAssistant);
+    if (ui.aiClose) ui.aiClose.addEventListener("click", closeLensAiAssistant);
+    if (ui.aiChatForm) {
+      ui.aiChatForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        submitLensAiMessage();
+      });
+    }
+    if (ui.aiChatInput) {
+      ui.aiChatInput.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+          e.preventDefault();
+          submitLensAiMessage();
+        }
+      });
+    }
+    if (ui.aiPreviewCandidate) ui.aiPreviewCandidate.addEventListener("click", () => previewLensAiCandidate());
+    if (ui.aiApplyCandidate) ui.aiApplyCandidate.addEventListener("click", () => applyLensAiCandidate({ type: "apply_candidate", label: "Apply candidate", requiresApproval: true }));
+    if (ui.aiRevertCandidate) ui.aiRevertCandidate.addEventListener("click", revertLensAiOriginal);
+    ui.aiAssistantModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.aiAssistantModal) closeLensAiAssistant();
+    });
+    updateLensAiLensSummary();
+    updateLensAiCandidateSummary();
   }
 
   // -------------------- New Lens modal --------------------
@@ -12041,6 +12764,7 @@ function wireUI() {
   on("#btnRenderEngine", "click", toggleRenderEngine);
   on("#btnDebugOverlay", "click", toggleDebugOverlay);
   wireAutoTunerUI();
+  wireLensAiUI();
 
   on("#btnSave", "click", saveLensToFile);
 
@@ -12218,6 +12942,11 @@ function wireUI() {
     if (e.key === "Escape" && isAutoTunerModalOpen()) {
       e.preventDefault();
       closeAutoTunerModal();
+      return;
+    }
+    if (e.key === "Escape" && isLensAiOpen()) {
+      e.preventDefault();
+      closeLensAiAssistant();
       return;
     }
     if (e.key === "Escape" && isZmxPasteModalOpen()) {

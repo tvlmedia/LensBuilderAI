@@ -43,6 +43,7 @@
       <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
       <button id="btnCornerFocus" class="btn" type="button">Corner Focus Test</button>
       <button id="btnAutoTuner" class="btn" type="button">Auto Tuner</button>
+      <button id="btnAiAssistant" class="btn" type="button">AI Assistant</button>
       <button id="btnRenderEngine" class="btn btnPrimary" type="button" aria-pressed="true">Preview: ON</button>
       <button id="btnDebugOverlay" class="btn" type="button" aria-pressed="false">Outline Debug: OFF</button>
 
@@ -680,6 +681,59 @@
         <button id="atCopyDiagnostics" class="btn" type="button" disabled>Copy diagnostics</button>
         <button id="atCopyBest" class="btn" type="button" disabled>Copy best JSON</button>
         <button id="atSaveBest" class="btn" type="button" disabled>Save best JSON</button>
+      </div>
+    </div>
+  </div>
+  <div id="aiAssistantModal" class="modal aiAssistantModal hidden" aria-hidden="true">
+    <div class="modalCard aiAssistantCard" role="dialog" aria-modal="true" aria-labelledby="aiAssistantTitle">
+      <div class="modalTop">
+        <div>
+          <div id="aiAssistantTitle" class="modalTitle">AI Lens Assistant</div>
+          <div class="modalSub">Chat planner for diagnostics and safe tuner actions. Lens changes stay local until approved.</div>
+        </div>
+        <button id="aiClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="aiAssistantBody">
+        <aside class="aiSide">
+          <section class="aiSideSection">
+            <div class="atSectionTitle">Current lens</div>
+            <div id="aiLensSummary" class="aiSummaryGrid"></div>
+          </section>
+
+          <section class="aiSideSection">
+            <div class="atSectionTitle">Latest candidate</div>
+            <div id="aiCandidateSummary" class="aiCandidateSummary">No candidate yet.</div>
+            <div class="aiCandidateActions">
+              <button id="aiPreviewCandidate" class="btn" type="button" disabled>Preview best</button>
+              <button id="aiApplyCandidate" class="btn" type="button" disabled>Apply</button>
+              <button id="aiRevertCandidate" class="btn" type="button" disabled>Revert</button>
+            </div>
+          </section>
+
+          <section class="aiSideSection">
+            <div class="atSectionTitle">Safety</div>
+            <label class="aiToggle">
+              <input id="aiAllowTools" type="checkbox">
+              <span>Allow AI to run safe tools</span>
+            </label>
+            <label class="aiToggle">
+              <input id="aiRequireApproval" type="checkbox" checked>
+              <span>Require approval before apply</span>
+            </label>
+            <div class="aiSafetyNote">No API key is stored in the browser. Structural changes and final apply remain gated here.</div>
+          </section>
+        </aside>
+
+        <section class="aiChat">
+          <div id="aiChatHistory" class="aiChatHistory" aria-live="polite"></div>
+          <div id="aiActionQueue" class="aiActionQueue"></div>
+          <form id="aiChatForm" class="aiComposer">
+            <textarea id="aiChatInput" rows="3" placeholder="Make the corners sharper but keep it 50mm T2 full-frame."></textarea>
+            <button id="aiSend" class="btn btnPrimary" type="submit">Send</button>
+          </form>
+          <div id="aiStatus" class="aiStatus">Ready.</div>
+        </section>
       </div>
     </div>
   </div>

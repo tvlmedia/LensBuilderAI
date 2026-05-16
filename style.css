@@ -637,6 +637,201 @@ canvas{
   color:rgba(255,255,255,.74);
 }
 
+.aiAssistantModal{
+  justify-content:flex-end;
+  padding:18px;
+}
+.aiAssistantCard{
+  width:min(1180px, calc(100vw - 36px));
+  height:calc(100vh - 36px);
+  max-width:none;
+  max-height:none;
+}
+.aiAssistantBody{
+  flex:1 1 auto;
+  min-height:0;
+  display:grid;
+  grid-template-columns:minmax(260px, 330px) minmax(0, 1fr);
+  background:#0f141d;
+}
+.aiSide{
+  min-width:0;
+  min-height:0;
+  overflow:auto;
+  padding:14px;
+  border-right:1px solid rgba(255,255,255,.12);
+  background:rgba(0,0,0,.14);
+}
+.aiSideSection{
+  border:1px solid rgba(255,255,255,.11);
+  border-radius:12px;
+  padding:10px;
+  margin-bottom:10px;
+  background:rgba(255,255,255,.025);
+}
+.aiSummaryGrid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:7px;
+}
+.aiSummaryGrid div,
+.aiCandidateSummary{
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:10px;
+  background:rgba(0,0,0,.16);
+  padding:7px 8px;
+  min-width:0;
+}
+.aiSummaryGrid span,
+.aiCandidateSummary span{
+  display:block;
+  margin-bottom:4px;
+  font-size:11px;
+  color:rgba(255,255,255,.52);
+}
+.aiSummaryGrid strong,
+.aiCandidateSummary strong{
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-family:var(--mono);
+  font-size:12px;
+  color:rgba(255,255,255,.88);
+}
+.aiCandidateSummary{
+  color:rgba(255,255,255,.72);
+  font-size:12px;
+  line-height:1.45;
+}
+.aiCandidateActions{
+  display:grid;
+  grid-template-columns:1fr 1fr 1fr;
+  gap:7px;
+  margin-top:8px;
+}
+.aiCandidateActions .btn{
+  width:100%;
+  padding:8px 9px;
+}
+.aiToggle{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:8px 0;
+  font-size:12px;
+  color:rgba(255,255,255,.78);
+}
+.aiSafetyNote{
+  margin-top:8px;
+  color:rgba(255,255,255,.58);
+  font-size:12px;
+  line-height:1.45;
+}
+.aiChat{
+  min-width:0;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+}
+.aiChatHistory{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+  padding:16px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.aiMsg{
+  max-width:min(780px, 92%);
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:12px;
+  padding:10px 12px;
+  white-space:pre-wrap;
+  font-size:13px;
+  line-height:1.48;
+  color:rgba(255,255,255,.84);
+  background:rgba(255,255,255,.035);
+}
+.aiMsgUser{
+  align-self:flex-end;
+  background:rgba(42,110,242,.16);
+  border-color:rgba(91,153,255,.28);
+}
+.aiMsgAssistant{
+  align-self:flex-start;
+}
+.aiMsgTool{
+  align-self:flex-start;
+  max-width:min(860px, 96%);
+  font-family:var(--mono);
+  font-size:12px;
+  color:rgba(218,232,255,.82);
+  background:rgba(0,0,0,.20);
+}
+.aiActionQueue{
+  flex:0 0 auto;
+  max-height:210px;
+  overflow:auto;
+  padding:0 16px 12px 16px;
+  display:grid;
+  gap:8px;
+}
+.aiActionCard{
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:12px;
+  background:rgba(255,255,255,.025);
+  padding:10px;
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:10px;
+  align-items:center;
+}
+.aiActionTitle{
+  font-weight:800;
+  font-size:13px;
+  color:rgba(255,255,255,.86);
+}
+.aiActionText{
+  margin-top:3px;
+  font-size:12px;
+  line-height:1.4;
+  color:rgba(255,255,255,.62);
+}
+.aiComposer{
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:10px;
+  padding:12px 16px;
+  border-top:1px solid rgba(255,255,255,.12);
+  background:#151c27;
+}
+.aiComposer textarea{
+  min-height:58px;
+  max-height:160px;
+  resize:vertical;
+  border-radius:10px;
+  padding:10px;
+  border:1px solid rgba(255,255,255,.18);
+  background:#0a0f17;
+  color:rgba(255,255,255,.92);
+}
+.aiComposer .btn{
+  align-self:end;
+  min-width:88px;
+  min-height:40px;
+}
+.aiStatus{
+  flex:0 0 auto;
+  min-height:28px;
+  padding:7px 16px 10px 16px;
+  font-size:12px;
+  color:rgba(255,255,255,.60);
+  background:#151c27;
+}
+
 .modalBottom{
   padding:14px 20px;
   border-top:1px solid rgba(255,255,255,.14);
@@ -915,10 +1110,22 @@ canvas{
   .atChecks{ grid-template-columns:1fr; }
   .atMetrics{ grid-template-columns:1fr 1fr; }
   .atHistoryWrap{ max-height:180px; }
+  .aiAssistantBody{ grid-template-columns:1fr; }
+  .aiSide{
+    border-right:0;
+    border-bottom:1px solid rgba(255,255,255,.12);
+    max-height:34vh;
+  }
+  .aiAssistantCard{ width:100%; height:100%; }
 }
 
 @media (max-width: 760px){
   .atMetrics{ grid-template-columns:1fr; }
+  .aiSummaryGrid,
+  .aiCandidateActions,
+  .aiComposer{ grid-template-columns:1fr; }
+  .aiMsg{ max-width:100%; }
+  .aiActionCard{ grid-template-columns:1fr; }
 }
 
 /* ===========================
