@@ -40,6 +40,7 @@
       <button id="btnScaleToFocal" class="btn" type="button">Scale → FL</button>
       <button id="btnSetTStop" class="btn" type="button">Set T</button>
       <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
+      <button id="btnAutoTuner" class="btn" type="button">Auto Tuner</button>
       <button id="btnRenderEngine" class="btn btnPrimary" type="button" aria-pressed="true">Preview: ON</button>
       <button id="btnDebugOverlay" class="btn" type="button" aria-pressed="false">Outline Debug: OFF</button>
 
@@ -287,6 +288,10 @@
                 <th style="width:110px">Aperture</th>
                 <th style="width:170px">Glass</th>
                 <th style="width:70px">Stop?</th>
+                <th style="width:48px">Lock R</th>
+                <th style="width:48px">Lock t</th>
+                <th style="width:56px">Lock ap</th>
+                <th style="width:64px">Lock glass</th>
               </tr>
             </thead>
             <tbody id="surfTbody"></tbody>
@@ -395,6 +400,247 @@
 
   <!-- MODALS (jouw modals blijven hetzelfde, maar script ondersteunt ze al) -->
   <div id="newLensModal" class="modal hidden" aria-hidden="true"></div>
+  <div id="autoTunerModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard autoTunerCard" role="dialog" aria-modal="true" aria-labelledby="autoTunerTitle">
+      <div class="modalTop">
+        <div>
+          <div id="autoTunerTitle" class="modalTitle">Auto Tuner</div>
+          <div id="autoTunerSub" class="modalSub">Controlled merit optimizer for the current lens state.</div>
+        </div>
+        <button id="atClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="modalScroll autoTunerScroll">
+        <div class="autoTunerLayout">
+          <section class="atSection">
+            <div class="atSectionTitle">Preset</div>
+            <div class="atGrid">
+              <label class="atField atWide" for="atPreset">
+                <span>Target preset</span>
+                <select id="atPreset">
+                  <option value="clean50">50mm F2 Full Frame Clean</option>
+                  <option value="flOnly">Fix focal length only</option>
+                  <option value="corners">Improve corners</option>
+                  <option value="clearance">Improve mechanical clearance</option>
+                  <option value="currentImprove">Maintain current FL/T, improve image</option>
+                </select>
+              </label>
+              <button id="atApplyPreset" class="btn" type="button">Apply preset</button>
+            </div>
+          </section>
+
+          <section class="atSection">
+            <div class="atSectionTitle">Targets</div>
+            <div class="atGoalGrid">
+              <label class="atGoal">
+                <input id="atGoalFL" type="checkbox" checked>
+                <span>Focal Length</span>
+                <input id="atTargetFL" type="number" step="0.1" value="50">
+                <input id="atWeightFL" type="range" min="0" max="10" step="0.5" value="5">
+                <output id="atWeightFLValue">5</output>
+              </label>
+
+              <label class="atGoal">
+                <input id="atGoalT" type="checkbox" checked>
+                <span>T-stop</span>
+                <input id="atTargetT" type="number" step="0.05" value="2.0">
+                <input id="atWeightT" type="range" min="0" max="10" step="0.5" value="4">
+                <output id="atWeightTValue">4</output>
+              </label>
+
+              <label class="atGoal">
+                <input id="atGoalIC" type="checkbox" checked>
+                <span>Image circle</span>
+                <input id="atTargetIC" type="number" step="0.1" value="45">
+                <input id="atWeightIC" type="range" min="0" max="10" step="0.5" value="7">
+                <output id="atWeightICValue">7</output>
+              </label>
+
+              <label class="atGoal atGoalNoNumber">
+                <input id="atGoalCenter" type="checkbox" checked>
+                <span>Center sharpness</span>
+                <input id="atWeightCenter" type="range" min="0" max="10" step="0.5" value="6">
+                <output id="atWeightCenterValue">6</output>
+              </label>
+
+              <label class="atGoal atGoalNoNumber">
+                <input id="atGoalCorner" type="checkbox" checked>
+                <span>Corner sharpness</span>
+                <input id="atWeightCorner" type="range" min="0" max="10" step="0.5" value="7">
+                <output id="atWeightCornerValue">7</output>
+              </label>
+
+              <label class="atGoal atGoalNoNumber">
+                <input id="atGoalVig" type="checkbox" checked>
+                <span>Vignetting / COV</span>
+                <input id="atWeightVig" type="range" min="0" max="10" step="0.5" value="7">
+                <output id="atWeightVigValue">7</output>
+              </label>
+
+              <label class="atGoal">
+                <input id="atGoalRear" type="checkbox">
+                <span>BFL / clearance</span>
+                <input id="atTargetRear" type="number" step="0.1" value="0">
+                <input id="atWeightRear" type="range" min="0" max="10" step="0.5" value="4">
+                <output id="atWeightRearValue">4</output>
+              </label>
+
+              <label class="atGoal atGoalNoNumber">
+                <input id="atGoalCompact" type="checkbox">
+                <span>Keep compact</span>
+                <input id="atWeightCompact" type="range" min="0" max="10" step="0.5" value="3">
+                <output id="atWeightCompactValue">3</output>
+              </label>
+            </div>
+          </section>
+
+          <section class="atSection">
+            <div class="atSectionTitle">Allowed Variables</div>
+            <div class="atChecks">
+              <label><input id="atVarR" type="checkbox" checked> Radii R</label>
+              <label><input id="atVarAirT" type="checkbox" checked> Air gaps</label>
+              <label><input id="atVarGlassT" type="checkbox"> Glass thicknesses</label>
+              <label><input id="atVarStopAp" type="checkbox"> Stop aperture</label>
+              <label><input id="atVarStopT" type="checkbox" checked> Stop position / spacing</label>
+              <label><input id="atVarAp" type="checkbox"> Clear apertures</label>
+              <label><input id="atVarRearSpacing" type="checkbox" checked> Rear element spacing</label>
+              <label><input id="atVarFrontGroup" type="checkbox"> Front group spacing</label>
+              <label><input id="atVarRearGroup" type="checkbox" checked> Rear group spacing</label>
+              <label><input id="atVarGlass" type="checkbox"> Glass types</label>
+            </div>
+          </section>
+
+          <section class="atSection">
+            <div class="atSectionTitle">Run</div>
+            <div class="atGrid">
+              <label class="atField" for="atIterations">
+                <span>Iterations</span>
+                <input id="atIterations" type="number" min="1" step="50" value="1000">
+              </label>
+              <label class="atField" for="atStepSize">
+                <span>Step size</span>
+                <select id="atStepSize">
+                  <option value="small" selected>Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                </select>
+              </label>
+              <label class="atField" for="atRunSpeed">
+                <span>Run speed</span>
+                <select id="atRunSpeed">
+                  <option value="safe" selected>Safe</option>
+                  <option value="fast">Fast</option>
+                  <option value="aggressive">Aggressive</option>
+                </select>
+              </label>
+              <label class="atField" for="atSeed">
+                <span>Random seed</span>
+                <input id="atSeed" type="text" placeholder="optional">
+              </label>
+              <label class="atField" for="atStopStuck">
+                <span>Stop if stuck</span>
+                <input id="atStopStuck" type="number" min="0" step="25" value="350">
+              </label>
+              <label class="atToggle">
+                <input id="atAutoReduce" type="checkbox" checked>
+                <span>Auto reduce step</span>
+              </label>
+              <label class="atToggle">
+                <input id="atAnneal" type="checkbox">
+                <span>Simulated annealing</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="atSection">
+            <div class="atSectionTitle">Safety</div>
+            <div class="atGrid atSafetyGrid">
+              <label class="atField" for="atMinGlass">
+                <span>Min glass t</span>
+                <input id="atMinGlass" type="number" min="0.01" step="0.1" value="1.0">
+              </label>
+              <label class="atField" for="atMinAir">
+                <span>Min air gap</span>
+                <input id="atMinAir" type="number" min="0.01" step="0.05" value="0.1">
+              </label>
+              <label class="atField" for="atMaxGlass">
+                <span>Max glass t</span>
+                <input id="atMaxGlass" type="number" min="1" step="1" value="20">
+              </label>
+              <label class="atField" for="atMaxAir">
+                <span>Max air gap</span>
+                <input id="atMaxAir" type="number" min="1" step="1" value="80">
+              </label>
+              <label class="atField" for="atMinRadius">
+                <span>Min |R|</span>
+                <input id="atMinRadius" type="number" min="0.1" step="0.5" value="8">
+              </label>
+              <label class="atField" for="atMaxRadius">
+                <span>Max |R|</span>
+                <input id="atMaxRadius" type="number" min="10" step="50" value="5000">
+              </label>
+              <label class="atToggle">
+                <input id="atAllowSensorShift" type="checkbox">
+                <span>Allow sensor/focus shift</span>
+              </label>
+              <label class="atToggle">
+                <input id="atAllowIMSAp" type="checkbox">
+                <span>Allow IMS aperture</span>
+              </label>
+              <label class="atToggle">
+                <input id="atAllowRSignFlip" type="checkbox">
+                <span>Allow radius sign flip</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="atSection atProgressSection">
+            <div class="atSectionTitle">Progress</div>
+            <div class="atProgressBar" aria-hidden="true"><div id="atProgressFill"></div></div>
+            <div class="atMetrics">
+              <div><span>Iteration</span><strong id="atMetricIteration">0 / 0</strong></div>
+              <div><span>Best score</span><strong id="atMetricBestScore">—</strong></div>
+              <div><span>Current score</span><strong id="atMetricCurrentScore">—</strong></div>
+              <div><span>Improvement</span><strong id="atMetricImprovement">—</strong></div>
+              <div><span>Best EFL</span><strong id="atMetricEFL">—</strong></div>
+              <div><span>Best T</span><strong id="atMetricT">—</strong></div>
+              <div><span>Best IC</span><strong id="atMetricIC">—</strong></div>
+              <div><span>Best COV</span><strong id="atMetricCOV">—</strong></div>
+              <div><span>Best BFL</span><strong id="atMetricBFL">—</strong></div>
+              <div><span>Rear clearance</span><strong id="atMetricRear">—</strong></div>
+            </div>
+            <div id="atStatus" class="atStatus">Ready</div>
+            <div class="atHistoryWrap">
+              <table class="atHistory">
+                <thead>
+                  <tr>
+                    <th>Iter</th>
+                    <th>Score</th>
+                    <th>EFL</th>
+                    <th>T</th>
+                    <th>IC</th>
+                    <th>BFL</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody id="atHistoryBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="modalBottom autoTunerActions">
+        <button id="atStart" class="btn btnPrimary" type="button">Start</button>
+        <button id="atPause" class="btn" type="button" disabled>Pause</button>
+        <button id="atStop" class="btn" type="button" disabled>Stop</button>
+        <button id="atApplyBest" class="btn" type="button" disabled>Apply best result</button>
+        <button id="atRevert" class="btn" type="button" disabled>Revert to original</button>
+        <button id="atCopyBest" class="btn" type="button" disabled>Copy best JSON</button>
+        <button id="atSaveBest" class="btn" type="button" disabled>Save best JSON</button>
+      </div>
+    </div>
+  </div>
   <div id="elementModal" class="modal hidden" aria-hidden="true">
     <div class="modalCard" role="dialog" aria-modal="true" aria-labelledby="elModalTitle">
       <div class="modalTop modalHead">

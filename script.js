@@ -176,8 +176,88 @@
     btnPasteZmx: $("#btnPasteZmx"),
     fileLoad: $("#fileLoad"),
     btnAutoFocus: $("#btnAutoFocus"),
+    btnAutoTuner: $("#btnAutoTuner"),
     btnRenderEngine: $("#btnRenderEngine"),
     btnDebugOverlay: $("#btnDebugOverlay"),
+
+    autoTunerModal: $("#autoTunerModal"),
+    atClose: $("#atClose"),
+    atPreset: $("#atPreset"),
+    atApplyPreset: $("#atApplyPreset"),
+    atGoalFL: $("#atGoalFL"),
+    atTargetFL: $("#atTargetFL"),
+    atWeightFL: $("#atWeightFL"),
+    atWeightFLValue: $("#atWeightFLValue"),
+    atGoalT: $("#atGoalT"),
+    atTargetT: $("#atTargetT"),
+    atWeightT: $("#atWeightT"),
+    atWeightTValue: $("#atWeightTValue"),
+    atGoalIC: $("#atGoalIC"),
+    atTargetIC: $("#atTargetIC"),
+    atWeightIC: $("#atWeightIC"),
+    atWeightICValue: $("#atWeightICValue"),
+    atGoalCenter: $("#atGoalCenter"),
+    atWeightCenter: $("#atWeightCenter"),
+    atWeightCenterValue: $("#atWeightCenterValue"),
+    atGoalCorner: $("#atGoalCorner"),
+    atWeightCorner: $("#atWeightCorner"),
+    atWeightCornerValue: $("#atWeightCornerValue"),
+    atGoalVig: $("#atGoalVig"),
+    atWeightVig: $("#atWeightVig"),
+    atWeightVigValue: $("#atWeightVigValue"),
+    atGoalRear: $("#atGoalRear"),
+    atTargetRear: $("#atTargetRear"),
+    atWeightRear: $("#atWeightRear"),
+    atWeightRearValue: $("#atWeightRearValue"),
+    atGoalCompact: $("#atGoalCompact"),
+    atWeightCompact: $("#atWeightCompact"),
+    atWeightCompactValue: $("#atWeightCompactValue"),
+    atVarR: $("#atVarR"),
+    atVarAirT: $("#atVarAirT"),
+    atVarGlassT: $("#atVarGlassT"),
+    atVarStopAp: $("#atVarStopAp"),
+    atVarStopT: $("#atVarStopT"),
+    atVarAp: $("#atVarAp"),
+    atVarRearSpacing: $("#atVarRearSpacing"),
+    atVarFrontGroup: $("#atVarFrontGroup"),
+    atVarRearGroup: $("#atVarRearGroup"),
+    atVarGlass: $("#atVarGlass"),
+    atIterations: $("#atIterations"),
+    atStepSize: $("#atStepSize"),
+    atRunSpeed: $("#atRunSpeed"),
+    atSeed: $("#atSeed"),
+    atStopStuck: $("#atStopStuck"),
+    atAutoReduce: $("#atAutoReduce"),
+    atAnneal: $("#atAnneal"),
+    atMinGlass: $("#atMinGlass"),
+    atMinAir: $("#atMinAir"),
+    atMaxGlass: $("#atMaxGlass"),
+    atMaxAir: $("#atMaxAir"),
+    atMinRadius: $("#atMinRadius"),
+    atMaxRadius: $("#atMaxRadius"),
+    atAllowSensorShift: $("#atAllowSensorShift"),
+    atAllowIMSAp: $("#atAllowIMSAp"),
+    atAllowRSignFlip: $("#atAllowRSignFlip"),
+    atProgressFill: $("#atProgressFill"),
+    atMetricIteration: $("#atMetricIteration"),
+    atMetricBestScore: $("#atMetricBestScore"),
+    atMetricCurrentScore: $("#atMetricCurrentScore"),
+    atMetricImprovement: $("#atMetricImprovement"),
+    atMetricEFL: $("#atMetricEFL"),
+    atMetricT: $("#atMetricT"),
+    atMetricIC: $("#atMetricIC"),
+    atMetricCOV: $("#atMetricCOV"),
+    atMetricBFL: $("#atMetricBFL"),
+    atMetricRear: $("#atMetricRear"),
+    atStatus: $("#atStatus"),
+    atHistoryBody: $("#atHistoryBody"),
+    atStart: $("#atStart"),
+    atPause: $("#atPause"),
+    atStop: $("#atStop"),
+    atApplyBest: $("#atApplyBest"),
+    atRevert: $("#atRevert"),
+    atCopyBest: $("#atCopyBest"),
+    atSaveBest: $("#atSaveBest"),
 
     newLensModal: $("#newLensModal"),
     nlClose: $("#nlClose"),
@@ -225,6 +305,40 @@
   }
 
   let selectedIndex = 0;
+  const autoTunerSurfaceLocks = new Map();
+
+  function getAutoTunerSurfaceLock(index) {
+    const key = Number(index);
+    const lock = autoTunerSurfaceLocks.get(key);
+    return {
+      R: !!lock?.R,
+      t: !!lock?.t,
+      ap: !!lock?.ap,
+      glass: !!lock?.glass,
+    };
+  }
+
+  function setAutoTunerSurfaceLock(index, key, value) {
+    const i = Number(index);
+    if (!Number.isFinite(i) || i < 0) return;
+    const k = String(key || "");
+    if (!(k === "R" || k === "t" || k === "ap" || k === "glass")) return;
+    const lock = getAutoTunerSurfaceLock(i);
+    lock[k] = !!value;
+    if (lock.R || lock.t || lock.ap || lock.glass) autoTunerSurfaceLocks.set(i, lock);
+    else autoTunerSurfaceLocks.delete(i);
+  }
+
+  function clearAutoTunerSurfaceLocks() {
+    autoTunerSurfaceLocks.clear();
+  }
+
+  function pruneAutoTunerSurfaceLocks() {
+    const n = Array.isArray(lens?.surfaces) ? lens.surfaces.length : 0;
+    for (const i of Array.from(autoTunerSurfaceLocks.keys())) {
+      if (i < 0 || i >= n) autoTunerSurfaceLocks.delete(i);
+    }
+  }
 
   // -------------------- sensor presets --------------------
  // -------------------- sensor presets --------------------
@@ -1611,6 +1725,7 @@ function warnMissingGlass(name) {
 
   function loadLens(obj) {
     lens = sanitizeLens(obj);
+    clearAutoTunerSurfaceLocks();
     verifyPanelExpanded = false;
     focusRuntime.lastAutoKey = "";
     focusRuntime.lastAutoMetric = null;
@@ -1698,6 +1813,7 @@ function warnMissingGlass(name) {
   function buildTable() {
     clampSelected();
     if (!ui.tbody) return;
+    pruneAutoTunerSurfaceLocks();
     generateSurfaceLabels(lens.surfaces);
     const glassOptionNames = getGlassOptionNames(lens.surfaces);
 
@@ -1722,6 +1838,9 @@ function warnMissingGlass(name) {
      const customGlassLabel = hasCustomGlass
        ? `CUSTOM nd=${customNd.toFixed(3)} vd=${customVd.toFixed(1)}`
        : null;
+     const locks = getAutoTunerSurfaceLock(idx);
+     const isIMS = String(s.type || "").toUpperCase() === "IMS";
+     const protectedSurface = isOBJ || isIMS;
 
 tr.innerHTML = `
   <td style="width:34px; font-family:var(--mono)">${idx}</td>
@@ -1746,6 +1865,18 @@ tr.innerHTML = `
         <td class="cellChk" style="width:58px">
           <input type="checkbox" data-k="stop" data-i="${idx}" ${s.stop ? "checked" : ""}>
         </td>
+        <td class="lockCell">
+          <input type="checkbox" data-lock-k="R" data-i="${idx}" ${locks.R || protectedSurface ? "checked" : ""} ${protectedSurface ? "disabled" : ""} title="Lock R">
+        </td>
+        <td class="lockCell">
+          <input type="checkbox" data-lock-k="t" data-i="${idx}" ${locks.t || protectedSurface ? "checked" : ""} ${protectedSurface ? "disabled" : ""} title="Lock t">
+        </td>
+        <td class="lockCell">
+          <input type="checkbox" data-lock-k="ap" data-i="${idx}" ${locks.ap || isOBJ ? "checked" : ""} ${isOBJ ? "disabled" : ""} title="Lock aperture">
+        </td>
+        <td class="lockCell">
+          <input type="checkbox" data-lock-k="glass" data-i="${idx}" ${locks.glass || protectedSurface ? "checked" : ""} ${protectedSurface ? "disabled" : ""} title="Lock glass">
+        </td>
       `;
       ui.tbody.appendChild(tr);
     });
@@ -1761,6 +1892,13 @@ tr.innerHTML = `
 
     ui.tbody.querySelectorAll("select.cellSelect").forEach((el) => el.addEventListener("change", onCellCommit));
     ui.tbody.querySelectorAll('input[type="checkbox"][data-k="stop"]').forEach((el) => el.addEventListener("change", onCellCommit));
+    ui.tbody.querySelectorAll('input[type="checkbox"][data-lock-k]').forEach((el) => {
+      el.addEventListener("click", (e) => e.stopPropagation());
+      el.addEventListener("change", (e) => {
+        const input = e.target;
+        setAutoTunerSurfaceLock(input.dataset.i, input.dataset.lockK, input.checked);
+      });
+    });
 
     restoreTableFocus();
   }
@@ -8190,6 +8328,1280 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.footerWarn) ui.footerWarn.textContent = `Set T: stop ap → ${lens.surfaces[stopIdx].ap.toFixed(2)}mm (semi-diam) for T${targetT.toFixed(2)} @ EFL ${efl.toFixed(2)}mm.`;
   }
 
+  // -------------------- Auto Tuner --------------------
+  const AUTO_TUNER_INVALID_SCORE = 1e9;
+  const AUTO_TUNER_HISTORY_LIMIT = 18;
+  const AUTO_TUNER_DEFAULT_LIMITS = {
+    minGlassT: 1.0,
+    minAirGap: 0.1,
+    maxGlassT: 20.0,
+    maxAirGap: 80.0,
+    minRadiusAbs: 8.0,
+    maxRadiusAbs: 5000.0,
+  };
+
+  const autoTunerState = {
+    running: false,
+    paused: false,
+    timer: 0,
+    timerKind: "",
+    iteration: 0,
+    lastUiIteration: -1,
+    originalLens: null,
+    acceptedLens: null,
+    bestLens: null,
+    config: null,
+    rng: Math.random,
+    originalMerit: null,
+    acceptedMerit: null,
+    currentMerit: null,
+    bestMerit: null,
+    history: [],
+    noImprove: 0,
+    acceptedMoves: 0,
+    rejectedMoves: 0,
+    invalidMoves: 0,
+    stepScale: 1,
+    stopReason: "",
+  };
+
+  function deg2rad(d) { return (d * Math.PI) / 180; }
+
+  function finiteOrNull(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function scoreText(value, digits = 5) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    if (Math.abs(n) >= 100000) return n.toExponential(3);
+    return n.toFixed(digits);
+  }
+
+  function mmText(value, digits = 2) {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(digits)}mm` : "—";
+  }
+
+  function tText(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? `T${n.toFixed(2)}` : "—";
+  }
+
+  function goalConfig(targets, weights, key, defaultTarget = null) {
+    const raw = targets?.[key];
+    const isObj = raw && typeof raw === "object";
+    const enabled = isObj ? raw.enabled !== false : raw != null;
+    const target = isObj ? raw.target : (raw ?? defaultTarget);
+    const weightRaw = weights?.[key] ?? (isObj ? raw.weight : null) ?? 1;
+    const weight = Math.max(0, Number.isFinite(Number(weightRaw)) ? Number(weightRaw) : 1);
+    return { enabled: !!enabled && weight > 0, target: Number(target), weight };
+  }
+
+  function getAutoTunerLimits(config = {}) {
+    const src = config?.limits || {};
+    const out = { ...AUTO_TUNER_DEFAULT_LIMITS };
+    for (const key of Object.keys(out)) {
+      const n = Number(src[key]);
+      if (Number.isFinite(n) && n > 0) out[key] = n;
+    }
+    out.maxGlassT = Math.max(out.minGlassT, out.maxGlassT);
+    out.maxAirGap = Math.max(out.minAirGap, out.maxAirGap);
+    out.maxRadiusAbs = Math.max(out.minRadiusAbs, out.maxRadiusAbs);
+    return out;
+  }
+
+  function createInvalidMerit(reason, metrics = {}) {
+    return {
+      totalScore: AUTO_TUNER_INVALID_SCORE,
+      focalLengthError: 1,
+      tStopError: 1,
+      imageCircleError: 1,
+      centerSharpnessScore: 100,
+      cornerSharpnessScore: 100,
+      vignettingPenalty: 100,
+      rearIntrusionPenalty: 100,
+      invalidPenalty: AUTO_TUNER_INVALID_SCORE,
+      compactnessPenalty: 0,
+      notes: [],
+      warnings: [String(reason || "invalid lens")],
+      metrics,
+    };
+  }
+
+  function autoTunerSurfaceSignature(surface) {
+    return [
+      String(surface?.type || ""),
+      String(surface?.surfaceLabel ?? surface?.label ?? ""),
+      surface?.stop ? "1" : "0",
+    ].join("|");
+  }
+
+  function validateAutoTunerLensState(lensState, config = {}) {
+    const limits = getAutoTunerLimits(config);
+    const surfaces = lensState?.surfaces;
+    const original = config?.originalLens;
+    const originalSurfaces = original?.surfaces;
+    if (!Array.isArray(surfaces) || surfaces.length < 2) {
+      return { ok: false, reason: "missing surfaces" };
+    }
+    if (originalSurfaces && surfaces.length !== originalSurfaces.length) {
+      return { ok: false, reason: "surface count changed" };
+    }
+
+    const lastIdx = surfaces.length - 1;
+    if (String(surfaces[0]?.type || "").toUpperCase() !== "OBJ") return { ok: false, reason: "OBJ changed" };
+    if (String(surfaces[lastIdx]?.type || "").toUpperCase() !== "IMS") return { ok: false, reason: "IMS changed" };
+
+    if (originalSurfaces) {
+      for (let i = 0; i < surfaces.length; i++) {
+        if (autoTunerSurfaceSignature(surfaces[i]) !== autoTunerSurfaceSignature(originalSurfaces[i])) {
+          return { ok: false, reason: `surface ${i} label/type/stop changed` };
+        }
+      }
+    }
+
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    const originalStopIdx = originalSurfaces ? findStopSurfaceIndex(originalSurfaces) : stopIdx;
+    if (stopIdx < 0 || (originalSurfaces && stopIdx !== originalStopIdx)) {
+      return { ok: false, reason: "STOP changed" };
+    }
+
+    for (let i = 0; i < surfaces.length; i++) {
+      const s = surfaces[i];
+      const type = String(s?.type || "").toUpperCase();
+      const R = Number(s?.R ?? 0);
+      const t = Number(s?.t ?? 0);
+      const ap = Number(s?.ap_optical ?? s?.ap);
+      if (!Number.isFinite(R) || !Number.isFinite(t) || !Number.isFinite(ap)) {
+        return { ok: false, reason: `surface ${i} has NaN/Infinity` };
+      }
+      if (i === 0 && Math.abs(t) > 1e-9) return { ok: false, reason: "OBJ thickness changed" };
+      if (t < -1e-9) return { ok: false, reason: `surface ${i} has negative thickness` };
+      if (type !== "OBJ" && ap <= 0) return { ok: false, reason: `surface ${i} has non-positive aperture` };
+
+      if (Math.abs(R) > 1e-9) {
+        const ar = Math.abs(R);
+        if (ar < limits.minRadiusAbs || ar > limits.maxRadiusAbs) {
+          return { ok: false, reason: `surface ${i} radius out of bounds` };
+        }
+      }
+
+      if (i > 0 && i < lastIdx) {
+        const isAir = isAirSurfaceMedium(s);
+        const minT = isAir ? limits.minAirGap : limits.minGlassT;
+        const maxT = isAir ? limits.maxAirGap : limits.maxGlassT;
+        if (t + 1e-9 < minT) return { ok: false, reason: `surface ${i} thickness below minimum` };
+        if (t - 1e-9 > maxT) return { ok: false, reason: `surface ${i} thickness above maximum` };
+      }
+
+      if (originalSurfaces && !config.allowRadiusSignFlip) {
+        const oR = Number(originalSurfaces[i]?.R ?? 0);
+        if (Math.abs(oR) < 1e-9 && Math.abs(R) > 1e-9) {
+          return { ok: false, reason: `surface ${i} plane changed` };
+        }
+        if (Math.abs(oR) > 1e-9 && Math.sign(oR) !== Math.sign(R)) {
+          return { ok: false, reason: `surface ${i} radius sign changed` };
+        }
+      }
+
+      const guard = validateSurfaceForRaytrace(s, i);
+      if (!guard.ok) return { ok: false, reason: guard.reason || `surface ${i} invalid` };
+    }
+
+    computeVertices(surfaces, 0, 0);
+    for (let i = 1; i < lastIdx - 1; i++) {
+      const a = surfaces[i];
+      const b = surfaces[i + 1];
+      const ta = String(a?.type || "").toUpperCase();
+      const tb = String(b?.type || "").toUpperCase();
+      if (ta === "MECH" || ta === "BAFFLE" || ta === "HOUSING" || tb === "IMS") continue;
+      const y = Math.max(0.01, Math.min(getSurfaceOpticalAp(a), getSurfaceOpticalAp(b)) * 0.98);
+      const xa = surfaceXatY(a, y);
+      const xb = surfaceXatY(b, y);
+      if (xa == null || xb == null) return { ok: false, reason: `surface ${i} edge geometry invalid` };
+      if ((xb - xa) < 0.01) return { ok: false, reason: `surface ${i} crossing` };
+    }
+
+    return { ok: true, reason: "" };
+  }
+
+  function evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null) {
+    const count = Math.max(5, Math.min(31, Number(rayCount) | 0));
+    const finiteObj = Number(objectDistanceMm);
+    const objDist = Number.isFinite(finiteObj) && finiteObj > 0.1 ? finiteObj : null;
+    let bundle = null;
+    try {
+      bundle = buildEntrancePupilLimitedRays(surfaces, count, fieldAngleDeg, wavePreset, objDist);
+    } catch (_) {
+      bundle = null;
+    }
+    const rays = Array.isArray(bundle?.rays) && bundle.rays.length
+      ? bundle.rays
+      : buildRays(surfaces, fieldAngleDeg, count, objDist);
+    const hits = [];
+    let traced = 0;
+    let vignetted = 0;
+    let tir = 0;
+    for (let i = 0; i < rays.length; i++) {
+      traced++;
+      const tr = traceRayForward(clone(rays[i]), surfaces, wavePreset, { rayIndex: i });
+      if (!tr || tr.tir) { tir++; continue; }
+      if (tr.vignetted) { vignetted++; continue; }
+      if (!tr.reachedIMS || !tr.endRay?.p) continue;
+      const y = Number(tr.endRay.p.y);
+      if (Number.isFinite(y)) hits.push(y);
+    }
+    const hitRate = traced > 0 ? hits.length / traced : 0;
+    if (hits.length < 3) {
+      return {
+        ok: false,
+        rmsMm: null,
+        maxRadiusMm: null,
+        centroidMm: null,
+        hitRate,
+        traced,
+        hits: hits.length,
+        vignetted,
+        tir,
+      };
+    }
+    const centroid = hits.reduce((sum, y) => sum + y, 0) / hits.length;
+    const rms = Math.sqrt(hits.reduce((sum, y) => sum + (y - centroid) ** 2, 0) / hits.length);
+    const maxRadius = hits.reduce((m, y) => Math.max(m, Math.abs(y - centroid)), 0);
+    return {
+      ok: true,
+      rmsMm: rms,
+      maxRadiusMm: maxRadius,
+      centroidMm: centroid,
+      hitRate,
+      traced,
+      hits: hits.length,
+      vignetted,
+      tir,
+    };
+  }
+
+  function getAutoTunerCompactLength(surfaces) {
+    computeVertices(surfaces, 0, 0);
+    const front = firstPhysicalVertexX(surfaces);
+    const rear = lastPhysicalVertexX(surfaces);
+    const len = rear - front;
+    return Number.isFinite(len) && len > 0 ? len : null;
+  }
+
+  function getAutoTunerMetrics(lensState, opts = {}) {
+    const L = clone(lensState);
+    const surfaces = L?.surfaces || [];
+    const wavePreset = String(opts.wavePreset || ui.wavePreset?.value || "d");
+    clampAllApertures(surfaces);
+    computeVertices(surfaces, 0, 0);
+    const { w: sensorW, h: sensorH, halfH } = getSensorWH();
+    const sensorDiag = Math.hypot(sensorW, sensorH);
+    const halfDiag = sensorDiag * 0.5;
+    const sensorX = getSensorPlaneX(surfaces, 0);
+    const parax = estimateEflBflParaxial(surfaces, wavePreset);
+    const efl = finiteOrNull(parax?.efl);
+    const bfl = finiteOrNull(parax?.bfl);
+    const T = efl != null ? finiteOrNull(estimateTStopApprox(efl, surfaces, wavePreset)) : null;
+    let maxFieldDiag = 0;
+    let imageCircleMm = 0;
+    try {
+      maxFieldDiag = coverageTestMaxFieldDeg(surfaces, wavePreset, sensorX, halfDiag);
+      if (efl != null && efl > 0 && Number.isFinite(maxFieldDiag)) {
+        imageCircleMm = 2 * efl * Math.tan(deg2rad(maxFieldDiag));
+      }
+    } catch (_) {
+      maxFieldDiag = 0;
+      imageCircleMm = 0;
+    }
+    const covers = Number.isFinite(imageCircleMm) && imageCircleMm + 0.25 >= sensorDiag;
+    const rearVx = lastPhysicalVertexX(surfaces);
+    const plX = sensorX - PL_FFD;
+    const rearClearance = Number.isFinite(rearVx) && Number.isFinite(plX) ? plX - rearVx : null;
+    const compactLength = getAutoTunerCompactLength(surfaces);
+    const objectDistanceMm = Number.isFinite(Number(opts.objectDistanceMm))
+      ? Number(opts.objectDistanceMm)
+      : getFocusChartDistanceMm();
+    const cornerFieldDeg = efl != null && efl > 0
+      ? Math.max(0, Math.min(55, rad2deg(Math.atan(halfDiag / efl))))
+      : 0;
+    const centerSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, 0, 13, objectDistanceMm);
+    const cornerSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, cornerFieldDeg, 13, objectDistanceMm);
+    return {
+      efl,
+      bfl,
+      T,
+      imageCircleMm: Number.isFinite(imageCircleMm) ? imageCircleMm : 0,
+      cov: covers,
+      maxFieldDeg: maxFieldDiag,
+      sensorW,
+      sensorH,
+      sensorDiag,
+      halfH,
+      sensorX,
+      rearClearance,
+      compactLength,
+      centerSpot,
+      cornerSpot,
+      wavePreset,
+    };
+  }
+
+  function evaluateLensMerit(lensState, targets = {}, weights = {}) {
+    const validation = validateAutoTunerLensState(lensState, {
+      limits: targets?.limits || targets?.safetyLimits || AUTO_TUNER_DEFAULT_LIMITS,
+      originalLens: targets?.originalLens || null,
+      allowRadiusSignFlip: !!targets?.allowRadiusSignFlip,
+    });
+    if (!validation.ok) return createInvalidMerit(validation.reason);
+
+    const metrics = getAutoTunerMetrics(lensState, {
+      wavePreset: targets?.wavePreset || ui.wavePreset?.value || "d",
+      objectDistanceMm: targets?.objectDistanceMm,
+    });
+    const notes = [];
+    const warnings = [];
+    let total = 0;
+
+    const flGoal = goalConfig(targets, weights, "focalLength", null);
+    const focalLengthError = (flGoal.enabled && Number.isFinite(flGoal.target) && flGoal.target > 0)
+      ? (metrics.efl != null ? Math.abs(metrics.efl - flGoal.target) / flGoal.target : 1)
+      : 0;
+    if (flGoal.enabled) total += focalLengthError * flGoal.weight;
+
+    const tGoal = goalConfig(targets, weights, "tStop", null);
+    const tStopError = (tGoal.enabled && Number.isFinite(tGoal.target) && tGoal.target > 0)
+      ? (metrics.T != null ? Math.abs(metrics.T - tGoal.target) / tGoal.target : 1)
+      : 0;
+    if (tGoal.enabled) total += tStopError * tGoal.weight;
+
+    const icGoal = goalConfig(targets, weights, "imageCircle", null);
+    const imageCircleError = (icGoal.enabled && Number.isFinite(icGoal.target) && icGoal.target > 0)
+      ? Math.max(0, icGoal.target - Number(metrics.imageCircleMm || 0)) / icGoal.target
+      : 0;
+    if (icGoal.enabled) total += imageCircleError * icGoal.weight;
+
+    const sharpNorm = Math.max(0.015, Number(targets?.sharpnessNormMm) || 0.08);
+    const centerGoal = goalConfig(targets, weights, "centerSharpness", null);
+    const centerSharpnessScore = metrics.centerSpot?.ok
+      ? (Number(metrics.centerSpot.rmsMm) / sharpNorm) * (1 + Math.max(0, 0.9 - Number(metrics.centerSpot.hitRate || 0)) * 3)
+      : 25;
+    if (centerGoal.enabled) total += centerSharpnessScore * centerGoal.weight;
+
+    const cornerGoal = goalConfig(targets, weights, "cornerSharpness", null);
+    const cornerSharpnessScore = metrics.cornerSpot?.ok
+      ? (Number(metrics.cornerSpot.rmsMm) / sharpNorm) * (1 + Math.max(0, 0.9 - Number(metrics.cornerSpot.hitRate || 0)) * 4)
+      : 35;
+    if (cornerGoal.enabled) total += cornerSharpnessScore * cornerGoal.weight;
+
+    const vigGoal = goalConfig(targets, weights, "vignetting", null);
+    const cornerHitRate = Number(metrics.cornerSpot?.hitRate || 0);
+    const centerHitRate = Number(metrics.centerSpot?.hitRate || 0);
+    let vignettingPenalty = Math.max(0, 1 - centerHitRate) * 1.5 + Math.max(0, 1 - cornerHitRate) * 3.0;
+    if (!metrics.cov) vignettingPenalty += 1.5;
+    if (vigGoal.enabled) total += vignettingPenalty * vigGoal.weight;
+
+    const rearGoal = goalConfig(targets, weights, "rearClearance", 0);
+    const rearTarget = Number.isFinite(rearGoal.target) ? rearGoal.target : 0;
+    const rearClearance = Number(metrics.rearClearance);
+    let rearIntrusionPenalty = 0;
+    if (!Number.isFinite(rearClearance)) {
+      rearIntrusionPenalty = 5;
+    } else if (rearClearance < rearTarget) {
+      rearIntrusionPenalty = (rearTarget - rearClearance) / Math.max(1, Math.abs(rearTarget) || 1);
+      if (rearClearance < 0) rearIntrusionPenalty += Math.min(20, Math.abs(rearClearance));
+    }
+    if (metrics.bfl != null && rearGoal.enabled && metrics.bfl < rearTarget) {
+      rearIntrusionPenalty += (rearTarget - metrics.bfl) / Math.max(1, Math.abs(rearTarget) || 1) * 0.5;
+    }
+    if (rearGoal.enabled) total += rearIntrusionPenalty * rearGoal.weight;
+
+    const compactGoal = goalConfig(targets, weights, "compactness", null);
+    const compactTarget = Number(compactGoal.target);
+    const compactnessPenalty = (compactGoal.enabled && Number.isFinite(compactTarget) && compactTarget > 0 && Number.isFinite(metrics.compactLength))
+      ? Math.max(0, metrics.compactLength - compactTarget) / compactTarget
+      : 0;
+    if (compactGoal.enabled) total += compactnessPenalty * compactGoal.weight;
+
+    if (!metrics.cov) notes.push("COV NO");
+    if (rearClearance < 0) notes.push("rear intrusion");
+    if (!metrics.centerSpot?.ok) warnings.push("center spot weak");
+    if (!metrics.cornerSpot?.ok) warnings.push("corner spot weak");
+
+    const totalScore = Number.isFinite(total) ? total : AUTO_TUNER_INVALID_SCORE;
+    return {
+      totalScore,
+      focalLengthError,
+      tStopError,
+      imageCircleError,
+      centerSharpnessScore,
+      cornerSharpnessScore,
+      vignettingPenalty,
+      rearIntrusionPenalty,
+      invalidPenalty: 0,
+      compactnessPenalty,
+      notes,
+      warnings,
+      metrics,
+    };
+  }
+
+  if (typeof window !== "undefined") {
+    window.evaluateLensMerit = evaluateLensMerit;
+  }
+
+  function autoTunerOriginalLock(config, index, key) {
+    const locks = config?.locks;
+    const lock = Array.isArray(locks) ? locks[index] : null;
+    return !!lock?.[key];
+  }
+
+  function setAutoTunerSurfaceAperture(s, ap) {
+    const v = Math.max(AP_MIN, Number(ap) || AP_MIN);
+    s.ap = v;
+    s.ap_optical = v;
+    if (s.ap_mech != null && String(s.ap_mech).trim() !== "") s.ap_mech = v;
+  }
+
+  function copyAutoTunerField(target, source, key) {
+    if (!target || !source) return;
+    if (key === "ap") {
+      target.ap = source.ap;
+      target.ap_optical = source.ap_optical;
+      target.ap_mech = source.ap_mech;
+      return;
+    }
+    target[key] = source[key];
+    if (key === "glass") {
+      target.originalGlass = source.originalGlass;
+      target.nd = source.nd;
+      target.vd = source.vd;
+      target.glass_nd = source.glass_nd;
+      target.glass_vd = source.glass_vd;
+    }
+  }
+
+  function repairAutoTunerCandidate(candidate, original, config) {
+    const surfaces = candidate?.surfaces;
+    const originalSurfaces = original?.surfaces;
+    if (!Array.isArray(surfaces) || !Array.isArray(originalSurfaces) || surfaces.length !== originalSurfaces.length) {
+      return { ok: false, reason: "surface count changed" };
+    }
+    const limits = getAutoTunerLimits(config);
+    const lastIdx = surfaces.length - 1;
+
+    for (let i = 0; i < surfaces.length; i++) {
+      const s = surfaces[i];
+      const o = originalSurfaces[i];
+      if (!s || !o) return { ok: false, reason: `missing surface ${i}` };
+
+      s.type = o.type;
+      s.surfaceLabel = o.surfaceLabel;
+      s.surfaceLabelAuto = o.surfaceLabelAuto;
+      s.stop = !!o.stop;
+
+      const isOBJ = i === 0 || String(o.type || "").toUpperCase() === "OBJ";
+      const isIMS = i === lastIdx || String(o.type || "").toUpperCase() === "IMS";
+      if (isOBJ) {
+        Object.assign(s, clone(o), { type: "OBJ", surfaceLabel: "OBJ", surfaceLabelAuto: true, stop: false, t: 0 });
+        continue;
+      }
+      if (isIMS) {
+        const keepAp = !config?.allowIMSAperture;
+        const next = clone(o);
+        if (!keepAp) {
+          next.ap = s.ap;
+          next.ap_optical = s.ap_optical;
+          next.ap_mech = s.ap_mech;
+        }
+        Object.assign(s, next, { type: "IMS", surfaceLabel: "IMS", surfaceLabelAuto: true, stop: false });
+        if (!config?.allowSensorShift) s.t = o.t;
+      }
+
+      if (autoTunerOriginalLock(config, i, "R")) copyAutoTunerField(s, o, "R");
+      if (autoTunerOriginalLock(config, i, "t")) copyAutoTunerField(s, o, "t");
+      if (autoTunerOriginalLock(config, i, "ap")) copyAutoTunerField(s, o, "ap");
+      if (autoTunerOriginalLock(config, i, "glass")) copyAutoTunerField(s, o, "glass");
+
+      const oR = Number(o.R || 0);
+      let R = Number(s.R || 0);
+      if (!Number.isFinite(R)) R = oR;
+      if (!config?.allowRadiusSignFlip) {
+        if (Math.abs(oR) < 1e-9) R = 0;
+        else R = Math.sign(oR) * Math.abs(R || oR);
+      }
+      if (Math.abs(R) > 1e-9) {
+        const ar = clamp(Math.abs(R), limits.minRadiusAbs, limits.maxRadiusAbs);
+        R = Math.sign(R) * ar;
+      }
+      s.R = R;
+
+      if (i > 0 && i < lastIdx) {
+        const isAir = isAirSurfaceMedium(s);
+        const minT = isAir ? limits.minAirGap : limits.minGlassT;
+        const maxT = isAir ? limits.maxAirGap : limits.maxGlassT;
+        const tRaw = Number(s.t);
+        const tFallback = Number.isFinite(Number(o.t)) ? Number(o.t) : minT;
+        s.t = clamp(Number.isFinite(tRaw) ? tRaw : tFallback, minT, maxT);
+      }
+
+      if (String(s.type || "").toUpperCase() !== "OBJ") {
+        const lim = maxApForSurface(s);
+        const apRaw = Number(s.ap_optical ?? s.ap);
+        const apFallback = Number.isFinite(Number(o.ap_optical ?? o.ap)) ? Number(o.ap_optical ?? o.ap) : AP_MIN;
+        const ap = clamp(Number.isFinite(apRaw) ? apRaw : apFallback, AP_MIN, Math.max(AP_MIN, lim));
+        setAutoTunerSurfaceAperture(s, ap);
+      }
+
+      if (s.glass !== o.glass && !config?.allowed?.glassTypes) {
+        copyAutoTunerField(s, o, "glass");
+      }
+    }
+
+    generateSurfaceLabels(surfaces);
+    clampAllApertures(surfaces);
+    const validation = validateAutoTunerLensState(candidate, {
+      ...config,
+      originalLens: original,
+    });
+    return validation;
+  }
+
+  function makeAutoTunerRng(seedValue) {
+    const text = String(seedValue ?? "").trim();
+    if (!text) return Math.random;
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return () => {
+      h += 0x6D2B79F5;
+      let t = h;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function autoTunerSignedRandom(rng) {
+    return (rng() + rng()) - 1;
+  }
+
+  function autoTunerStepProfile(stepSize) {
+    const key = String(stepSize || "small");
+    if (key === "large") {
+      return { rRel: 0.10, airAbs: 0.90, glassAbs: 0.35, tRel: 0.12, apAbs: 0.35, apRel: 0.08 };
+    }
+    if (key === "medium") {
+      return { rRel: 0.045, airAbs: 0.35, glassAbs: 0.16, tRel: 0.055, apAbs: 0.16, apRel: 0.04 };
+    }
+    return { rRel: 0.018, airAbs: 0.12, glassAbs: 0.06, tRel: 0.022, apAbs: 0.07, apRel: 0.018 };
+  }
+
+  function autoTunerMutableGlassPool() {
+    return Object.keys(GLASS_DB).filter((name) => name !== "AIR").sort();
+  }
+
+  function collectAutoTunerMutationOps(baseLens, config, originalLens) {
+    const surfaces = baseLens?.surfaces || [];
+    const originalSurfaces = originalLens?.surfaces || [];
+    const ops = [];
+    const seen = new Set();
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    const imsIdx = surfaces.findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+    const lastIdx = imsIdx >= 0 ? imsIdx : surfaces.length - 1;
+    const allowed = config?.allowed || {};
+    const limits = getAutoTunerLimits(config);
+
+    const add = (op) => {
+      const key = `${op.kind}:${op.i}:${op.group || ""}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      ops.push(op);
+    };
+
+    for (let i = 1; i < lastIdx; i++) {
+      const s = surfaces[i];
+      const o = originalSurfaces[i] || s;
+      const type = String(s?.type || "").toUpperCase();
+      const isStop = !!s?.stop || type === "STOP";
+      const isAir = isAirSurfaceMedium(s);
+
+      if (allowed.radii && !isStop && !autoTunerOriginalLock(config, i, "R")) {
+        const r0 = Number(o?.R ?? s?.R ?? 0);
+        if (Math.abs(r0) >= limits.minRadiusAbs && isPhysicalSurfaceType(type)) add({ kind: "R", i });
+      }
+
+      if (allowed.airGaps && isAir && !autoTunerOriginalLock(config, i, "t")) add({ kind: "t", i, group: "air" });
+      if (allowed.glassThicknesses && !isAir && !autoTunerOriginalLock(config, i, "t")) add({ kind: "t", i, group: "glass" });
+      if (allowed.stopAperture && isStop && !autoTunerOriginalLock(config, i, "ap")) add({ kind: "ap", i, group: "stop" });
+      if (allowed.clearApertures && !isStop && !autoTunerOriginalLock(config, i, "ap")) add({ kind: "ap", i, group: "clear" });
+      if (allowed.glassTypes && !isAir && !autoTunerOriginalLock(config, i, "glass")) add({ kind: "glass", i });
+
+      if (allowed.stopPosition && stopIdx >= 0 && (i === stopIdx || i === stopIdx - 1) && isAir && !autoTunerOriginalLock(config, i, "t")) {
+        add({ kind: "t", i, group: "stop" });
+      }
+      if (allowed.rearGroupSpacing && stopIdx >= 0 && i > stopIdx && isAir && !autoTunerOriginalLock(config, i, "t")) {
+        add({ kind: "t", i, group: "rearGroup" });
+      }
+      if (allowed.frontGroupSpacing && stopIdx >= 0 && i < stopIdx && isAir && !autoTunerOriginalLock(config, i, "t")) {
+        add({ kind: "t", i, group: "frontGroup" });
+      }
+    }
+
+    if (allowed.rearElementSpacing) {
+      for (let i = lastIdx - 1; i >= 1; i--) {
+        const s = surfaces[i];
+        if (isAirSurfaceMedium(s) && !autoTunerOriginalLock(config, i, "t")) {
+          add({ kind: "t", i, group: "rearElement" });
+          break;
+        }
+      }
+    }
+
+    return ops;
+  }
+
+  function applyAutoTunerMutation(candidate, op, config, rng) {
+    const s = candidate?.surfaces?.[op?.i];
+    if (!s) return false;
+    const profile = autoTunerStepProfile(config?.stepSize);
+    const limits = getAutoTunerLimits(config);
+    const scale = Math.max(0.05, Number(config?.stepScale || 1));
+    const signed = autoTunerSignedRandom(rng || Math.random);
+
+    if (op.kind === "R") {
+      const current = Number(s.R || 0);
+      if (!Number.isFinite(current) || Math.abs(current) < 1e-9) return false;
+      const factor = Math.max(0.20, 1 + signed * profile.rRel * scale);
+      const nextAbs = clamp(Math.abs(current) * factor, limits.minRadiusAbs, limits.maxRadiusAbs);
+      s.R = Math.sign(current) * nextAbs;
+      return true;
+    }
+
+    if (op.kind === "t") {
+      const isAir = isAirSurfaceMedium(s);
+      const absStep = (isAir ? profile.airAbs : profile.glassAbs) * scale;
+      const relStep = Math.max(0.02, Math.abs(Number(s.t || 0)) * profile.tRel * scale);
+      s.t = Number(s.t || 0) + signed * Math.max(absStep, relStep);
+      return true;
+    }
+
+    if (op.kind === "ap") {
+      const current = Number(s.ap_optical ?? s.ap ?? AP_MIN);
+      const absStep = profile.apAbs * scale;
+      const relStep = Math.max(0.02, Math.abs(current) * profile.apRel * scale);
+      setAutoTunerSurfaceAperture(s, current + signed * Math.max(absStep, relStep));
+      return true;
+    }
+
+    if (op.kind === "glass") {
+      const pool = autoTunerMutableGlassPool();
+      if (!pool.length) return false;
+      const current = normalizeGlassInput(s.glass);
+      let next = current;
+      for (let tries = 0; tries < 8 && next === current; tries++) {
+        next = pool[Math.floor((rng || Math.random)() * pool.length)] || current;
+      }
+      if (!next || next === current) return false;
+      s.glass = next;
+      s.originalGlass = next;
+      s.nd = null;
+      s.vd = null;
+      s.glass_nd = null;
+      s.glass_vd = null;
+      return true;
+    }
+
+    return false;
+  }
+
+  function readAutoTunerConfig() {
+    const currentMetrics = getAutoTunerMetrics(lens, { wavePreset: ui.wavePreset?.value || "d" });
+    const compactLength = currentMetrics.compactLength || 1;
+    const iterations = Math.max(1, Math.floor(num(ui.atIterations?.value, 1000)));
+    const stopIfStuck = Math.max(0, Math.floor(num(ui.atStopStuck?.value, 350)));
+    const limits = {
+      minGlassT: num(ui.atMinGlass?.value, AUTO_TUNER_DEFAULT_LIMITS.minGlassT),
+      minAirGap: num(ui.atMinAir?.value, AUTO_TUNER_DEFAULT_LIMITS.minAirGap),
+      maxGlassT: num(ui.atMaxGlass?.value, AUTO_TUNER_DEFAULT_LIMITS.maxGlassT),
+      maxAirGap: num(ui.atMaxAir?.value, AUTO_TUNER_DEFAULT_LIMITS.maxAirGap),
+      minRadiusAbs: num(ui.atMinRadius?.value, AUTO_TUNER_DEFAULT_LIMITS.minRadiusAbs),
+      maxRadiusAbs: num(ui.atMaxRadius?.value, AUTO_TUNER_DEFAULT_LIMITS.maxRadiusAbs),
+    };
+    const targets = {
+      wavePreset: ui.wavePreset?.value || "d",
+      objectDistanceMm: getFocusChartDistanceMm(),
+      limits,
+      allowRadiusSignFlip: !!ui.atAllowRSignFlip?.checked,
+      focalLength: { enabled: !!ui.atGoalFL?.checked, target: num(ui.atTargetFL?.value, currentMetrics.efl || 50) },
+      tStop: { enabled: !!ui.atGoalT?.checked, target: num(ui.atTargetT?.value, currentMetrics.T || 2) },
+      imageCircle: { enabled: !!ui.atGoalIC?.checked, target: num(ui.atTargetIC?.value, 45) },
+      centerSharpness: { enabled: !!ui.atGoalCenter?.checked },
+      cornerSharpness: { enabled: !!ui.atGoalCorner?.checked },
+      vignetting: { enabled: !!ui.atGoalVig?.checked },
+      rearClearance: { enabled: !!ui.atGoalRear?.checked, target: num(ui.atTargetRear?.value, 0) },
+      compactness: { enabled: !!ui.atGoalCompact?.checked, target: compactLength },
+    };
+    const weights = {
+      focalLength: num(ui.atWeightFL?.value, 5),
+      tStop: num(ui.atWeightT?.value, 4),
+      imageCircle: num(ui.atWeightIC?.value, 7),
+      centerSharpness: num(ui.atWeightCenter?.value, 6),
+      cornerSharpness: num(ui.atWeightCorner?.value, 7),
+      vignetting: num(ui.atWeightVig?.value, 7),
+      rearClearance: num(ui.atWeightRear?.value, 4),
+      compactness: num(ui.atWeightCompact?.value, 3),
+    };
+    return {
+      iterations,
+      stopIfStuck,
+      stepSize: String(ui.atStepSize?.value || "small"),
+      runSpeed: String(ui.atRunSpeed?.value || "safe"),
+      autoReduce: !!ui.atAutoReduce?.checked,
+      anneal: !!ui.atAnneal?.checked,
+      seed: String(ui.atSeed?.value || ""),
+      limits,
+      allowSensorShift: !!ui.atAllowSensorShift?.checked,
+      allowIMSAperture: !!ui.atAllowIMSAp?.checked,
+      allowRadiusSignFlip: !!ui.atAllowRSignFlip?.checked,
+      allowed: {
+        radii: !!ui.atVarR?.checked,
+        airGaps: !!ui.atVarAirT?.checked,
+        glassThicknesses: !!ui.atVarGlassT?.checked,
+        stopAperture: !!ui.atVarStopAp?.checked,
+        stopPosition: !!ui.atVarStopT?.checked,
+        clearApertures: !!ui.atVarAp?.checked,
+        rearElementSpacing: !!ui.atVarRearSpacing?.checked,
+        frontGroupSpacing: !!ui.atVarFrontGroup?.checked,
+        rearGroupSpacing: !!ui.atVarRearGroup?.checked,
+        glassTypes: !!ui.atVarGlass?.checked,
+      },
+      locks: (lens.surfaces || []).map((_, i) => getAutoTunerSurfaceLock(i)),
+      targets,
+      weights,
+      stepScale: 1,
+    };
+  }
+
+  function cancelAutoTunerTimer() {
+    if (!autoTunerState.timer) return;
+    if (autoTunerState.timerKind === "idle" && typeof cancelIdleCallback === "function") {
+      cancelIdleCallback(autoTunerState.timer);
+    } else {
+      clearTimeout(autoTunerState.timer);
+    }
+    autoTunerState.timer = 0;
+    autoTunerState.timerKind = "";
+  }
+
+  function autoTunerBatchSettings(runSpeed) {
+    const speed = String(runSpeed || "safe");
+    if (speed === "aggressive") return { budgetMs: 24, maxBatch: 90, delayMs: 0, updateEvery: 100 };
+    if (speed === "fast") return { budgetMs: 16, maxBatch: 45, delayMs: 0, updateEvery: 75 };
+    return { budgetMs: 8, maxBatch: 14, delayMs: 12, updateEvery: 50 };
+  }
+
+  function updateAutoTunerButtons() {
+    const running = !!autoTunerState.running;
+    const hasOriginal = !!autoTunerState.originalLens;
+    const hasBest = !!autoTunerState.bestLens;
+    if (ui.atStart) ui.atStart.disabled = running;
+    if (ui.atPause) {
+      ui.atPause.disabled = !running;
+      ui.atPause.textContent = autoTunerState.paused ? "Resume" : "Pause";
+    }
+    if (ui.atStop) ui.atStop.disabled = !running;
+    if (ui.atApplyBest) ui.atApplyBest.disabled = !hasBest || running;
+    if (ui.atRevert) ui.atRevert.disabled = !hasOriginal || running;
+    if (ui.atCopyBest) ui.atCopyBest.disabled = !hasBest;
+    if (ui.atSaveBest) ui.atSaveBest.disabled = !hasBest;
+  }
+
+  function renderAutoTunerHistory() {
+    if (!ui.atHistoryBody) return;
+    ui.atHistoryBody.innerHTML = autoTunerState.history.map((h) => `
+      <tr>
+        <td>${h.iteration}</td>
+        <td>${scoreText(h.score, 4)}</td>
+        <td>${mmText(h.efl)}</td>
+        <td>${h.T == null ? "—" : Number(h.T).toFixed(2)}</td>
+        <td>${mmText(h.imageCircleMm, 1)}</td>
+        <td>${mmText(h.bfl)}</td>
+        <td>${escapeAttr((h.notes || []).join(", "))}</td>
+      </tr>
+    `).join("");
+  }
+
+  function updateAutoTunerProgress(force = false) {
+    const cfg = autoTunerState.config || {};
+    const totalIter = Number(cfg.iterations || 0);
+    const iter = Number(autoTunerState.iteration || 0);
+    const best = autoTunerState.bestMerit;
+    const cur = autoTunerState.currentMerit || autoTunerState.acceptedMerit;
+    const origScore = Number(autoTunerState.originalMerit?.totalScore);
+    const bestScore = Number(best?.totalScore);
+    const progressPct = totalIter > 0 ? clamp((iter / totalIter) * 100, 0, 100) : 0;
+    const improvement = Number.isFinite(origScore) && Number.isFinite(bestScore) && Math.abs(origScore) > 1e-12
+      ? ((origScore - bestScore) / Math.abs(origScore)) * 100
+      : null;
+
+    if (!force && iter === autoTunerState.lastUiIteration) return;
+    autoTunerState.lastUiIteration = iter;
+    if (ui.atProgressFill) ui.atProgressFill.style.width = `${progressPct.toFixed(1)}%`;
+    if (ui.atMetricIteration) ui.atMetricIteration.textContent = `${iter} / ${totalIter || 0}`;
+    if (ui.atMetricBestScore) ui.atMetricBestScore.textContent = scoreText(bestScore);
+    if (ui.atMetricCurrentScore) ui.atMetricCurrentScore.textContent = scoreText(cur?.totalScore);
+    if (ui.atMetricImprovement) ui.atMetricImprovement.textContent = Number.isFinite(improvement) ? `${improvement.toFixed(2)}%` : "—";
+    if (ui.atMetricEFL) ui.atMetricEFL.textContent = mmText(best?.metrics?.efl);
+    if (ui.atMetricT) ui.atMetricT.textContent = tText(best?.metrics?.T);
+    if (ui.atMetricIC) ui.atMetricIC.textContent = mmText(best?.metrics?.imageCircleMm, 1);
+    if (ui.atMetricCOV) ui.atMetricCOV.textContent = best?.metrics ? (best.metrics.cov ? "YES" : "NO") : "—";
+    if (ui.atMetricBFL) ui.atMetricBFL.textContent = mmText(best?.metrics?.bfl);
+    if (ui.atMetricRear) ui.atMetricRear.textContent = mmText(best?.metrics?.rearClearance);
+
+    const statusBits = [];
+    if (autoTunerState.running) statusBits.push(autoTunerState.paused ? "Paused" : "Running");
+    else statusBits.push(autoTunerState.stopReason || "Ready");
+    statusBits.push(`accepted ${autoTunerState.acceptedMoves}`);
+    statusBits.push(`rejected ${autoTunerState.rejectedMoves}`);
+    if (autoTunerState.invalidMoves) statusBits.push(`invalid ${autoTunerState.invalidMoves}`);
+    if (autoTunerState.noImprove) statusBits.push(`stuck ${autoTunerState.noImprove}`);
+    if (ui.atStatus) ui.atStatus.textContent = statusBits.join(" • ");
+    renderAutoTunerHistory();
+    updateAutoTunerButtons();
+  }
+
+  function pushAutoTunerHistory(iteration, merit) {
+    const metrics = merit?.metrics || {};
+    autoTunerState.history.unshift({
+      iteration,
+      score: merit?.totalScore,
+      efl: metrics.efl,
+      T: metrics.T,
+      imageCircleMm: metrics.imageCircleMm,
+      bfl: metrics.bfl,
+      notes: [...(merit?.notes || []), ...(merit?.warnings || [])].slice(0, 2),
+    });
+    autoTunerState.history = autoTunerState.history.slice(0, AUTO_TUNER_HISTORY_LIMIT);
+  }
+
+  function autoTunerShouldAccept(candidateMerit, acceptedMerit, config, rng) {
+    const nextScore = Number(candidateMerit?.totalScore);
+    const curScore = Number(acceptedMerit?.totalScore);
+    if (!Number.isFinite(nextScore)) return false;
+    if (!Number.isFinite(curScore)) return true;
+    if (nextScore < curScore) return true;
+    if (!config?.anneal) return false;
+    const progress = config.iterations > 0 ? clamp(autoTunerState.iteration / config.iterations, 0, 1) : 1;
+    const temp = Math.max(1e-9, Math.abs(curScore) * 0.015 * (1 - progress) * Math.max(0.1, autoTunerState.stepScale));
+    const delta = nextScore - curScore;
+    if (delta > temp * 3) return false;
+    return (rng || Math.random)() < Math.exp(-delta / temp);
+  }
+
+  function autoTunerIteration() {
+    const cfg = autoTunerState.config;
+    autoTunerState.iteration++;
+    const candidate = clone(autoTunerState.acceptedLens);
+    cfg.stepScale = autoTunerState.stepScale;
+    const ops = collectAutoTunerMutationOps(candidate, cfg, autoTunerState.originalLens);
+    if (!ops.length) {
+      autoTunerState.stopReason = "No allowed mutable variables";
+      return false;
+    }
+    const op = ops[Math.floor(autoTunerState.rng() * ops.length)];
+    const changed = applyAutoTunerMutation(candidate, op, cfg, autoTunerState.rng);
+    if (!changed) {
+      autoTunerState.rejectedMoves++;
+      autoTunerState.noImprove++;
+      return true;
+    }
+
+    const repaired = repairAutoTunerCandidate(candidate, autoTunerState.originalLens, cfg);
+    const merit = repaired.ok
+      ? evaluateLensMerit(candidate, { ...cfg.targets, originalLens: autoTunerState.originalLens }, cfg.weights)
+      : createInvalidMerit(repaired.reason);
+    autoTunerState.currentMerit = merit;
+
+    if (!repaired.ok || merit.invalidPenalty > 0 || !Number.isFinite(Number(merit.totalScore))) {
+      autoTunerState.invalidMoves++;
+      autoTunerState.noImprove++;
+      return true;
+    }
+
+    const accepted = autoTunerShouldAccept(merit, autoTunerState.acceptedMerit, cfg, autoTunerState.rng);
+    if (accepted) {
+      autoTunerState.acceptedLens = candidate;
+      autoTunerState.acceptedMerit = merit;
+      autoTunerState.acceptedMoves++;
+    } else {
+      autoTunerState.rejectedMoves++;
+    }
+
+    const bestScore = Number(autoTunerState.bestMerit?.totalScore);
+    if (!Number.isFinite(bestScore) || Number(merit.totalScore) < bestScore) {
+      autoTunerState.bestLens = clone(candidate);
+      autoTunerState.bestMerit = merit;
+      autoTunerState.noImprove = 0;
+      pushAutoTunerHistory(autoTunerState.iteration, merit);
+    } else {
+      autoTunerState.noImprove++;
+    }
+
+    if (cfg.autoReduce && autoTunerState.noImprove > 0 && autoTunerState.noImprove % 150 === 0) {
+      autoTunerState.stepScale = Math.max(0.12, autoTunerState.stepScale * 0.72);
+    }
+
+    return true;
+  }
+
+  function finishAutoTuner(reason) {
+    cancelAutoTunerTimer();
+    autoTunerState.running = false;
+    autoTunerState.paused = false;
+    autoTunerState.stopReason = reason || "Stopped";
+    updateAutoTunerProgress(true);
+    if (reason) toast(`Auto Tuner: ${reason}`, 1800);
+  }
+
+  function handleAutoTunerCrash(error) {
+    console.error("Auto Tuner failed", error);
+    cancelAutoTunerTimer();
+    autoTunerState.running = false;
+    autoTunerState.paused = false;
+    autoTunerState.stopReason = `Crashed: ${error?.message || error}`;
+    if (autoTunerState.originalLens) loadLens(autoTunerState.originalLens);
+    updateAutoTunerProgress(true);
+    toast("Auto Tuner stopped and original lens restored", 2600);
+  }
+
+  function runAutoTunerChunk() {
+    if (!autoTunerState.running || autoTunerState.paused) return;
+    const cfg = autoTunerState.config;
+    const settings = autoTunerBatchSettings(cfg.runSpeed);
+    const started = performance.now();
+    let batch = 0;
+    try {
+      while (
+        autoTunerState.running &&
+        !autoTunerState.paused &&
+        autoTunerState.iteration < cfg.iterations &&
+        batch < settings.maxBatch &&
+        performance.now() - started < settings.budgetMs
+      ) {
+        const ok = autoTunerIteration();
+        batch++;
+        if (!ok) {
+          finishAutoTuner(autoTunerState.stopReason || "Stopped");
+          return;
+        }
+        if (cfg.stopIfStuck > 0 && autoTunerState.noImprove >= cfg.stopIfStuck) {
+          finishAutoTuner(`Stopped after ${cfg.stopIfStuck} iterations without improvement`);
+          return;
+        }
+      }
+    } catch (e) {
+      handleAutoTunerCrash(e);
+      return;
+    }
+
+    if (autoTunerState.iteration % settings.updateEvery === 0 || autoTunerState.iteration >= cfg.iterations) {
+      updateAutoTunerProgress(true);
+    }
+
+    if (!autoTunerState.running || autoTunerState.paused) return;
+    if (autoTunerState.iteration >= cfg.iterations) {
+      finishAutoTuner("Completed");
+      return;
+    }
+    scheduleAutoTunerChunk();
+  }
+
+  function scheduleAutoTunerChunk() {
+    cancelAutoTunerTimer();
+    const cfg = autoTunerState.config || {};
+    const settings = autoTunerBatchSettings(cfg.runSpeed);
+    if (typeof requestIdleCallback === "function" && cfg.runSpeed === "safe") {
+      autoTunerState.timerKind = "idle";
+      autoTunerState.timer = requestIdleCallback(() => runAutoTunerChunk(), { timeout: 120 });
+      return;
+    }
+    autoTunerState.timerKind = "timeout";
+    autoTunerState.timer = setTimeout(runAutoTunerChunk, settings.delayMs);
+  }
+
+  function startAutoTuner() {
+    if (autoTunerState.running) return;
+    try {
+      const cfg = readAutoTunerConfig();
+      const original = clone(lens);
+      cfg.originalLens = original;
+      cfg.targets.originalLens = original;
+      const ops = collectAutoTunerMutationOps(original, cfg, original);
+      if (!ops.length) {
+        if (ui.atStatus) ui.atStatus.textContent = "No mutable variables selected.";
+        toast("Auto Tuner: no allowed variables selected");
+        return;
+      }
+
+      const originalMerit = evaluateLensMerit(original, cfg.targets, cfg.weights);
+      autoTunerState.running = true;
+      autoTunerState.paused = false;
+      autoTunerState.iteration = 0;
+      autoTunerState.lastUiIteration = -1;
+      autoTunerState.originalLens = original;
+      autoTunerState.acceptedLens = clone(original);
+      autoTunerState.bestLens = clone(original);
+      autoTunerState.config = cfg;
+      autoTunerState.rng = makeAutoTunerRng(cfg.seed);
+      autoTunerState.originalMerit = originalMerit;
+      autoTunerState.acceptedMerit = originalMerit;
+      autoTunerState.currentMerit = originalMerit;
+      autoTunerState.bestMerit = originalMerit;
+      autoTunerState.history = [];
+      autoTunerState.noImprove = 0;
+      autoTunerState.acceptedMoves = 0;
+      autoTunerState.rejectedMoves = 0;
+      autoTunerState.invalidMoves = 0;
+      autoTunerState.stepScale = 1;
+      autoTunerState.stopReason = "Running";
+      pushAutoTunerHistory(0, originalMerit);
+      updateAutoTunerProgress(true);
+      scheduleAutoTunerChunk();
+    } catch (e) {
+      handleAutoTunerCrash(e);
+    }
+  }
+
+  function pauseAutoTuner() {
+    if (!autoTunerState.running) return;
+    autoTunerState.paused = !autoTunerState.paused;
+    if (autoTunerState.paused) {
+      cancelAutoTunerTimer();
+    } else {
+      scheduleAutoTunerChunk();
+    }
+    updateAutoTunerProgress(true);
+  }
+
+  function stopAutoTuner() {
+    if (!autoTunerState.running) return;
+    finishAutoTuner("Stopped");
+  }
+
+  function applyAutoTunerBest() {
+    if (!autoTunerState.bestLens || autoTunerState.running) return;
+    loadLens(autoTunerState.bestLens);
+    renderAll();
+    if (preview.ready) scheduleRenderPreview({ force: true });
+    toast("Applied Auto Tuner best result");
+    updateAutoTunerButtons();
+  }
+
+  function revertAutoTunerOriginal() {
+    if (!autoTunerState.originalLens || autoTunerState.running) return;
+    loadLens(autoTunerState.originalLens);
+    renderAll();
+    if (preview.ready) scheduleRenderPreview({ force: true });
+    toast("Restored original lens");
+    updateAutoTunerButtons();
+  }
+
+  async function copyAutoTunerBestJson() {
+    if (!autoTunerState.bestLens) return;
+    const text = JSON.stringify(autoTunerState.bestLens, null, 2);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      toast("Copied best JSON");
+    } catch (e) {
+      if (ui.atStatus) ui.atStatus.textContent = `Copy failed: ${e?.message || e}`;
+    }
+  }
+
+  function saveAutoTunerBestJson() {
+    if (!autoTunerState.bestLens) return;
+    try {
+      const blob = new Blob([JSON.stringify(autoTunerState.bestLens, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      const safeName = String(autoTunerState.bestLens?.name || lens?.name || "lens").replace(/[^\w\-]+/g, "_");
+      a.href = url;
+      a.download = `${safeName}_auto_tuned.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        a.remove();
+      }, 0);
+      toast("Saved best JSON");
+    } catch (e) {
+      if (ui.atStatus) ui.atStatus.textContent = `Save failed: ${e?.message || e}`;
+    }
+  }
+
+  function setAutoTunerGoal(id, enabled) {
+    const el = ui[id];
+    if (el) el.checked = !!enabled;
+  }
+
+  function setAutoTunerWeight(id, value) {
+    const el = ui[id];
+    if (el) el.value = String(value);
+  }
+
+  function applyAutoTunerPreset(name) {
+    const metrics = getAutoTunerMetrics(lens, { wavePreset: ui.wavePreset?.value || "d" });
+    const curFL = metrics.efl || 50;
+    const curT = metrics.T || 2;
+    const curRear = Number.isFinite(metrics.rearClearance) ? Math.max(0, metrics.rearClearance) : 0;
+    [
+      "atGoalFL","atGoalT","atGoalIC","atGoalCenter","atGoalCorner","atGoalVig","atGoalRear","atGoalCompact",
+    ].forEach((id) => setAutoTunerGoal(id, false));
+
+    if (name === "flOnly") {
+      setAutoTunerGoal("atGoalFL", true);
+      if (ui.atTargetFL) ui.atTargetFL.value = curFL.toFixed(2);
+      setAutoTunerWeight("atWeightFL", 8);
+    } else if (name === "corners") {
+      setAutoTunerGoal("atGoalCorner", true);
+      setAutoTunerGoal("atGoalIC", true);
+      setAutoTunerGoal("atGoalVig", true);
+      if (ui.atTargetIC) ui.atTargetIC.value = "45";
+      setAutoTunerWeight("atWeightCorner", 9);
+      setAutoTunerWeight("atWeightIC", 8);
+      setAutoTunerWeight("atWeightVig", 8);
+    } else if (name === "clearance") {
+      setAutoTunerGoal("atGoalRear", true);
+      if (ui.atTargetRear) ui.atTargetRear.value = curRear.toFixed(2);
+      setAutoTunerWeight("atWeightRear", 8);
+    } else if (name === "currentImprove") {
+      setAutoTunerGoal("atGoalFL", true);
+      setAutoTunerGoal("atGoalT", true);
+      setAutoTunerGoal("atGoalIC", true);
+      setAutoTunerGoal("atGoalCenter", true);
+      setAutoTunerGoal("atGoalCorner", true);
+      setAutoTunerGoal("atGoalVig", true);
+      if (ui.atTargetFL) ui.atTargetFL.value = curFL.toFixed(2);
+      if (ui.atTargetT) ui.atTargetT.value = curT.toFixed(2);
+      if (ui.atTargetIC) ui.atTargetIC.value = Math.max(45, metrics.sensorDiag || 45).toFixed(1);
+      setAutoTunerWeight("atWeightFL", 4);
+      setAutoTunerWeight("atWeightT", 3);
+      setAutoTunerWeight("atWeightCenter", 5);
+      setAutoTunerWeight("atWeightCorner", 8);
+      setAutoTunerWeight("atWeightIC", 7);
+      setAutoTunerWeight("atWeightVig", 6);
+    } else {
+      setAutoTunerGoal("atGoalFL", true);
+      setAutoTunerGoal("atGoalT", true);
+      setAutoTunerGoal("atGoalIC", true);
+      setAutoTunerGoal("atGoalCenter", true);
+      setAutoTunerGoal("atGoalCorner", true);
+      setAutoTunerGoal("atGoalVig", true);
+      setAutoTunerGoal("atGoalRear", true);
+      if (ui.atTargetFL) ui.atTargetFL.value = "50";
+      if (ui.atTargetT) ui.atTargetT.value = "2.00";
+      if (ui.atTargetIC) ui.atTargetIC.value = "45";
+      if (ui.atTargetRear) ui.atTargetRear.value = curRear.toFixed(2);
+      setAutoTunerWeight("atWeightFL", 5);
+      setAutoTunerWeight("atWeightT", 4);
+      setAutoTunerWeight("atWeightIC", 8);
+      setAutoTunerWeight("atWeightCenter", 7);
+      setAutoTunerWeight("atWeightCorner", 8);
+      setAutoTunerWeight("atWeightVig", 8);
+      setAutoTunerWeight("atWeightRear", 4);
+    }
+    syncAutoTunerWeightOutputs();
+  }
+
+  function syncAutoTunerDefaultsFromCurrentLens() {
+    const metrics = getAutoTunerMetrics(lens, { wavePreset: ui.wavePreset?.value || "d" });
+    if (ui.atTargetFL && Number.isFinite(metrics.efl)) ui.atTargetFL.value = metrics.efl.toFixed(2);
+    else if (ui.atTargetFL) ui.atTargetFL.value = "50";
+    if (ui.atTargetT && Number.isFinite(metrics.T)) ui.atTargetT.value = metrics.T.toFixed(2);
+    else if (ui.atTargetT) ui.atTargetT.value = "2.00";
+    if (ui.atTargetRear) {
+      const rear = Number.isFinite(metrics.rearClearance) ? Math.max(0, metrics.rearClearance) : 0;
+      ui.atTargetRear.value = rear.toFixed(2);
+    }
+    if (ui.atTargetIC && (!Number.isFinite(num(ui.atTargetIC.value, NaN)) || num(ui.atTargetIC.value, 0) <= 0)) {
+      ui.atTargetIC.value = "45";
+    }
+  }
+
+  function syncAutoTunerWeightOutputs() {
+    const pairs = [
+      ["atWeightFL", "atWeightFLValue"],
+      ["atWeightT", "atWeightTValue"],
+      ["atWeightIC", "atWeightICValue"],
+      ["atWeightCenter", "atWeightCenterValue"],
+      ["atWeightCorner", "atWeightCornerValue"],
+      ["atWeightVig", "atWeightVigValue"],
+      ["atWeightRear", "atWeightRearValue"],
+      ["atWeightCompact", "atWeightCompactValue"],
+    ];
+    for (const [inputId, outputId] of pairs) {
+      if (ui[outputId] && ui[inputId]) ui[outputId].textContent = String(ui[inputId].value);
+    }
+  }
+
+  function openAutoTunerModal() {
+    if (!ui.autoTunerModal) return;
+    syncAutoTunerDefaultsFromCurrentLens();
+    syncAutoTunerWeightOutputs();
+    updateAutoTunerProgress(true);
+    ui.autoTunerModal.classList.remove("hidden");
+    ui.autoTunerModal.setAttribute("aria-hidden", "false");
+  }
+
+  function closeAutoTunerModal() {
+    if (!ui.autoTunerModal) return;
+    ui.autoTunerModal.classList.add("hidden");
+    ui.autoTunerModal.setAttribute("aria-hidden", "true");
+  }
+
+  function isAutoTunerModalOpen() {
+    return !!(ui.autoTunerModal && !ui.autoTunerModal.classList.contains("hidden"));
+  }
+
+  function wireAutoTunerUI() {
+    if (!ui.autoTunerModal) return;
+    on("#btnAutoTuner", "click", openAutoTunerModal);
+    if (ui.atClose) ui.atClose.addEventListener("click", closeAutoTunerModal);
+    if (ui.atApplyPreset) ui.atApplyPreset.addEventListener("click", () => applyAutoTunerPreset(ui.atPreset?.value || "clean50"));
+    [
+      "atWeightFL","atWeightT","atWeightIC","atWeightCenter","atWeightCorner","atWeightVig","atWeightRear","atWeightCompact",
+    ].forEach((id) => {
+      if (ui[id]) ui[id].addEventListener("input", syncAutoTunerWeightOutputs);
+    });
+    if (ui.atStart) ui.atStart.addEventListener("click", startAutoTuner);
+    if (ui.atPause) ui.atPause.addEventListener("click", pauseAutoTuner);
+    if (ui.atStop) ui.atStop.addEventListener("click", stopAutoTuner);
+    if (ui.atApplyBest) ui.atApplyBest.addEventListener("click", applyAutoTunerBest);
+    if (ui.atRevert) ui.atRevert.addEventListener("click", revertAutoTunerOriginal);
+    if (ui.atCopyBest) ui.atCopyBest.addEventListener("click", copyAutoTunerBestJson);
+    if (ui.atSaveBest) ui.atSaveBest.addEventListener("click", saveAutoTunerBestJson);
+    ui.autoTunerModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.autoTunerModal) closeAutoTunerModal();
+    });
+    syncAutoTunerWeightOutputs();
+    updateAutoTunerButtons();
+  }
+
   // -------------------- New Lens modal --------------------
   function openNewLensModal() {
     if (!ui.newLensModal) return;
@@ -9353,6 +10765,7 @@ function wireUI() {
   on("#btnAutoFocus", "click", autoFocus);
   on("#btnRenderEngine", "click", toggleRenderEngine);
   on("#btnDebugOverlay", "click", toggleDebugOverlay);
+  wireAutoTunerUI();
 
   on("#btnSave", "click", saveLensToFile);
 
@@ -9465,6 +10878,11 @@ function wireUI() {
 
   // selection hotkeys
   window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isAutoTunerModalOpen()) {
+      e.preventDefault();
+      closeAutoTunerModal();
+      return;
+    }
     if (e.key === "Escape" && isZmxPasteModalOpen()) {
       e.preventDefault();
       closeZmxPasteModal();

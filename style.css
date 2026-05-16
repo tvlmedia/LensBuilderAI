@@ -238,11 +238,12 @@ body{
   background:rgba(0,0,0,.16);
   border:1px solid var(--stroke);
   border-radius:var(--r);
-  overflow:hidden;
+  overflow:auto;
 }
 
 .tbl{
   width:100%;
+  min-width:760px;
   border-collapse:separate;
   border-spacing:0;
   font-size:12px;
@@ -274,6 +275,8 @@ body{
 }
 .cellChk{ text-align:center; }
 .cellChk input{ transform:scale(1.1); }
+.lockCell{ text-align:center; }
+.lockCell input{ transform:scale(1.04); }
 
 /* ===========================
    STATUS (left bottom)
@@ -623,11 +626,193 @@ canvas{
   cursor:pointer;
 }
 
+/* ===========================
+   AUTO TUNER
+   =========================== */
+
+.autoTunerCard{
+  width:min(1180px, calc(100vw - 36px));
+  max-height:min(860px, calc(100vh - 36px));
+}
+.autoTunerScroll{ padding:16px; }
+.autoTunerLayout{
+  display:grid;
+  grid-template-columns:minmax(300px, 430px) 1fr;
+  gap:14px;
+}
+.atSection{
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:12px;
+  background:rgba(0,0,0,.14);
+  padding:12px;
+}
+.atProgressSection{ grid-row:span 3; }
+.atSectionTitle{
+  font-size:12px;
+  font-weight:800;
+  letter-spacing:.2px;
+  text-transform:uppercase;
+  color:rgba(255,255,255,.76);
+  margin-bottom:10px;
+}
+.atGrid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  align-items:end;
+}
+.atGrid .btn{ width:100%; }
+.atWide{ grid-column:span 2; }
+.atField,
+.atToggle{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.atField span,
+.atToggle span{
+  font-size:12px;
+  color:rgba(255,255,255,.68);
+}
+.atToggle{
+  flex-direction:row;
+  align-items:center;
+  min-height:38px;
+}
+.atGoalGrid{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:8px;
+}
+.atGoal{
+  display:grid;
+  grid-template-columns:24px minmax(110px, 1fr) 82px minmax(90px, 150px) 32px;
+  gap:8px;
+  align-items:center;
+  font-size:12px;
+  color:rgba(255,255,255,.76);
+}
+.atGoalNoNumber{
+  grid-template-columns:24px minmax(110px, 1fr) minmax(90px, 150px) 32px;
+}
+.atGoal input[type="number"]{
+  min-width:0;
+}
+.atGoal output{
+  font-family:var(--mono);
+  color:rgba(255,255,255,.66);
+}
+.atChecks{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px 10px;
+}
+.atChecks label{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:12px;
+  color:rgba(255,255,255,.74);
+}
+.atSafetyGrid{ align-items:start; }
+.atProgressBar{
+  height:10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.14);
+  background:rgba(0,0,0,.35);
+  overflow:hidden;
+  margin-bottom:12px;
+}
+#atProgressFill{
+  width:0%;
+  height:100%;
+  background:rgba(42,110,242,.72);
+  transition:width .12s ease;
+}
+.atMetrics{
+  display:grid;
+  grid-template-columns:repeat(2, minmax(120px, 1fr));
+  gap:8px;
+}
+.atMetrics div{
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+  padding:8px;
+  min-width:0;
+}
+.atMetrics span{
+  display:block;
+  font-size:11px;
+  color:rgba(255,255,255,.50);
+  margin-bottom:4px;
+}
+.atMetrics strong{
+  display:block;
+  font-size:12px;
+  font-family:var(--mono);
+  color:rgba(255,255,255,.88);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.atStatus{
+  margin-top:10px;
+  min-height:34px;
+  font-size:12px;
+  line-height:1.35;
+  color:rgba(255,255,255,.72);
+}
+.atHistoryWrap{
+  margin-top:10px;
+  max-height:180px;
+  overflow:auto;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:10px;
+}
+.atHistory{
+  width:100%;
+  border-collapse:collapse;
+  font-size:11px;
+}
+.atHistory th,
+.atHistory td{
+  padding:7px 8px;
+  border-bottom:1px solid rgba(255,255,255,.07);
+  text-align:left;
+  white-space:nowrap;
+}
+.atHistory th{
+  position:sticky;
+  top:0;
+  background:#111720;
+  color:rgba(255,255,255,.72);
+}
+.autoTunerActions{
+  justify-content:flex-start;
+  gap:10px;
+  flex-wrap:wrap;
+}
+
 @media (max-width: 760px){
   .modal{ padding:12px; align-items:stretch; }
   .modalCard{ width:100%; max-height:calc(100vh - 24px); }
   .modalGrid{ grid-template-columns:1fr; }
   .fieldFull{ grid-column:auto; }
+  .autoTunerLayout{ grid-template-columns:1fr; }
+  .atGrid{ grid-template-columns:1fr; }
+  .atWide{ grid-column:auto; }
+  .atGoal,
+  .atGoalNoNumber{
+    grid-template-columns:22px 1fr;
+  }
+  .atGoal input[type="number"],
+  .atGoal input[type="range"],
+  .atGoal output{
+    grid-column:2;
+  }
+  .atChecks{ grid-template-columns:1fr; }
+  .atMetrics{ grid-template-columns:1fr; }
 }
 
 /* ===========================
