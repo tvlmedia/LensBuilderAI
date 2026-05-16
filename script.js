@@ -238,6 +238,7 @@
     atAllowSensorShift: $("#atAllowSensorShift"),
     atAllowIMSAp: $("#atAllowIMSAp"),
     atAllowRSignFlip: $("#atAllowRSignFlip"),
+    atStrictValidation: $("#atStrictValidation"),
     atProgressFill: $("#atProgressFill"),
     atMetricIteration: $("#atMetricIteration"),
     atMetricBestScore: $("#atMetricBestScore"),
@@ -256,6 +257,7 @@
     atStop: $("#atStop"),
     atApplyBest: $("#atApplyBest"),
     atRevert: $("#atRevert"),
+    atCopyDiagnostics: $("#atCopyDiagnostics"),
     atCopyBest: $("#atCopyBest"),
     atSaveBest: $("#atSaveBest"),
 
@@ -8363,6 +8365,12 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     invalidMoves: 0,
     stepScale: 1,
     stopReason: "",
+    diagnostics: "",
+    baselineInvalid: false,
+    consecutiveInvalid: 0,
+    invalidByCategory: {},
+    disabledMutationGroups: new Set(),
+    lastMessage: "",
   };
 
   function deg2rad(d) { return (d * Math.PI) / 180; }
@@ -8412,6 +8420,67 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return out;
   }
 
+  function recomputeSurfacePositionsForLens(lensState) {
+    const surfaces = lensState?.surfaces;
+    if (!Array.isArray(surfaces)) return lensState;
+    if (surfaces[0]) {
+      surfaces[0].type = "OBJ";
+      surfaces[0].vx = 0;
+      surfaces[0].t = 0;
+    }
+    if (surfaces[surfaces.length - 1]) {
+      surfaces[surfaces.length - 1].type = "IMS";
+    }
+    computeVertices(surfaces, 0, 0);
+    return lensState;
+  }
+
+  if (typeof window !== "undefined") {
+    window.recomputeSurfacePositionsForLens = recomputeSurfacePositionsForLens;
+  }
+
+  function getAutoTunerSurfaceLabel(surface, index = 0) {
+    return getSurfaceDisplayLabel(surface, index) || `S${index}`;
+  }
+
+  function formatAutoTunerCrossingDiagnostic(diag) {
+    if (!diag) return "";
+    const cur = diag.current || {};
+    const prev = diag.previous || {};
+    const ap = Number(diag.apertureMm);
+    const clearance = Number(diag.edgeClearanceMm);
+    const parts = [
+      `Invalid: ${cur.label || `S${cur.index}`} crossing with ${prev.label || `S${prev.index}`} at aperture ${Number.isFinite(ap) ? ap.toFixed(3) : "—"}mm.`,
+      `Edge clearance = ${Number.isFinite(clearance) ? clearance.toFixed(4) : "—"}mm.`,
+      `prev index=${prev.index}, label=${prev.label}, vx=${mmText(prev.vx, 4)}, R=${mmText(prev.R, 4)}, t=${mmText(prev.t, 4)}.`,
+      `current index=${cur.index}, label=${cur.label}, vx=${mmText(cur.vx, 4)}, R=${mmText(cur.R, 4)}, t=${mmText(cur.t, 4)}.`,
+      `front edge x=${mmText(diag.frontEdgeX, 4)}, rear edge x=${mmText(diag.rearEdgeX, 4)}, y=${mmText(diag.yMm, 4)}.`,
+    ];
+    if (diag.reason) parts.push(`Reason: ${diag.reason}.`);
+    return parts.join(" ");
+  }
+
+  function createAutoTunerDiagnostics(reason, validation = null, metrics = null) {
+    const lines = [];
+    const text = String(reason || validation?.reason || "Auto Tuner diagnostics");
+    lines.push(text);
+    if (validation?.diagnostic) lines.push(formatAutoTunerCrossingDiagnostic(validation.diagnostic));
+    if (Array.isArray(validation?.warnings) && validation.warnings.length) {
+      lines.push(`Warnings: ${validation.warnings.join(" | ")}`);
+    }
+    if (metrics) {
+      lines.push([
+        `EFL=${mmText(metrics.efl)}`,
+        `T=${tText(metrics.T)}`,
+        `IC=${mmText(metrics.imageCircleMm, 1)}`,
+        `BFL=${mmText(metrics.bfl)}`,
+        `COV=${metrics.cov ? "YES" : "NO"}`,
+        `rear clearance=${mmText(metrics.rearClearance)}`,
+      ].join(" • "));
+    }
+    return lines.filter(Boolean).join("\n");
+  }
+
   function createInvalidMerit(reason, metrics = {}) {
     return {
       totalScore: AUTO_TUNER_INVALID_SCORE,
@@ -8438,8 +8507,154 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     ].join("|");
   }
 
+  function isAutoTunerMechanicalSurface(surface) {
+    const t = String(surface?.type || "").toUpperCase();
+    return t === "MECH" || t === "BAFFLE" || t === "HOUSING";
+  }
+
+  function autoTunerSagSafeAperture(a, b) {
+    const apA = Number(getSurfaceOpticalAp(a));
+    const apB = Number(getSurfaceOpticalAp(b));
+    let ap = Math.min(
+      Number.isFinite(apA) && apA > 0 ? apA : Infinity,
+      Number.isFinite(apB) && apB > 0 ? apB : Infinity
+    );
+    for (const s of [a, b]) {
+      const R = Math.abs(Number(s?.R || 0));
+      if (R > 1e-9) ap = Math.min(ap, Math.max(0.01, R - 1e-4));
+    }
+    return Number.isFinite(ap) && ap > 0 ? ap : 0.01;
+  }
+
+  function checkAutoTunerSurfaceCrossings(lensState, config = {}) {
+    recomputeSurfacePositionsForLens(lensState);
+    const surfaces = lensState?.surfaces || [];
+    const lastIdx = surfaces.length - 1;
+    const epsilon = Number.isFinite(Number(config?.crossingEpsilonMm))
+      ? Number(config.crossingEpsilonMm)
+      : 0.001;
+
+    for (let i = 1; i < lastIdx - 1; i++) {
+      const prev = surfaces[i];
+      const cur = surfaces[i + 1];
+      const prevType = String(prev?.type || "").toUpperCase();
+      const curType = String(cur?.type || "").toUpperCase();
+      if (prevType === "OBJ" || curType === "OBJ" || prevType === "IMS" || curType === "IMS") continue;
+      if (prevType === "STOP" || curType === "STOP" || prev?.stop || cur?.stop) continue;
+      if (isAutoTunerMechanicalSurface(prev) || isAutoTunerMechanicalSurface(cur)) continue;
+
+      const ap = autoTunerSagSafeAperture(prev, cur);
+      const samples = [0, 0.25, 0.5, 0.75, 1.0].map((f) => ap * f);
+      let minClearance = Infinity;
+      let minY = 0;
+      let frontEdgeX = null;
+      let rearEdgeX = null;
+
+      for (const y of samples) {
+        const xPrev = surfaceXatY(prev, y);
+        const xCur = surfaceXatY(cur, y);
+        if (xPrev == null || xCur == null) {
+          return {
+            ok: false,
+            reason: `surface ${i + 1} edge geometry invalid`,
+            category: "crossing",
+            diagnostic: {
+              reason: "sag could not be evaluated at clear aperture",
+              apertureMm: ap,
+              yMm: y,
+              frontEdgeX: xPrev,
+              rearEdgeX: xCur,
+              edgeClearanceMm: null,
+              previous: {
+                index: i,
+                label: getAutoTunerSurfaceLabel(prev, i),
+                vx: Number(prev?.vx),
+                R: Number(prev?.R),
+                t: Number(prev?.t),
+              },
+              current: {
+                index: i + 1,
+                label: getAutoTunerSurfaceLabel(cur, i + 1),
+                vx: Number(cur?.vx),
+                R: Number(cur?.R),
+                t: Number(cur?.t),
+              },
+            },
+          };
+        }
+        const clearance = xCur - xPrev;
+        if (clearance < minClearance) {
+          minClearance = clearance;
+          minY = y;
+          frontEdgeX = xPrev;
+          rearEdgeX = xCur;
+        }
+      }
+
+      if (minClearance < -epsilon) {
+        const prevLabel = getAutoTunerSurfaceLabel(prev, i);
+        const curLabel = getAutoTunerSurfaceLabel(cur, i + 1);
+        return {
+          ok: false,
+          reason: `Invalid: ${curLabel} crossing with ${prevLabel} at aperture ${ap.toFixed(3)}mm. Edge clearance = ${minClearance.toFixed(4)}mm.`,
+          category: "crossing",
+          diagnostic: {
+            reason: "negative edge clearance",
+            apertureMm: ap,
+            yMm: minY,
+            frontEdgeX,
+            rearEdgeX,
+            edgeClearanceMm: minClearance,
+            previous: {
+              index: i,
+              label: prevLabel,
+              vx: Number(prev?.vx),
+              R: Number(prev?.R),
+              t: Number(prev?.t),
+            },
+            current: {
+              index: i + 1,
+              label: curLabel,
+              vx: Number(cur?.vx),
+              R: Number(cur?.R),
+              t: Number(cur?.t),
+            },
+          },
+        };
+      }
+    }
+
+    return { ok: true, reason: "", penalty: 0, warnings: [] };
+  }
+
+  function autoTunerRaytraceCanEvaluate(lensState, wavePreset = "d") {
+    try {
+      const L = clone(lensState);
+      recomputeSurfacePositionsForLens(L);
+      const surfaces = L?.surfaces || [];
+      if (!surfaces.length) return false;
+      const bundles = [
+        buildRays(surfaces, 0, 7, getFocusChartDistanceMm()),
+        buildDebugCenterRays(surfaces, 7),
+      ];
+      for (const rays of bundles) {
+        let reached = 0;
+        for (let i = 0; i < rays.length; i++) {
+          const tr = traceRayForward(clone(rays[i]), surfaces, wavePreset, { rayIndex: i });
+          if (tr && tr.reachedIMS && !tr.tir && tr.endRay?.p) reached++;
+        }
+        if (reached > 0) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function validateAutoTunerLensState(lensState, config = {}) {
     const limits = getAutoTunerLimits(config);
+    recomputeSurfacePositionsForLens(lensState);
+    if (config?.originalLens) recomputeSurfacePositionsForLens(config.originalLens);
     const surfaces = lensState?.surfaces;
     const original = config?.originalLens;
     const originalSurfaces = original?.surfaces;
@@ -8510,24 +8725,26 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       if (!guard.ok) return { ok: false, reason: guard.reason || `surface ${i} invalid` };
     }
 
-    computeVertices(surfaces, 0, 0);
-    for (let i = 1; i < lastIdx - 1; i++) {
-      const a = surfaces[i];
-      const b = surfaces[i + 1];
-      const ta = String(a?.type || "").toUpperCase();
-      const tb = String(b?.type || "").toUpperCase();
-      if (ta === "MECH" || ta === "BAFFLE" || ta === "HOUSING" || tb === "IMS") continue;
-      const y = Math.max(0.01, Math.min(getSurfaceOpticalAp(a), getSurfaceOpticalAp(b)) * 0.98);
-      const xa = surfaceXatY(a, y);
-      const xb = surfaceXatY(b, y);
-      if (xa == null || xb == null) return { ok: false, reason: `surface ${i} edge geometry invalid` };
-      if ((xb - xa) < 0.01) return { ok: false, reason: `surface ${i} crossing` };
+    const crossing = checkAutoTunerSurfaceCrossings(lensState, config);
+    if (!crossing.ok) {
+      if (!config.strictPhysicalValidation && autoTunerRaytraceCanEvaluate(lensState, config.wavePreset || "d")) {
+        return {
+          ok: true,
+          reason: crossing.reason,
+          warnings: [crossing.reason],
+          softPenalty: 2.5 + Math.min(25, Math.abs(Number(crossing?.diagnostic?.edgeClearanceMm || 0)) * 8),
+          diagnostic: crossing.diagnostic,
+          category: "crossing",
+        };
+      }
+      return crossing;
     }
 
     return { ok: true, reason: "" };
   }
 
   function evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null) {
+    computeVertices(surfaces, 0, 0);
     const count = Math.max(5, Math.min(31, Number(rayCount) | 0));
     const finiteObj = Number(objectDistanceMm);
     const objDist = Number.isFinite(finiteObj) && finiteObj > 0.1 ? finiteObj : null;
@@ -8596,7 +8813,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const surfaces = L?.surfaces || [];
     const wavePreset = String(opts.wavePreset || ui.wavePreset?.value || "d");
     clampAllApertures(surfaces);
-    computeVertices(surfaces, 0, 0);
+    recomputeSurfacePositionsForLens(L);
     const { w: sensorW, h: sensorH, halfH } = getSensorWH();
     const sensorDiag = Math.hypot(sensorW, sensorH);
     const halfDiag = sensorDiag * 0.5;
@@ -8650,20 +8867,32 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   }
 
   function evaluateLensMerit(lensState, targets = {}, weights = {}) {
+    recomputeSurfacePositionsForLens(lensState);
     const validation = validateAutoTunerLensState(lensState, {
       limits: targets?.limits || targets?.safetyLimits || AUTO_TUNER_DEFAULT_LIMITS,
       originalLens: targets?.originalLens || null,
       allowRadiusSignFlip: !!targets?.allowRadiusSignFlip,
+      strictPhysicalValidation: !!targets?.strictPhysicalValidation,
+      wavePreset: targets?.wavePreset || ui.wavePreset?.value || "d",
     });
-    if (!validation.ok) return createInvalidMerit(validation.reason);
+    if (!validation.ok) {
+      let invalidMetrics = {};
+      try {
+        invalidMetrics = getAutoTunerMetrics(lensState, {
+          wavePreset: targets?.wavePreset || ui.wavePreset?.value || "d",
+          objectDistanceMm: targets?.objectDistanceMm,
+        });
+      } catch (_) {}
+      return createInvalidMerit(validation.reason, invalidMetrics);
+    }
 
     const metrics = getAutoTunerMetrics(lensState, {
       wavePreset: targets?.wavePreset || ui.wavePreset?.value || "d",
       objectDistanceMm: targets?.objectDistanceMm,
     });
     const notes = [];
-    const warnings = [];
-    let total = 0;
+    const warnings = Array.isArray(validation?.warnings) ? validation.warnings.slice() : [];
+    let total = Number(validation?.softPenalty || 0);
 
     const flGoal = goalConfig(targets, weights, "focalLength", null);
     const focalLengthError = (flGoal.enabled && Number.isFinite(flGoal.target) && flGoal.target > 0)
@@ -8729,6 +8958,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (rearClearance < 0) notes.push("rear intrusion");
     if (!metrics.centerSpot?.ok) warnings.push("center spot weak");
     if (!metrics.cornerSpot?.ok) warnings.push("corner spot weak");
+    if (validation?.softPenalty > 0) notes.push("soft crossing penalty");
 
     const totalScore = Number.isFinite(total) ? total : AUTO_TUNER_INVALID_SCORE;
     return {
@@ -8744,6 +8974,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       compactnessPenalty,
       notes,
       warnings,
+      diagnostic: validation?.diagnostic || null,
       metrics,
     };
   }
@@ -8862,6 +9093,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
     generateSurfaceLabels(surfaces);
     clampAllApertures(surfaces);
+    recomputeSurfacePositionsForLens(candidate);
     const validation = validateAutoTunerLensState(candidate, {
       ...config,
       originalLens: original,
@@ -8905,6 +9137,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return Object.keys(GLASS_DB).filter((name) => name !== "AIR").sort();
   }
 
+  function autoTunerOpCategory(op) {
+    if (!op) return "unknown";
+    return `${op.kind}:${op.group || "default"}`;
+  }
+
   function collectAutoTunerMutationOps(baseLens, config, originalLens) {
     const surfaces = baseLens?.surfaces || [];
     const originalSurfaces = originalLens?.surfaces || [];
@@ -8919,6 +9156,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const add = (op) => {
       const key = `${op.kind}:${op.i}:${op.group || ""}`;
       if (seen.has(key)) return;
+      if (config?.disabledMutationGroups?.has?.(autoTunerOpCategory(op))) return;
       seen.add(key);
       ops.push(op);
     };
@@ -9037,6 +9275,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       objectDistanceMm: getFocusChartDistanceMm(),
       limits,
       allowRadiusSignFlip: !!ui.atAllowRSignFlip?.checked,
+      strictPhysicalValidation: !!ui.atStrictValidation?.checked,
       focalLength: { enabled: !!ui.atGoalFL?.checked, target: num(ui.atTargetFL?.value, currentMetrics.efl || 50) },
       tStop: { enabled: !!ui.atGoalT?.checked, target: num(ui.atTargetT?.value, currentMetrics.T || 2) },
       imageCircle: { enabled: !!ui.atGoalIC?.checked, target: num(ui.atTargetIC?.value, 45) },
@@ -9068,6 +9307,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       allowSensorShift: !!ui.atAllowSensorShift?.checked,
       allowIMSAperture: !!ui.atAllowIMSAp?.checked,
       allowRadiusSignFlip: !!ui.atAllowRSignFlip?.checked,
+      strictPhysicalValidation: !!ui.atStrictValidation?.checked,
       allowed: {
         radii: !!ui.atVarR?.checked,
         airGaps: !!ui.atVarAirT?.checked,
@@ -9117,6 +9357,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.atStop) ui.atStop.disabled = !running;
     if (ui.atApplyBest) ui.atApplyBest.disabled = !hasBest || running;
     if (ui.atRevert) ui.atRevert.disabled = !hasOriginal || running;
+    if (ui.atCopyDiagnostics) ui.atCopyDiagnostics.disabled = !autoTunerState.diagnostics;
     if (ui.atCopyBest) ui.atCopyBest.disabled = !hasBest;
     if (ui.atSaveBest) ui.atSaveBest.disabled = !hasBest;
   }
@@ -9166,6 +9407,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const statusBits = [];
     if (autoTunerState.running) statusBits.push(autoTunerState.paused ? "Paused" : "Running");
     else statusBits.push(autoTunerState.stopReason || "Ready");
+    if (autoTunerState.lastMessage) statusBits.push(autoTunerState.lastMessage);
     statusBits.push(`accepted ${autoTunerState.acceptedMoves}`);
     statusBits.push(`rejected ${autoTunerState.rejectedMoves}`);
     if (autoTunerState.invalidMoves) statusBits.push(`invalid ${autoTunerState.invalidMoves}`);
@@ -9203,33 +9445,82 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return (rng || Math.random)() < Math.exp(-delta / temp);
   }
 
+  function recordAutoTunerInvalidCandidate(op, reason) {
+    const category = autoTunerOpCategory(op);
+    autoTunerState.invalidMoves++;
+    autoTunerState.rejectedMoves++;
+    autoTunerState.noImprove++;
+    autoTunerState.consecutiveInvalid++;
+    autoTunerState.invalidByCategory[category] = (autoTunerState.invalidByCategory[category] || 0) + 1;
+    autoTunerState.diagnostics = createAutoTunerDiagnostics(
+      `Invalid candidate (${category}): ${reason || "unknown"}`,
+      null,
+      autoTunerState.currentMerit?.metrics || autoTunerState.acceptedMerit?.metrics || null
+    );
+
+    if (autoTunerState.consecutiveInvalid >= 50) {
+      let worstCategory = category;
+      let worstCount = -1;
+      for (const [k, v] of Object.entries(autoTunerState.invalidByCategory)) {
+        if (v > worstCount) {
+          worstCategory = k;
+          worstCount = v;
+        }
+      }
+      autoTunerState.stepScale = Math.max(0.10, autoTunerState.stepScale * 0.55);
+      if (worstCategory) autoTunerState.disabledMutationGroups.add(worstCategory);
+      if (autoTunerState.config) autoTunerState.config.disabledMutationGroups = autoTunerState.disabledMutationGroups;
+      autoTunerState.consecutiveInvalid = 0;
+      autoTunerState.invalidByCategory = {};
+      autoTunerState.lastMessage = `Too many invalid candidates — reducing step size${worstCategory ? `, disabled ${worstCategory}` : ""}`;
+    }
+  }
+
   function autoTunerIteration() {
     const cfg = autoTunerState.config;
     autoTunerState.iteration++;
-    const candidate = clone(autoTunerState.acceptedLens);
     cfg.stepScale = autoTunerState.stepScale;
-    const ops = collectAutoTunerMutationOps(candidate, cfg, autoTunerState.originalLens);
+    const ops = collectAutoTunerMutationOps(autoTunerState.acceptedLens, cfg, autoTunerState.originalLens);
     if (!ops.length) {
       autoTunerState.stopReason = "No allowed mutable variables";
       return false;
     }
-    const op = ops[Math.floor(autoTunerState.rng() * ops.length)];
-    const changed = applyAutoTunerMutation(candidate, op, cfg, autoTunerState.rng);
-    if (!changed) {
-      autoTunerState.rejectedMoves++;
-      autoTunerState.noImprove++;
-      return true;
+
+    const maxAttempts = Math.max(1, Math.min(10, ops.length * 2));
+    let candidate = null;
+    let merit = null;
+    let selectedOp = null;
+    let lastInvalidReason = "";
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      selectedOp = ops[Math.floor(autoTunerState.rng() * ops.length)];
+      candidate = clone(autoTunerState.acceptedLens);
+      const changed = applyAutoTunerMutation(candidate, selectedOp, cfg, autoTunerState.rng);
+      if (!changed) {
+        lastInvalidReason = "mutation produced no change";
+        recordAutoTunerInvalidCandidate(selectedOp, lastInvalidReason);
+        continue;
+      }
+      recomputeSurfacePositionsForLens(candidate);
+
+      const repaired = repairAutoTunerCandidate(candidate, autoTunerState.originalLens, cfg);
+      merit = repaired.ok
+        ? evaluateLensMerit(candidate, { ...cfg.targets, originalLens: autoTunerState.originalLens }, cfg.weights)
+        : createInvalidMerit(repaired.reason);
+      autoTunerState.currentMerit = merit;
+
+      if (!repaired.ok || merit.invalidPenalty > 0 || !Number.isFinite(Number(merit.totalScore))) {
+        lastInvalidReason = repaired.reason || (merit?.warnings || []).join(", ") || "invalid merit";
+        recordAutoTunerInvalidCandidate(selectedOp, lastInvalidReason);
+        continue;
+      }
+      break;
     }
 
-    const repaired = repairAutoTunerCandidate(candidate, autoTunerState.originalLens, cfg);
-    const merit = repaired.ok
-      ? evaluateLensMerit(candidate, { ...cfg.targets, originalLens: autoTunerState.originalLens }, cfg.weights)
-      : createInvalidMerit(repaired.reason);
-    autoTunerState.currentMerit = merit;
-
-    if (!repaired.ok || merit.invalidPenalty > 0 || !Number.isFinite(Number(merit.totalScore))) {
-      autoTunerState.invalidMoves++;
-      autoTunerState.noImprove++;
+    if (!candidate || !merit || merit.invalidPenalty > 0 || !Number.isFinite(Number(merit.totalScore))) {
+      autoTunerState.lastMessage = lastInvalidReason
+        ? `Rejected invalid candidate: ${lastInvalidReason}`
+        : autoTunerState.lastMessage;
       return true;
     }
 
@@ -9238,6 +9529,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       autoTunerState.acceptedLens = candidate;
       autoTunerState.acceptedMerit = merit;
       autoTunerState.acceptedMoves++;
+      autoTunerState.consecutiveInvalid = 0;
     } else {
       autoTunerState.rejectedMoves++;
     }
@@ -9339,8 +9631,47 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     try {
       const cfg = readAutoTunerConfig();
       const original = clone(lens);
+      recomputeSurfacePositionsForLens(original);
       cfg.originalLens = original;
       cfg.targets.originalLens = original;
+      cfg.disabledMutationGroups = new Set();
+      const originalMerit = evaluateLensMerit(original, cfg.targets, cfg.weights);
+      const baselineInvalid = originalMerit.invalidPenalty > 0 || !Number.isFinite(Number(originalMerit.totalScore));
+      if (baselineInvalid) {
+        const validation = validateAutoTunerLensState(original, {
+          ...cfg,
+          originalLens: original,
+          wavePreset: cfg.targets.wavePreset,
+        });
+        autoTunerState.running = false;
+        autoTunerState.paused = false;
+        autoTunerState.iteration = 0;
+        autoTunerState.lastUiIteration = -1;
+        autoTunerState.originalLens = original;
+        autoTunerState.acceptedLens = clone(original);
+        autoTunerState.bestLens = null;
+        autoTunerState.config = cfg;
+        autoTunerState.originalMerit = originalMerit;
+        autoTunerState.acceptedMerit = originalMerit;
+        autoTunerState.currentMerit = originalMerit;
+        autoTunerState.bestMerit = originalMerit;
+        autoTunerState.history = [];
+        autoTunerState.noImprove = 0;
+        autoTunerState.acceptedMoves = 0;
+        autoTunerState.rejectedMoves = 0;
+        autoTunerState.invalidMoves = 0;
+        autoTunerState.stepScale = 1;
+        autoTunerState.baselineInvalid = true;
+        autoTunerState.consecutiveInvalid = 0;
+        autoTunerState.invalidByCategory = {};
+        autoTunerState.disabledMutationGroups = new Set();
+        autoTunerState.stopReason = "Baseline invalid — fix validation or lens before tuning";
+        autoTunerState.lastMessage = validation?.reason || (originalMerit.warnings || []).join(", ");
+        autoTunerState.diagnostics = createAutoTunerDiagnostics(autoTunerState.stopReason, validation, originalMerit.metrics);
+        updateAutoTunerProgress(true);
+        toast("Auto Tuner baseline invalid; diagnostics available", 2600);
+        return;
+      }
       const ops = collectAutoTunerMutationOps(original, cfg, original);
       if (!ops.length) {
         if (ui.atStatus) ui.atStatus.textContent = "No mutable variables selected.";
@@ -9348,7 +9679,6 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         return;
       }
 
-      const originalMerit = evaluateLensMerit(original, cfg.targets, cfg.weights);
       autoTunerState.running = true;
       autoTunerState.paused = false;
       autoTunerState.iteration = 0;
@@ -9368,6 +9698,12 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       autoTunerState.rejectedMoves = 0;
       autoTunerState.invalidMoves = 0;
       autoTunerState.stepScale = 1;
+      autoTunerState.baselineInvalid = false;
+      autoTunerState.consecutiveInvalid = 0;
+      autoTunerState.invalidByCategory = {};
+      autoTunerState.disabledMutationGroups = new Set();
+      autoTunerState.diagnostics = createAutoTunerDiagnostics("Baseline OK", null, originalMerit.metrics);
+      autoTunerState.lastMessage = "";
       autoTunerState.stopReason = "Running";
       pushAutoTunerHistory(0, originalMerit);
       updateAutoTunerProgress(true);
@@ -9430,6 +9766,28 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       toast("Copied best JSON");
     } catch (e) {
       if (ui.atStatus) ui.atStatus.textContent = `Copy failed: ${e?.message || e}`;
+    }
+  }
+
+  async function copyAutoTunerDiagnostics() {
+    const text = String(autoTunerState.diagnostics || "");
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      toast("Copied Auto Tuner diagnostics");
+    } catch (e) {
+      if (ui.atStatus) ui.atStatus.textContent = `Diagnostics copy failed: ${e?.message || e}`;
     }
   }
 
@@ -9593,6 +9951,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.atStop) ui.atStop.addEventListener("click", stopAutoTuner);
     if (ui.atApplyBest) ui.atApplyBest.addEventListener("click", applyAutoTunerBest);
     if (ui.atRevert) ui.atRevert.addEventListener("click", revertAutoTunerOriginal);
+    if (ui.atCopyDiagnostics) ui.atCopyDiagnostics.addEventListener("click", copyAutoTunerDiagnostics);
     if (ui.atCopyBest) ui.atCopyBest.addEventListener("click", copyAutoTunerBestJson);
     if (ui.atSaveBest) ui.atSaveBest.addEventListener("click", saveAutoTunerBestJson);
     ui.autoTunerModal.addEventListener("mousedown", (e) => {
