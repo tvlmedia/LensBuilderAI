@@ -25,7 +25,7 @@ Local-only behavior:
 
 PDF extraction behavior:
 
-- The extractor uses optional local tools/libraries when available: `pdftotext`, `pypdf`, `PyPDF2`, or `pdfminer.six`.
+- The extractor uses optional local tools/libraries when available: `pdftotext`, macOS `PDFKit` through Swift, `pypdf`, `PyPDF2`, or `pdfminer.six`.
 - If none are installed, install one locally and rerun ingestion.
 
 If no local index exists in production, the app falls back to built-in non-copyrighted reference notes.

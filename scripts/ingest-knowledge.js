@@ -75,6 +75,21 @@ function extractWithPdftotext(pdfPath) {
   return pages;
 }
 
+function extractWithSwiftPdfKit(pdfPath) {
+  if (!commandExists("swift")) return null;
+  const script = path.join(__dirname, "extract-pdf-text.swift");
+  const cacheDir = process.env.SWIFT_MODULE_CACHE_PATH || path.join("/private/tmp", "lensbuilder-swift-module-cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const result = spawnSync("swift", ["-module-cache-path", cacheDir, script, pdfPath], {
+    encoding: "utf8",
+    maxBuffer: 512 * 1024 * 1024,
+  });
+  if (result.status !== 0) return null;
+  const parsed = JSON.parse(result.stdout || "{}");
+  if (!parsed.ok || !Array.isArray(parsed.pages)) return null;
+  return parsed.pages;
+}
+
 function extractWithPython(pdfPath) {
   if (!commandExists("python3")) return null;
   const script = path.join(__dirname, "extract-pdf-text.py");
@@ -96,6 +111,8 @@ function extractWithPython(pdfPath) {
 function extractPdfPages(pdfPath) {
   const native = extractWithPdftotext(pdfPath);
   if (native) return native;
+  const swift = extractWithSwiftPdfKit(pdfPath);
+  if (swift) return swift;
   return extractWithPython(pdfPath);
 }
 
