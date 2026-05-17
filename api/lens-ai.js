@@ -1,6 +1,11 @@
 "use strict";
 
 const OPENAI_URL = "https://api.openai.com/v1/responses";
+const {
+  retrieveLensKnowledge,
+  formatKnowledgeSourcesForPrompt,
+  formatKnowledgeSourceList,
+} = require("../src/lib/knowledge/retrieveLensKnowledge.js");
 
 function sendJson(res, status, payload) {
   res.statusCode = status;
@@ -48,6 +53,7 @@ function buildInstructions() {
     "Never claim you directly optimized optics yourself. Request local tool actions and reason from returned tool results.",
     "Do not rewrite lens JSON. Do not request final application of a result unless the user explicitly asks, and keep apply_candidate requiring approval.",
     "For reference-lens prompts such as Helios 44-2, Biotar, Cooke Panchro, or Petzval, use build_reference_lens. This creates a controlled starter prescription from a known design family and stages it as a candidate; it is not arbitrary JSON mutation.",
+    "Use retrievedKnowledge when it is relevant. Cite sources by sourceName, pageNumber, and sectionTitle in the assistantMessage. Do not expose full copyrighted passages; quote at most short excerpts and mostly paraphrase.",
     "Safety rules: never change OBJ or IMS, sensor W/H, IMS aperture, clear apertures, glass types, or surface labels unless explicitly allowed by the user.",
     "For 50mm F2 full-frame clean requests, default to hard EFL and T locks: EFL target 50mm or current EFL, tolerance +/-0.75mm; T target 2.0 or current T, tolerance +/-0.20; image circle 45mm soft unless hard requested.",
     "For corner sharpness requests: first use get_lens_metrics and run_corner_focus_test. If field curvature is likely, run Auto Tuner preset cornerFlatten with field curvature target, radii, air gaps, stop position, front/rear group spacing, rear spacing, and FL/T hard locked. If coma/astigmatism is likely, run Auto Tuner with radii/air gaps/stop position and FL/T hard locked. If IC/COV is the issue, optimize image circle/COV softly first and do not change clear apertures unless explicitly approved.",
@@ -57,6 +63,14 @@ function buildInstructions() {
     "Reject candidates conceptually if FL/T constraints are broken, e.g. a 90mm T3.8 result is unacceptable even if corners look better.",
     "Always summarize what you tried and why. Return exact JSON matching the schema.",
   ].join("\n");
+}
+
+function appendKnowledgeSources(assistantMessage, chunks) {
+  if (!Array.isArray(chunks) || !chunks.length) return assistantMessage;
+  const sourceList = formatKnowledgeSourceList(chunks);
+  if (!sourceList) return assistantMessage;
+  if (/sources\s*:/i.test(assistantMessage)) return assistantMessage;
+  return `${assistantMessage}\n\nSources:\n${sourceList}`;
 }
 
 function responseSchema() {
@@ -195,6 +209,7 @@ module.exports = async function handler(req, res) {
           "scale_to_focal_length",
           "set_surface_value",
         ];
+    const knowledgeChunks = await retrieveLensKnowledge(message, { topK: 6 }).catch(() => []);
 
     const promptPayload = {
       userMessage: message,
@@ -205,6 +220,7 @@ module.exports = async function handler(req, res) {
       chatHistory: history,
       autonomousState,
       availableActions,
+      retrievedKnowledge: formatKnowledgeSourcesForPrompt(knowledgeChunks),
     };
 
     const openaiResponse = await fetch(OPENAI_URL, {
@@ -269,7 +285,7 @@ module.exports = async function handler(req, res) {
     }
 
     sendJson(res, 200, {
-      assistantMessage: String(parsed.assistantMessage || "I made a safe plan."),
+      assistantMessage: appendKnowledgeSources(String(parsed.assistantMessage || "I made a safe plan."), knowledgeChunks),
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
       shouldContinue: !!parsed.shouldContinue,
       stopReason: String(parsed.stopReason || ""),
