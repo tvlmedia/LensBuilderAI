@@ -328,6 +328,10 @@
     aiAssistantModal: $("#aiAssistantModal"),
     aiClose: $("#aiClose"),
     aiLensSummary: $("#aiLensSummary"),
+    aiReferenceSummary: $("#aiReferenceSummary"),
+    aiBuildReference: $("#aiBuildReference"),
+    aiAddReferenceLens: $("#aiAddReferenceLens"),
+    aiIterateReference: $("#aiIterateReference"),
     aiCandidateSummary: $("#aiCandidateSummary"),
     aiPreviewCandidate: $("#aiPreviewCandidate"),
     aiApplyCandidate: $("#aiApplyCandidate"),
@@ -1345,6 +1349,21 @@ function warnMissingGlass(name) {
       : null,
     zemaxVersion: (obj?.zemaxVersion != null && String(obj.zemaxVersion).trim() !== "")
       ? String(obj.zemaxVersion).trim()
+      : null,
+    sourceType: (obj?.sourceType != null && String(obj.sourceType).trim() !== "")
+      ? String(obj.sourceType).trim()
+      : null,
+    referenceName: (obj?.referenceName != null && String(obj.referenceName).trim() !== "")
+      ? String(obj.referenceName).trim()
+      : null,
+    designFamily: (obj?.designFamily != null && String(obj.designFamily).trim() !== "")
+      ? String(obj.designFamily).trim()
+      : null,
+    accuracyLabel: (obj?.accuracyLabel != null && String(obj.accuracyLabel).trim() !== "")
+      ? String(obj.accuracyLabel).trim()
+      : null,
+    referenceIntent: (obj?.referenceIntent && typeof obj.referenceIntent === "object")
+      ? clone(obj.referenceIntent)
       : null,
     zemax: sanitizeZemaxMeta(obj?.zemax),
     zoom: sanitizeZoomModel(obj?.zoom),
@@ -10807,6 +10826,616 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     updateAutoTunerButtons();
   }
 
+  // -------------------- Reference Lens Builder --------------------
+  const REFERENCE_LOOK_DEFAULTS = Object.freeze({
+    swirl: 0,
+    centerSharpness: 6,
+    edgeSoftness: 4,
+    contrast: 5,
+    flare: 3,
+    fieldCurvature: 3,
+    chromaticAberrationTolerance: 4,
+  });
+
+  function clampLookScore(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : 0;
+  }
+
+  function mergeLookTargets(overrides = {}) {
+    return {
+      swirl: clampLookScore(overrides.swirl ?? REFERENCE_LOOK_DEFAULTS.swirl),
+      centerSharpness: clampLookScore(overrides.centerSharpness ?? REFERENCE_LOOK_DEFAULTS.centerSharpness),
+      edgeSoftness: clampLookScore(overrides.edgeSoftness ?? REFERENCE_LOOK_DEFAULTS.edgeSoftness),
+      contrast: clampLookScore(overrides.contrast ?? REFERENCE_LOOK_DEFAULTS.contrast),
+      flare: clampLookScore(overrides.flare ?? REFERENCE_LOOK_DEFAULTS.flare),
+      fieldCurvature: clampLookScore(overrides.fieldCurvature ?? REFERENCE_LOOK_DEFAULTS.fieldCurvature),
+      chromaticAberrationTolerance: clampLookScore(overrides.chromaticAberrationTolerance ?? REFERENCE_LOOK_DEFAULTS.chromaticAberrationTolerance),
+    };
+  }
+
+  function parseReferenceLensIntent(promptRaw = "") {
+    const prompt = String(promptRaw || "").trim();
+    const lower = prompt.toLowerCase();
+    let referenceName = null;
+    let inferredDesignFamily = null;
+    let targetFocalLengthMm = null;
+    let targetFNumberOrTStop = null;
+    let targetCoverage = null;
+    let lookTargets = mergeLookTargets();
+    const constraints = {
+      preserveBackFocus: /preserve back|keep back|same back|bfl/i.test(prompt),
+      plFriendly: /\bpl\b|pl-friendly|pl friendly|positive lock/i.test(prompt),
+      maxFrontDiameterMm: null,
+      maxLengthMm: null,
+    };
+
+    const focalMatch = lower.match(/(\d+(?:[.,]\d+)?)\s*mm/);
+    if (focalMatch) targetFocalLengthMm = num(focalMatch[1], null);
+    const speedMatch = lower.match(/(?:f\/|f\s*|t\s*)(\d+(?:[.,]\d+)?)/);
+    if (speedMatch) targetFNumberOrTStop = num(speedMatch[1], null);
+    const frontMatch = lower.match(/front(?:\s+diameter)?(?:\s*<=|\s*under|\s*max)?\s*(\d+(?:[.,]\d+)?)\s*mm/);
+    if (frontMatch) constraints.maxFrontDiameterMm = num(frontMatch[1], null);
+    const lengthMatch = lower.match(/(?:length|long)(?:\s*<=|\s*under|\s*max)?\s*(\d+(?:[.,]\d+)?)\s*mm/);
+    if (lengthMatch) constraints.maxLengthMm = num(lengthMatch[1], null);
+
+    if (/65mm|large format|\b65\b/.test(lower)) targetCoverage = "65mm";
+    else if (/full[-\s]?frame|\bff\b|vista/.test(lower)) targetCoverage = "full-frame";
+    else if (/s35|super\s*35|super35/.test(lower)) targetCoverage = "s35";
+
+    if (/helios\s*44(?:-?2)?/.test(lower)) {
+      referenceName = "Helios 44-2";
+      inferredDesignFamily = "Biotar / Double Gauss inspired";
+      targetFocalLengthMm = targetFocalLengthMm || 58;
+      targetFNumberOrTStop = targetFNumberOrTStop || 2;
+      lookTargets = mergeLookTargets({
+        swirl: 9,
+        centerSharpness: 6,
+        edgeSoftness: 8,
+        contrast: 4,
+        flare: 6,
+        fieldCurvature: 8,
+        chromaticAberrationTolerance: 6,
+      });
+    } else if (/biotar/.test(lower)) {
+      referenceName = "Biotar 58mm f/2";
+      inferredDesignFamily = "Double Gauss / Biotar";
+      targetFocalLengthMm = targetFocalLengthMm || 58;
+      targetFNumberOrTStop = targetFNumberOrTStop || 2;
+      lookTargets = mergeLookTargets({
+        swirl: /swirl|swirly|stronger/.test(lower) ? 8 : 6,
+        centerSharpness: 7,
+        edgeSoftness: 7,
+        contrast: 5,
+        flare: 5,
+        fieldCurvature: 7,
+        chromaticAberrationTolerance: 5,
+      });
+    } else if (/cooke|panchro/.test(lower)) {
+      referenceName = "Cooke Panchro";
+      inferredDesignFamily = "classic Panchro-inspired";
+      targetFocalLengthMm = targetFocalLengthMm || 50;
+      targetFNumberOrTStop = targetFNumberOrTStop || 2;
+      lookTargets = mergeLookTargets({
+        swirl: 2,
+        centerSharpness: 7,
+        edgeSoftness: 5,
+        contrast: 4,
+        flare: 5,
+        fieldCurvature: 4,
+        chromaticAberrationTolerance: 5,
+      });
+    } else if (/petzval/.test(lower)) {
+      referenceName = "Petzval";
+      inferredDesignFamily = "Petzval portrait family";
+      targetFocalLengthMm = targetFocalLengthMm || 80;
+      targetFNumberOrTStop = targetFNumberOrTStop || 2;
+      lookTargets = mergeLookTargets({
+        swirl: 10,
+        centerSharpness: 5,
+        edgeSoftness: 9,
+        contrast: 4,
+        flare: 6,
+        fieldCurvature: 10,
+        chromaticAberrationTolerance: 7,
+      });
+    } else if (/double\s*gauss|gauss/.test(lower)) {
+      referenceName = "Double Gauss";
+      inferredDesignFamily = "Double Gauss";
+      targetFocalLengthMm = targetFocalLengthMm || 50;
+      targetFNumberOrTStop = targetFNumberOrTStop || 2;
+      lookTargets = mergeLookTargets({ centerSharpness: 7, edgeSoftness: 5, fieldCurvature: 4 });
+    }
+
+    if (/swirl|swirly/.test(lower)) lookTargets.swirl = Math.max(lookTargets.swirl, /strong|more|extra/.test(lower) ? 9 : 7);
+    if (/usable center|sharp center|clean center/.test(lower)) lookTargets.centerSharpness = Math.max(lookTargets.centerSharpness, 7);
+    if (/soft edge|soft edges|edge softness/.test(lower)) lookTargets.edgeSoftness = Math.max(lookTargets.edgeSoftness, 7);
+    if (/low contrast|lower contrast|vintage contrast/.test(lower)) lookTargets.contrast = Math.min(lookTargets.contrast, 4);
+    if (/flare|flary/.test(lower)) lookTargets.flare = Math.max(lookTargets.flare, 6);
+    if (/field curvature|curved field/.test(lower)) lookTargets.fieldCurvature = Math.max(lookTargets.fieldCurvature, 7);
+
+    return {
+      referenceName,
+      inferredDesignFamily,
+      targetFocalLengthMm,
+      targetFNumberOrTStop,
+      targetCoverage,
+      lookTargets,
+      constraints,
+    };
+  }
+
+  function referenceMetadata(intent, family, referenceName = null) {
+    return {
+      sourceType: "ai_reference_generated",
+      referenceName: referenceName || intent.referenceName || "Reference lens",
+      designFamily: family || intent.inferredDesignFamily || "Reference-inspired",
+      accuracyLabel: "inspired, not exact clone",
+      referenceIntent: intent,
+    };
+  }
+
+  function withReferenceMetadata(lensObj, intent, family, referenceName = null) {
+    const meta = referenceMetadata(intent, family, referenceName);
+    const out = {
+      ...lensObj,
+      ...meta,
+      notes: [
+        ...(Array.isArray(lensObj.notes) ? lensObj.notes : []),
+        `${meta.referenceName}: ${meta.accuracyLabel}.`,
+        "Generated by Reference Lens Builder from a controlled design-family starter, then scored by local raytrace metrics.",
+      ],
+    };
+    return out;
+  }
+
+  function setReferenceSurfaceLabels(lensObj) {
+    const surfaces = lensObj?.surfaces || [];
+    surfaces.forEach((s, i) => {
+      if (s.type === "OBJ") {
+        s.surfaceLabel = "OBJ";
+        s.surfaceLabelAuto = false;
+      } else if (String(s.type || "").toUpperCase() === "IMS") {
+        s.surfaceLabel = "IMS";
+        s.surfaceLabelAuto = false;
+      } else if (s.stop || String(s.type || "").toUpperCase() === "STOP") {
+        s.surfaceLabel = "STOP";
+        s.surfaceLabelAuto = false;
+      } else if (!String(s.surfaceLabel || "").trim()) {
+        s.surfaceLabel = `REF S${i}`;
+        s.surfaceLabelAuto = false;
+      }
+    });
+    return lensObj;
+  }
+
+  function createDoubleGaussStarter(intent = {}) {
+    const target = intent?.targetFocalLengthMm || 50;
+    const base = clone(omit50ConceptV1());
+    base.name = `${target}mm Double Gauss reference starter`;
+    base.surfaces.forEach((s) => {
+      if (s.glass === "S-LAM3") s.glass = "N-LAK9";
+      if (s.glass === "S-BAH11") s.glass = "N-BAK4";
+      if (s.glass === "LF5") s.glass = "N-F2";
+    });
+    setReferenceSurfaceLabels(base);
+    return normalizeReferenceStarter(withReferenceMetadata(base, intent, "Double Gauss", intent.referenceName || "Double Gauss"), intent);
+  }
+
+  function createBiotarInspiredStarter(intent = {}) {
+    const target = intent?.targetFocalLengthMm || 58;
+    const speed = intent?.targetFNumberOrTStop || 2;
+    const L = {
+      name: `${target}mm f/${speed} Biotar-inspired reference starter`,
+      notes: [
+        "6-element / 4-group Biotar-style starting point for local optimization.",
+        "Radii/glass are plausible placeholders, not historical Helios/Carl Zeiss prescription data.",
+      ],
+      surfaces: [
+        { type: "OBJ", R: 0, t: 0, ap: 70, glass: "AIR", stop: false, surfaceLabel: "OBJ", surfaceLabelAuto: false },
+        { type: "1", R: 42, t: 4.2, ap: 21, glass: "N-BK7HT", stop: false, surfaceLabel: "L1 FRONT", surfaceLabelAuto: false },
+        { type: "2", R: 145, t: 1.0, ap: 21, glass: "AIR", stop: false, surfaceLabel: "L1 REAR", surfaceLabelAuto: false },
+        { type: "3", R: 30, t: 3.2, ap: 19, glass: "N-F2", stop: false, surfaceLabel: "L2 FRONT", surfaceLabelAuto: false },
+        { type: "4", R: 17, t: 5.6, ap: 18, glass: "N-BAK4", stop: false, surfaceLabel: "L2/L3 CEMENT", surfaceLabelAuto: false },
+        { type: "5", R: 64, t: 5.0, ap: 16, glass: "AIR", stop: false, surfaceLabel: "L3 REAR", surfaceLabelAuto: false },
+        { type: "STOP", R: 0, t: 7.0, ap: Math.max(8, target / (2 * speed)), glass: "AIR", stop: true, surfaceLabel: "STOP", surfaceLabelAuto: false },
+        { type: "7", R: -64, t: 3.4, ap: 16, glass: "N-F2", stop: false, surfaceLabel: "L4 FRONT", surfaceLabelAuto: false },
+        { type: "8", R: -17, t: 5.4, ap: 18, glass: "N-BAK4", stop: false, surfaceLabel: "L4/L5 CEMENT", surfaceLabelAuto: false },
+        { type: "9", R: -30, t: 1.0, ap: 19, glass: "AIR", stop: false, surfaceLabel: "L5 REAR", surfaceLabelAuto: false },
+        { type: "10", R: -145, t: 4.4, ap: 21, glass: "N-BK7HT", stop: false, surfaceLabel: "L6 FRONT", surfaceLabelAuto: false },
+        { type: "11", R: -42, t: 39, ap: 21, glass: "AIR", stop: false, surfaceLabel: "L6 REAR", surfaceLabelAuto: false },
+        { type: "IMS", R: 0, t: 0, ap: getSensorWH().halfH || 12.77, glass: "AIR", stop: false, surfaceLabel: "IMS", surfaceLabelAuto: false },
+      ],
+    };
+    return normalizeReferenceStarter(withReferenceMetadata(L, intent, "Biotar / Double Gauss inspired", intent.referenceName || "Helios 44-2"), intent);
+  }
+
+  function createPetzvalStarter(intent = {}) {
+    const target = intent?.targetFocalLengthMm || 80;
+    const speed = intent?.targetFNumberOrTStop || 2;
+    const L = {
+      name: `${target}mm f/${speed} Petzval reference starter`,
+      notes: [
+        "Petzval portrait-family starter with intentionally curved field and strong outer falloff.",
+        "Not a historical prescription; intended as a controllable starting layout.",
+      ],
+      surfaces: [
+        { type: "OBJ", R: 0, t: 0, ap: 80, glass: "AIR", stop: false, surfaceLabel: "OBJ", surfaceLabelAuto: false },
+        { type: "1", R: 82, t: 6.0, ap: 28, glass: "N-BK7HT", stop: false, surfaceLabel: "FRONT CROWN FRONT", surfaceLabelAuto: false },
+        { type: "2", R: -58, t: 2.2, ap: 27, glass: "N-F2", stop: false, surfaceLabel: "FRONT CEMENT", surfaceLabelAuto: false },
+        { type: "3", R: -165, t: 30, ap: 25, glass: "AIR", stop: false, surfaceLabel: "FRONT GROUP REAR", surfaceLabelAuto: false },
+        { type: "STOP", R: 0, t: 7.0, ap: Math.max(10, target / (2 * speed)), glass: "AIR", stop: true, surfaceLabel: "STOP", surfaceLabelAuto: false },
+        { type: "5", R: 72, t: 4.0, ap: 22, glass: "N-BK7HT", stop: false, surfaceLabel: "REAR CROWN FRONT", surfaceLabelAuto: false },
+        { type: "6", R: -48, t: 3.0, ap: 20, glass: "AIR", stop: false, surfaceLabel: "REAR CROWN REAR", surfaceLabelAuto: false },
+        { type: "7", R: -78, t: 3.0, ap: 18, glass: "N-F2", stop: false, surfaceLabel: "REAR FLINT FRONT", surfaceLabelAuto: false },
+        { type: "8", R: -240, t: 48, ap: 18, glass: "AIR", stop: false, surfaceLabel: "REAR FLINT REAR", surfaceLabelAuto: false },
+        { type: "IMS", R: 0, t: 0, ap: getSensorWH().halfH || 12.77, glass: "AIR", stop: false, surfaceLabel: "IMS", surfaceLabelAuto: false },
+      ],
+    };
+    return normalizeReferenceStarter(withReferenceMetadata(L, intent, "Petzval portrait family", intent.referenceName || "Petzval"), intent);
+  }
+
+  function normalizeReferenceStarter(lensObj, intent = {}) {
+    const L = sanitizeLens(lensObj);
+    const targetF = Number(intent?.targetFocalLengthMm);
+    const targetSpeed = Number(intent?.targetFNumberOrTStop);
+    if (Number.isFinite(targetF) && targetF > 0) {
+      scaleReferenceLensToFocalLength(L, targetF);
+      refineReferenceLensFocalLength(L, targetF);
+    }
+    if (Number.isFinite(targetSpeed) && targetSpeed > 0) {
+      setReferenceLensStopForSpeed(L, targetSpeed);
+      refineReferenceLensSpeed(L, targetSpeed);
+    }
+    if (String(intent?.targetCoverage || "") === "full-frame") setReferenceMinApertures(L, 18);
+    if (String(intent?.targetCoverage || "") === "65mm") setReferenceMinApertures(L, 24);
+    recomputeSurfacePositionsForLens(L);
+    return L;
+  }
+
+  function scaleReferenceLensToFocalLength(lensObj, targetF) {
+    const efl = estimateEflBflParaxial(lensObj.surfaces, ui.wavePreset?.value || "d").efl;
+    if (!Number.isFinite(efl) || efl <= 0) return false;
+    const k = targetF / efl;
+    for (const s of lensObj.surfaces || []) scaleSurfaceDimensions(s, k);
+    recomputeSurfacePositionsForLens(lensObj);
+    return true;
+  }
+
+  function scaleReferenceLensByFactor(lensObj, k) {
+    if (!Number.isFinite(k) || k <= 0) return false;
+    for (const s of lensObj.surfaces || []) scaleSurfaceDimensions(s, k);
+    recomputeSurfacePositionsForLens(lensObj);
+    return true;
+  }
+
+  function refineReferenceLensFocalLength(lensObj, targetF) {
+    // Starter families are intentionally approximate; this uses the local analyzer
+    // once or twice to land closer to the requested reference focal length before
+    // future optimizer actions take over.
+    for (let i = 0; i < 3; i++) {
+      let measured = null;
+      try {
+        measured = getAutoTunerMetrics(lensObj, { wavePreset: ui.wavePreset?.value || "d", includeFieldFocus: false })?.efl;
+      } catch (_) {
+        measured = estimateEflBflParaxial(lensObj.surfaces, ui.wavePreset?.value || "d")?.efl;
+      }
+      if (!Number.isFinite(measured) || measured <= 0) return false;
+      const k = targetF / measured;
+      if (Math.abs(k - 1) < 0.01) return true;
+      scaleReferenceLensByFactor(lensObj, Math.max(0.25, Math.min(4, k)));
+    }
+    return true;
+  }
+
+  function setReferenceLensStopForSpeed(lensObj, speed) {
+    const efl = estimateEflBflParaxial(lensObj.surfaces, ui.wavePreset?.value || "d").efl;
+    const stopIdx = findStopSurfaceIndex(lensObj.surfaces);
+    if (!Number.isFinite(efl) || efl <= 0 || stopIdx < 0) return false;
+    const ap = Math.max(AP_MIN, Math.min(maxApForSurface(lensObj.surfaces[stopIdx]), efl / (2 * speed)));
+    lensObj.surfaces[stopIdx].ap = ap;
+    lensObj.surfaces[stopIdx].ap_optical = ap;
+    return true;
+  }
+
+  function refineReferenceLensSpeed(lensObj, targetSpeed) {
+    const stopIdx = findStopSurfaceIndex(lensObj.surfaces);
+    if (stopIdx < 0 || !Number.isFinite(targetSpeed) || targetSpeed <= 0) return false;
+    const stop = lensObj.surfaces[stopIdx];
+    for (let i = 0; i < 3; i++) {
+      let measured = null;
+      try {
+        measured = getAutoTunerMetrics(lensObj, { wavePreset: ui.wavePreset?.value || "d", includeFieldFocus: false })?.T;
+      } catch (_) {
+        measured = estimateTStopApprox(
+          estimateEflBflParaxial(lensObj.surfaces, ui.wavePreset?.value || "d")?.efl,
+          lensObj.surfaces,
+          ui.wavePreset?.value || "d"
+        );
+      }
+      if (!Number.isFinite(measured) || measured <= 0) return false;
+      const ratio = measured / targetSpeed;
+      if (Math.abs(ratio - 1) < 0.02) return true;
+      const nextAp = Math.max(AP_MIN, Math.min(maxApForSurface(stop), Number(stop.ap || 0) * Math.max(0.25, Math.min(4, ratio))));
+      stop.ap = nextAp;
+      stop.ap_optical = nextAp;
+    }
+    return true;
+  }
+
+  function setReferenceMinApertures(lensObj, minAp) {
+    const imsIdx = lensObj.surfaces.findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+    for (let i = 1; i < lensObj.surfaces.length; i++) {
+      if (i === imsIdx) continue;
+      const s = lensObj.surfaces[i];
+      if (String(s?.type || "").toUpperCase() === "OBJ") continue;
+      const ap = Math.max(Number(s.ap || 0), minAp);
+      s.ap = ap;
+      s.ap_optical = Math.max(Number(s.ap_optical || 0), ap);
+    }
+  }
+
+  function createReferenceStarterLens(intent = {}) {
+    const family = String(intent?.inferredDesignFamily || "").toLowerCase();
+    const ref = String(intent?.referenceName || "").toLowerCase();
+    if (ref.includes("helios") || family.includes("biotar")) return createBiotarInspiredStarter(intent);
+    if (family.includes("petzval") || ref.includes("petzval")) return createPetzvalStarter(intent);
+    return createDoubleGaussStarter(intent);
+  }
+
+  function referenceCoverageTargetMm(intent = {}) {
+    const cov = String(intent?.targetCoverage || "").toLowerCase();
+    if (cov === "65mm") return 60;
+    if (cov === "full-frame") return 45;
+    if (cov === "s35") return 31;
+    return null;
+  }
+
+  function estimateReferenceChromaticPenalty(lensObj) {
+    try {
+      const parax = estimateEflBflParaxial(lensObj.surfaces, "d");
+      const field = getAutoTunerFieldAngles(Math.hypot(getSensorWH().w, getSensorWH().h), parax.efl).mid;
+      const c = evaluateSpotSpreadAtIMS(lensObj.surfaces, "c", field, 9, getFocusChartDistanceMm());
+      const g = evaluateSpotSpreadAtIMS(lensObj.surfaces, "g", field, 9, getFocusChartDistanceMm());
+      const cCent = Number(c?.centroidMm);
+      const gCent = Number(g?.centroidMm);
+      if (!Number.isFinite(cCent) || !Number.isFinite(gCent)) return { penalty: 8, warning: "Chromatic proxy weak; one wavelength did not trace cleanly." };
+      const shift = Math.abs(cCent - gCent);
+      return { penalty: Math.min(12, shift * 12), warning: shift > 0.35 ? `High chromatic focus/centroid spread proxy (${shift.toFixed(3)}mm).` : "" };
+    } catch (_) {
+      return { penalty: 4, warning: "Chromatic proxy unavailable for this starter." };
+    }
+  }
+
+  function scoreReferenceMatch(lensObj, intent = {}) {
+    const warnings = [];
+    const explanation = [];
+    const breakdown = {};
+    let score = 100;
+    let metrics = null;
+    try {
+      metrics = getAutoTunerMetrics(lensObj, { wavePreset: ui.wavePreset?.value || "d", includeFieldFocus: true, focusRayCount: 9 });
+    } catch (e) {
+      return {
+        lensJson: lensObj,
+        analysis: { valid: false, metrics: null, breakdown: { invalid: 100 } },
+        score: 0,
+        warnings: [`Invalid generated lens: ${e?.message || e}`],
+        explanation: "The generated starter could not be evaluated by the local raytrace tools.",
+      };
+    }
+
+    const targetF = Number(intent?.targetFocalLengthMm);
+    if (Number.isFinite(targetF) && targetF > 0) {
+      const err = metrics.efl != null ? Math.abs(metrics.efl - targetF) / targetF : 1;
+      breakdown.focalLength = Math.min(25, err * 120);
+      score -= breakdown.focalLength;
+      explanation.push(`Focal length target ${targetF}mm, measured ${mmText(metrics.efl)}.`);
+    }
+
+    const targetSpeed = Number(intent?.targetFNumberOrTStop);
+    if (Number.isFinite(targetSpeed) && targetSpeed > 0) {
+      const err = metrics.T != null ? Math.abs(metrics.T - targetSpeed) / targetSpeed : 1;
+      breakdown.speed = Math.min(20, err * 90);
+      score -= breakdown.speed;
+      explanation.push(`Speed target f/T${targetSpeed}, measured ${tText(metrics.T)}.`);
+    }
+
+    const icTarget = referenceCoverageTargetMm(intent);
+    if (icTarget) {
+      const shortfall = Math.max(0, icTarget - Number(metrics.imageCircleMm || 0)) / icTarget;
+      breakdown.coverage = shortfall * 25 + (!metrics.cov ? 8 : 0);
+      score -= breakdown.coverage;
+      if (shortfall > 0) warnings.push(`Coverage target ${icTarget}mm; current image circle ${mmText(metrics.imageCircleMm, 1)}.`);
+    }
+
+    const centerRms = Number(metrics.centerSpot?.rmsMm);
+    const cornerRms = Number(metrics.cornerSpot?.rmsMm);
+    if (!metrics.centerSpot?.ok || !Number.isFinite(centerRms)) {
+      breakdown.center = 22;
+      warnings.push("Center rays are not clean enough for a usable reference starter.");
+    } else {
+      const centerTarget = Math.max(0.03, 0.18 - (intent.lookTargets?.centerSharpness || 6) * 0.012);
+      breakdown.center = Math.max(0, Math.min(18, (centerRms - centerTarget) * 60));
+      explanation.push(`Center RMS ${mmText(centerRms, 4)}.`);
+    }
+    score -= breakdown.center || 0;
+
+    const desiredSoftness = Number(intent.lookTargets?.edgeSoftness || 4);
+    if (Number.isFinite(cornerRms) && Number.isFinite(centerRms)) {
+      const ratio = cornerRms / Math.max(0.001, centerRms);
+      if (desiredSoftness >= 7) {
+        breakdown.outerFieldLook = ratio >= 1.4 ? 0 : (1.4 - ratio) * 6;
+        explanation.push(`Outer field is ${ratio.toFixed(2)}x center RMS, matching a softer vintage edge target.`);
+      } else {
+        breakdown.outerFieldLook = Math.max(0, ratio - 3.0) * 4;
+      }
+      score -= Math.min(12, breakdown.outerFieldLook);
+    }
+
+    const fcDelta = Math.abs(Number(metrics.fieldFocus?.fieldCurvatureDeltaMm));
+    const swirlTarget = Number(intent.lookTargets?.swirl || 0);
+    const fieldTarget = Number(intent.lookTargets?.fieldCurvature || 0);
+    if (Number.isFinite(fcDelta)) {
+      if (swirlTarget >= 7 || fieldTarget >= 7) {
+        breakdown.fieldCurvatureLook = fcDelta >= 0.4 ? 0 : (0.4 - fcDelta) * 8;
+        explanation.push(`Field curvature proxy ${mmText(fcDelta, 3)} supports the requested vintage swirl/curved field look.`);
+      } else {
+        breakdown.fieldCurvatureLook = Math.max(0, fcDelta - 1.2) * 6;
+      }
+      score -= Math.min(10, breakdown.fieldCurvatureLook);
+    } else if (swirlTarget >= 7) {
+      breakdown.fieldCurvatureLook = 5;
+      score -= 5;
+      warnings.push("Field curvature proxy unavailable; swirl match is uncertain.");
+    }
+
+    const ca = estimateReferenceChromaticPenalty(lensObj);
+    const caTolerance = Number(intent.lookTargets?.chromaticAberrationTolerance || 4);
+    breakdown.chromatic = Math.max(0, ca.penalty - caTolerance * 0.45);
+    score -= Math.min(12, breakdown.chromatic);
+    if (ca.warning) warnings.push(ca.warning);
+
+    if (intent.constraints?.plFriendly) {
+      const rear = Number(metrics.rearClearance);
+      breakdown.plFriendly = Number.isFinite(rear) && rear >= 0 ? 0 : 14;
+      score -= breakdown.plFriendly;
+      if (breakdown.plFriendly > 0) warnings.push("Back focus/rear clearance is not PL-friendly yet.");
+    }
+
+    if (intent.constraints?.maxLengthMm) {
+      const length = Number(metrics.compactLength);
+      if (Number.isFinite(length) && length > intent.constraints.maxLengthMm) {
+        breakdown.length = Math.min(10, (length - intent.constraints.maxLengthMm) / Math.max(1, intent.constraints.maxLengthMm) * 30);
+        score -= breakdown.length;
+        warnings.push(`Starter length ${mmText(length)} exceeds requested max ${intent.constraints.maxLengthMm}mm.`);
+      }
+    }
+
+    score = Math.max(0, Math.min(100, score));
+    return {
+      lensJson: lensObj,
+      analysis: {
+        valid: true,
+        metrics: compactLensAiMetrics(metrics),
+        rawMetrics: metrics,
+        breakdown,
+      },
+      score,
+      warnings,
+      explanation: explanation.join(" "),
+    };
+  }
+
+  function buildReferenceLensFromPrompt(promptRaw = "") {
+    const prompt = String(promptRaw || "").trim();
+    if (!prompt) {
+      toast("Enter a reference prompt in the AI chat input first.");
+      return null;
+    }
+    const intent = parseReferenceLensIntent(prompt);
+    const lensJson = createReferenceStarterLens(intent);
+    const result = scoreReferenceMatch(lensJson, intent);
+    result.intent = intent;
+    lensAiState.referenceResult = result;
+    lensAiState.latestCandidateLens = clone(result.lensJson);
+    lensAiState.latestCandidateMerit = {
+      totalScore: 100 - result.score,
+      metrics: result.analysis?.rawMetrics || null,
+      notes: result.warnings || [],
+    };
+    renderReferenceLensResult(result);
+    updateLensAiCandidateSummary();
+    appendLensAiMessage("assistant", `Built a ${intent.inferredDesignFamily || "reference-inspired"} starter from your prompt. It is staged as a candidate, not applied.`);
+    return result;
+  }
+
+  function getLensAiReferencePrompt() {
+    const typed = String(ui.aiChatInput?.value || "").trim();
+    if (typed) return typed;
+    for (let i = lensAiState.messages.length - 1; i >= 0; i--) {
+      const msg = lensAiState.messages[i];
+      if (msg?.role === "user" && String(msg.content || "").trim()) return String(msg.content).trim();
+    }
+    return "";
+  }
+
+  function renderReferenceLensResult(result) {
+    if (!ui.aiReferenceSummary) return;
+    if (!result) {
+      ui.aiReferenceSummary.textContent = "Use the chat prompt, then build a controlled starter prescription.";
+      if (ui.aiAddReferenceLens) ui.aiAddReferenceLens.disabled = true;
+      if (ui.aiIterateReference) ui.aiIterateReference.disabled = true;
+      return;
+    }
+    const intent = result.intent || {};
+    const metrics = result.analysis?.metrics || {};
+    const warnings = result.warnings || [];
+    const breakdown = result.analysis?.breakdown || {};
+    const breakdownRows = Object.entries(breakdown)
+      .filter(([, value]) => Number.isFinite(Number(value)) && Math.abs(Number(value)) > 0.001)
+      .map(([key, value]) => `${key}: -${Number(value).toFixed(1)}`);
+    ui.aiReferenceSummary.innerHTML = [
+      `<strong>${escapeAttr(intent.referenceName || "Reference starter")}</strong>`,
+      `Family: ${escapeAttr(intent.inferredDesignFamily || "Inferred starter")}`,
+      `Target: ${escapeAttr(mmText(intent.targetFocalLengthMm))} • ${escapeAttr(tText(intent.targetFNumberOrTStop))} • coverage ${escapeAttr(intent.targetCoverage || "current")}`,
+      `Generated: ${escapeAttr(mmText(metrics.efl))} • ${escapeAttr(tText(metrics.tStop))} • IC ${escapeAttr(mmText(metrics.imageCircleMm, 1))} • COV ${metrics.cov ? "YES" : "NO"}`,
+      `Score: ${Number(result.score).toFixed(1)} / 100`,
+      breakdownRows.length ? `Breakdown: ${escapeAttr(breakdownRows.join(" • "))}` : "",
+      result.explanation ? `<div>${escapeAttr(result.explanation)}</div>` : "",
+      warnings.length ? `<ul>${warnings.map((w) => `<li>${escapeAttr(w)}</li>`).join("")}</ul>` : "",
+    ].filter(Boolean).join("<br>");
+    if (ui.aiAddReferenceLens) ui.aiAddReferenceLens.disabled = false;
+    if (ui.aiIterateReference) ui.aiIterateReference.disabled = false;
+  }
+
+  function addReferenceLensToBuilder() {
+    const result = lensAiState.referenceResult;
+    if (!result?.lensJson) {
+      toast("No reference lens has been generated yet.");
+      return null;
+    }
+    lensAiState.originalLens = clone(lens);
+    loadLens(result.lensJson);
+    renderAll();
+    if (preview.ready) scheduleRenderPreview({ force: true });
+    updateLensAiLensSummary();
+    return appendLensAiToolResult("Reference lens added", `Loaded ${result.lensJson.name || "reference starter"} into Lens Builder.`, result.analysis);
+  }
+
+  function iterateReferenceLens(opts = {}) {
+    const result = lensAiState.referenceResult;
+    if (!result?.lensJson) {
+      toast("No reference lens has been generated yet.");
+      return null;
+    }
+    if (!opts.skipConfirm && !confirm("Load this reference starter into Lens Builder and start a safe Auto Tuner pass?")) return null;
+    addReferenceLensToBuilder();
+    const args = buildLensAiSuggestedTunerSettings({
+      preset: "cornerFlatten",
+      iterations: Math.min(1000, Number(ui.aiMaxTunerIterations?.value || 5000)),
+      targets: {
+        focalLength: { target: result.intent?.targetFocalLengthMm || result.analysis?.metrics?.efl || 50 },
+        tStop: { target: result.intent?.targetFNumberOrTStop || result.analysis?.metrics?.tStop || 2 },
+        imageCircle: { target: referenceCoverageTargetMm(result.intent) || 45 },
+      },
+      hardConstraints: {
+        focalLength: { tolerance: 0.75 },
+        tStop: { tolerance: 0.20 },
+        imageCircle: { enabled: false, minimum: referenceCoverageTargetMm(result.intent) || 45 },
+      },
+      allowedVariables: {
+        radii: true,
+        airGaps: true,
+        stopPosition: true,
+        frontGroupSpacing: true,
+        rearGroupSpacing: true,
+        rearElementSpacing: true,
+      },
+    });
+    return runLensAiAutoTunerAction({ type: "run_auto_tuner", label: "Iterate reference starter", args }, { headless: false });
+  }
+
   // -------------------- AI Lens Assistant --------------------
   const lensAiState = {
     messages: [],
@@ -10814,6 +11443,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     latestActions: [],
     latestCandidateLens: null,
     latestCandidateMerit: null,
+    referenceResult: null,
     originalLens: null,
     busy: false,
     autoTunerWaiters: [],
@@ -10836,6 +11466,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   const LENS_AI_SAFE_AUTORUN = new Set([
     "get_lens_state",
     "get_lens_metrics",
+    "build_reference_lens",
     "run_corner_focus_test",
     "suggest_auto_tuner_settings",
     "run_auto_tuner",
@@ -10844,6 +11475,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   ]);
   const LENS_AI_STRUCTURAL_ACTIONS = new Set([
     "apply_candidate",
+    "add_reference_lens",
+    "iterate_reference_lens",
     "add_weak_rear_field_flattener",
     "scale_to_focal_length",
     "set_surface_value",
@@ -10913,12 +11546,15 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return [
       "get_lens_state",
       "get_lens_metrics",
+      "build_reference_lens",
       "run_corner_focus_test",
       "suggest_auto_tuner_settings",
       "run_auto_tuner",
       "preview_candidate",
       "copy_best_json",
       "apply_candidate",
+      "add_reference_lens",
+      "iterate_reference_lens",
       "revert_to_original",
       "add_weak_rear_field_flattener",
       "scale_to_focal_length",
@@ -11135,6 +11771,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function setLensAiBusy(busy, message = "") {
     lensAiState.busy = !!busy;
     if (ui.aiSend) ui.aiSend.disabled = !!busy;
+    if (ui.aiBuildReference) ui.aiBuildReference.disabled = !!busy;
     if (ui.aiRunAutonomous) ui.aiRunAutonomous.disabled = !!busy || !!lensAiState.autonomous?.running;
     if (ui.aiStopAutonomous) ui.aiStopAutonomous.disabled = !lensAiState.autonomous?.running;
     if (ui.aiStatus) ui.aiStatus.textContent = message || (busy ? "Thinking..." : "Ready.");
@@ -11147,6 +11784,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     ui.aiAssistantModal.setAttribute("aria-hidden", "false");
     updateLensAiLensSummary();
     updateLensAiCandidateSummary();
+    renderReferenceLensResult(lensAiState.referenceResult);
     setLensAiAutonomousRunning(!!lensAiState.autonomous?.running);
     if (!lensAiState.messages.length) {
       appendLensAiMessage(
@@ -11184,12 +11822,15 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const t = String(type || "");
     if (t === "get_lens_state") return "Inspect lens JSON";
     if (t === "get_lens_metrics") return "Read current metrics";
+    if (t === "build_reference_lens") return "Build reference starter";
     if (t === "run_corner_focus_test") return "Run Corner Focus Test";
     if (t === "suggest_auto_tuner_settings") return "Suggest tuner settings";
     if (t === "run_auto_tuner") return "Run suggested tuner";
     if (t === "preview_candidate") return "Preview best";
     if (t === "copy_best_json") return "Copy best JSON";
     if (t === "apply_candidate") return "Apply candidate";
+    if (t === "add_reference_lens") return "Add reference lens";
+    if (t === "iterate_reference_lens") return "Iterate reference starter";
     if (t === "revert_to_original") return "Revert";
     if (t === "add_weak_rear_field_flattener") return "Add rear flattener";
     if (t === "scale_to_focal_length") return "Scale to focal length";
@@ -11230,6 +11871,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   function lensAiActionHint(action) {
     if (action.type === "run_auto_tuner") return "Uses existing Auto Tuner with hard FL/T constraints and no automatic apply.";
+    if (action.type === "build_reference_lens") return "Creates a controlled starter prescription from a known design family and stages it as a candidate.";
+    if (action.type === "add_reference_lens") return "Loads the staged reference starter into Lens Builder.";
+    if (action.type === "iterate_reference_lens") return "Loads the staged starter and runs a safe Auto Tuner pass.";
     if (action.type === "suggest_auto_tuner_settings") return "Builds safe Auto Tuner settings without changing the lens.";
     if (action.type === "run_corner_focus_test") return "Checks whether corner blur looks like field curvature, coma/astigmatism, or coverage.";
     if (action.requiresApproval) return "Requires approval before changing the lens.";
@@ -11513,6 +12157,20 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         const metrics = getLensAiMetrics({ includeFieldFocus: false });
         updateLensAiLensSummary();
         return appendLensAiToolResult("Lens metrics", formatLensAiMetricsText(metrics), metrics);
+      } else if (action.type === "build_reference_lens") {
+        const prompt = String(action.args?.prompt || action.args?.referencePrompt || getLensAiReferencePrompt()).trim();
+        const result = buildReferenceLensFromPrompt(prompt);
+        if (!result) return null;
+        return appendLensAiToolResult(
+          "Reference starter built",
+          `${result.intent?.referenceName || "Reference"} -> ${result.intent?.inferredDesignFamily || "starter"}; score ${Number(result.score).toFixed(1)}/100. Staged as a candidate, not applied.`,
+          {
+            intent: result.intent,
+            score: result.score,
+            metrics: result.analysis?.metrics || null,
+            warnings: result.warnings || [],
+          }
+        );
       } else if (action.type === "run_corner_focus_test") {
         lastCornerFocusReport = buildCornerFocusReport(lens);
         if (isCornerFocusModalOpen()) renderCornerFocusReport(lastCornerFocusReport);
@@ -11529,6 +12187,12 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         return await copyLensAiBestJson();
       } else if (action.type === "apply_candidate") {
         return applyLensAiCandidate(action);
+      } else if (action.type === "add_reference_lens") {
+        if (!requireLensAiApproval(action, "Load the generated reference starter into Lens Builder?")) return null;
+        return addReferenceLensToBuilder();
+      } else if (action.type === "iterate_reference_lens") {
+        if (!requireLensAiApproval(action, "Load the generated reference starter and run a safe Auto Tuner pass?")) return null;
+        return iterateReferenceLens({ skipConfirm: true });
       } else if (action.type === "revert_to_original") {
         return revertLensAiOriginal();
       } else if (action.type === "add_weak_rear_field_flattener") {
@@ -11911,6 +12575,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.aiApplyCandidate) ui.aiApplyCandidate.addEventListener("click", () => applyLensAiCandidate({ type: "apply_candidate", label: "Apply candidate", requiresApproval: true }));
     if (ui.aiCopyBestJson) ui.aiCopyBestJson.addEventListener("click", () => copyLensAiBestJson());
     if (ui.aiRevertCandidate) ui.aiRevertCandidate.addEventListener("click", revertLensAiOriginal);
+    if (ui.aiBuildReference) ui.aiBuildReference.addEventListener("click", () => buildReferenceLensFromPrompt(getLensAiReferencePrompt()));
+    if (ui.aiAddReferenceLens) ui.aiAddReferenceLens.addEventListener("click", () => addReferenceLensToBuilder());
+    if (ui.aiIterateReference) ui.aiIterateReference.addEventListener("click", () => iterateReferenceLens());
     if (ui.aiRunAutonomous) {
       ui.aiRunAutonomous.addEventListener("click", () => {
         const goal = String(ui.aiChatInput?.value || lensAiState.autonomous.goal || "").trim();

@@ -704,6 +704,34 @@ canvas{
   font-size:12px;
   line-height:1.45;
 }
+.aiReferenceSummary{
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:10px;
+  background:rgba(0,0,0,.16);
+  padding:8px;
+  color:rgba(255,255,255,.72);
+  font-size:12px;
+  line-height:1.45;
+  max-height:240px;
+  overflow:auto;
+}
+.aiReferenceSummary strong{
+  color:rgba(255,255,255,.92);
+}
+.aiReferenceSummary ul{
+  margin:6px 0 0 16px;
+  padding:0;
+}
+.aiReferenceActions{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:7px;
+  margin-top:8px;
+}
+.aiReferenceActions .btn{
+  width:100%;
+  padding:8px 9px;
+}
 .aiCandidateActions{
   display:grid;
   grid-template-columns:1fr 1fr;
@@ -1173,6 +1201,7 @@ canvas{
   .atMetrics{ grid-template-columns:1fr; }
   .aiSummaryGrid,
   .aiCandidateActions,
+  .aiReferenceActions,
   .aiComposer{ grid-template-columns:1fr; }
   .aiMsg{ max-width:100%; }
   .aiActionCard{ grid-template-columns:1fr; }
