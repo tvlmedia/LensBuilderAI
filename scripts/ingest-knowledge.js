@@ -10,8 +10,6 @@ const { localHashEmbedding, normalizeVector } = require("../src/lib/knowledge/re
 const ROOT = path.resolve(__dirname, "..");
 const PDF_DIR = process.env.LENS_KNOWLEDGE_PDF_DIR || path.join(ROOT, "knowledge", "pdfs");
 const OUT_PATH = process.env.LENS_KNOWLEDGE_INDEX_PATH || path.join(ROOT, "knowledge", "index", "lens-knowledge-index.json");
-const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
-const DEFAULT_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
 const LOCAL_EMBEDDING_MODEL = "local-hash-v1";
 const LOCAL_EMBEDDING_DIMENSIONS = 384;
 const MAX_CHUNK_CHARS = Number(process.env.LENS_KNOWLEDGE_MAX_CHUNK_CHARS || 1600);
@@ -222,51 +220,14 @@ function chunkPdfPages(sourceName, fileName, pages) {
   return chunks;
 }
 
-async function embedWithOpenAi(texts, model = DEFAULT_EMBEDDING_MODEL) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  const embeddings = [];
-  const batchSize = 64;
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
-    const response = await fetch(OPENAI_EMBEDDINGS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ model, input: batch }),
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(`OpenAI embeddings failed (${response.status}): ${detail.slice(0, 500)}`);
-    }
-    const data = await response.json();
-    for (const item of data.data || []) embeddings[item.index + i] = normalizeVector(item.embedding.map(Number));
-  }
-  return embeddings;
-}
-
 async function embedChunks(chunks) {
   if (!chunks.length) {
     return { chunks, embeddingModel: "none", embeddingDimensions: 0 };
   }
 
   const texts = chunks.map((chunk) => `${chunk.sourceName}\n${chunk.sectionTitle || ""}\n${chunk.tags.join(" ")}\n${chunk.text}`);
-  const remote = await embedWithOpenAi(texts);
-  if (remote) {
-    chunks.forEach((chunk, index) => {
-      chunk.embedding = remote[index] || null;
-    });
-    return {
-      chunks,
-      embeddingModel: DEFAULT_EMBEDDING_MODEL,
-      embeddingDimensions: chunks.find((chunk) => chunk.embedding)?.embedding?.length || 0,
-    };
-  }
-
   chunks.forEach((chunk, index) => {
-    chunk.embedding = localHashEmbedding(texts[index], LOCAL_EMBEDDING_DIMENSIONS);
+    chunk.embedding = normalizeVector(localHashEmbedding(texts[index], LOCAL_EMBEDDING_DIMENSIONS));
   });
   return {
     chunks,

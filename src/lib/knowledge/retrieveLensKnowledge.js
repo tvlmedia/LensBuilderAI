@@ -4,9 +4,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_TOP_K = 6;
-const MAX_EXCERPT_CHARS = 360;
+const MAX_EXCERPT_CHARS = 180;
+const MAX_SUMMARY_CHARS = 220;
 const LOCAL_EMBEDDING_DIMENSIONS = 384;
-const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
 
 const FALLBACK_CHUNKS = [
   {
@@ -158,31 +158,10 @@ function loadKnowledgeIndex(indexPath = process.env.LENS_KNOWLEDGE_INDEX_PATH ||
   }
 }
 
-async function createOpenAiEmbedding(text, model) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  const response = await fetch(OPENAI_EMBEDDINGS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      input: text,
-    }),
-  });
-  if (!response.ok) return null;
-  const data = await response.json();
-  const embedding = data?.data?.[0]?.embedding;
-  return Array.isArray(embedding) ? embedding.map(Number) : null;
-}
-
 async function createQueryEmbedding(query, index) {
   const model = String(index?.embeddingModel || "");
   if (model && model !== "none" && !model.startsWith("local-hash")) {
-    if (!process.env.OPENAI_API_KEY) return null;
-    return await createOpenAiEmbedding(query, model);
+    return null;
   }
   return localHashEmbedding(query, Number(index?.embeddingDimensions) || LOCAL_EMBEDDING_DIMENSIONS);
 }
@@ -203,6 +182,15 @@ function makeExcerpt(text, query, maxChars = MAX_EXCERPT_CHARS) {
   return `${start > 0 ? "... " : ""}${excerpt}${end < clean.length ? " ..." : ""}`;
 }
 
+function makeSummary(text, maxChars = MAX_SUMMARY_CHARS) {
+  const clean = normalizeText(text);
+  if (!clean) return "";
+  const sentenceMatch = clean.match(/^(.{40,}?[.!?])\s/);
+  const summary = sentenceMatch ? sentenceMatch[1] : clean;
+  if (summary.length <= maxChars) return summary;
+  return `${summary.slice(0, maxChars - 4).trim()} ...`;
+}
+
 function toRetrievedChunk(chunk, query, score) {
   const rawPage = chunk.pageNumber;
   const pageNumber = rawPage == null || rawPage === ""
@@ -213,6 +201,7 @@ function toRetrievedChunk(chunk, query, score) {
     sourceName: String(chunk.sourceName || "Unknown source"),
     pageNumber,
     sectionTitle: chunk.sectionTitle ? String(chunk.sectionTitle) : null,
+    summary: makeSummary(chunk.text || chunk.excerpt || ""),
     excerpt: makeExcerpt(chunk.text || chunk.excerpt || "", query),
     tags: Array.isArray(chunk.tags) ? chunk.tags.map(String).slice(0, 12) : [],
     score: Number.isFinite(score) ? Number(score) : 0,
@@ -248,6 +237,7 @@ function formatKnowledgeSourcesForPrompt(chunks) {
     sourceName: chunk.sourceName,
     pageNumber: chunk.pageNumber,
     sectionTitle: chunk.sectionTitle,
+    summary: chunk.summary || "",
     excerpt: chunk.excerpt,
     tags: chunk.tags || [],
   }));

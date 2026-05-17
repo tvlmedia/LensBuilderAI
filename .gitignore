@@ -1,2 +1,5 @@
 knowledge/pdfs/*.pdf
-knowledge/index/lens-knowledge-index.json
+knowledge/pdfs/**/*.pdf
+knowledge/index/*.json
+.env
+.env.local
