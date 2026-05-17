@@ -10864,7 +10864,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       surfaceCount: Array.isArray(L?.surfaces) ? L.surfaces.length : 0,
       surfaces: (L?.surfaces || []).map((s, i) => ({
         index: i,
-        label: displaySurfaceLabel(s, i),
+        label: getSurfaceDisplayLabel(s, i),
         type: String(s?.type || ""),
         R: finiteOrNull(s?.R),
         t: finiteOrNull(s?.t),
@@ -11122,84 +11122,45 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   }
 
   async function requestLensAiPlan(message) {
-    const payload = getLensAiPayload(message);
-    const response = await fetch("/api/lens-ai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    let payload;
+    try {
+      payload = getLensAiPayload(message);
+    } catch (e) {
+      e.lensAiStage = "frontend";
+      throw e;
+    }
+
+    let response;
+    try {
+      response = await fetch("/api/lens-ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      const err = new Error(`Request to /api/lens-ai failed: ${e?.message || e}`);
+      err.lensAiStage = "backend";
+      throw err;
+    }
+
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(text || `AI endpoint returned ${response.status}`);
+      let detail = text;
+      try {
+        const parsed = JSON.parse(text);
+        detail = parsed?.assistantMessage || parsed?.detail || text;
+      } catch (_) {}
+      const err = new Error(detail || `AI endpoint returned ${response.status}`);
+      err.lensAiStage = "backend";
+      throw err;
     }
-    return response.json();
-  }
-
-  function lensAiFallbackResponse(message, metrics, error) {
-    const lower = String(message || "").toLowerCase();
-    const wantsCorners = /corner|hoek|sharp|scherp|field|coma|astig|circle|coverage/.test(lower);
-    const wantsFlattener = /flattener|field flatten|rear field|vlakveld|field curvature/.test(lower);
-    const flMatch = lower.match(/(\d+(?:[.,]\d+)?)\s*mm/);
-    const tMatch = lower.match(/\bt\s*([0-9]+(?:[.,][0-9]+)?)/);
-    const targetFL = flMatch ? num(flMatch[1], 50) : (Number.isFinite(Number(metrics?.efl)) ? Number(metrics.efl) : 50);
-    const targetT = tMatch ? num(tMatch[1], 2) : (Number.isFinite(Number(metrics?.tStop)) ? Number(metrics.tStop) : 2);
-    const actions = [];
-    if (wantsCorners) actions.push({
-      type: "run_corner_focus_test",
-      label: "Run Corner Focus Test",
-      rationale: "First separate field curvature from coma/astigmatism or coverage limits.",
-      autoRunnable: false,
-      args: {},
-    });
-    if (wantsFlattener) actions.push({
-      type: "add_weak_rear_field_flattener",
-      label: "Add weak rear flattener",
-      rationale: "Structural change: add a weak N-BK7HT field flattener before IMS, then tune it.",
-      requiresApproval: true,
-      args: {},
-    });
-    actions.push({
-      type: "run_auto_tuner",
-      label: "Run suggested tuner",
-      rationale: "Uses the Improve corners / field flattening preset with hard FL/T locks and clear apertures locked.",
-      args: {
-        preset: "cornerFlatten",
-        iterations: 1000,
-        stepSize: "small",
-        runSpeed: "safe",
-        maxStuckIterations: 350,
-        targets: {
-          focalLength: { enabled: true, target: targetFL },
-          tStop: { enabled: true, target: targetT },
-          imageCircle: { enabled: true, target: 45 },
-        },
-        hardConstraints: {
-          focalLength: { enabled: true, tolerance: 0.75 },
-          tStop: { enabled: true, tolerance: 0.20 },
-          imageCircle: { enabled: false, minimum: 45 },
-        },
-        allowedVariables: {
-          radii: true,
-          airGaps: true,
-          stopPosition: true,
-          frontGroupSpacing: true,
-          rearGroupSpacing: true,
-          rearElementSpacing: true,
-          clearApertures: false,
-          stopAperture: false,
-          glassTypes: false,
-          sensorShift: false,
-          imsAperture: false,
-        },
-      },
-    });
-    return {
-      assistantMessage:
-        `The backend AI endpoint is not available here, so I made a local safe plan instead.\n\n` +
-        `Current lens: EFL ${mmText(metrics?.efl)}, ${tText(metrics?.tStop)}, IC ${mmText(metrics?.imageCircleMm, 1)}, corner RMS ${mmText(metrics?.cornerRmsMm, 4)}.\n\n` +
-        `I recommend diagnosing corner focus first, then running the corner/field-flattening tuner with FL/T hard locked. Endpoint detail: ${error?.message || error}`,
-      actions,
-    };
+    try {
+      return await response.json();
+    } catch (e) {
+      const err = new Error(`Invalid JSON from /api/lens-ai: ${e?.message || e}`);
+      err.lensAiStage = "backend";
+      throw err;
+    }
   }
 
   async function submitLensAiMessage() {
@@ -11209,20 +11170,15 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     appendLensAiMessage("user", message);
     setLensAiBusy(true, "Asking AI assistant...");
     try {
-      const metrics = getLensAiMetrics({ includeFieldFocus: false });
-      let result;
-      try {
-        result = await requestLensAiPlan(message);
-      } catch (e) {
-        result = lensAiFallbackResponse(message, metrics, e);
-      }
+      const result = await requestLensAiPlan(message);
       const assistantMessage = String(result?.assistantMessage || result?.message || "I made a safe plan.");
       appendLensAiMessage("assistant", assistantMessage);
       renderLensAiActions(Array.isArray(result?.actions) ? result.actions : []);
       setLensAiBusy(false, "Ready.");
     } catch (e) {
-      appendLensAiMessage("assistant", `AI Assistant failed: ${e?.message || e}`);
-      setLensAiBusy(false, "AI Assistant failed.");
+      const prefix = e?.lensAiStage === "frontend" ? "AI frontend error" : "AI backend error";
+      appendLensAiMessage("assistant", `${prefix}: ${e?.message || e}`);
+      setLensAiBusy(false, `${prefix}.`);
     }
   }
 
