@@ -754,6 +754,17 @@
 
           <section class="aiSideSection">
             <div class="atSectionTitle">Safety</div>
+            <label class="aiField" for="aiBudgetMode">
+              <span>AI budget mode</span>
+              <select id="aiBudgetMode">
+                <option value="cheap" selected>Cheap planner</option>
+                <option value="local">Off / Local only</option>
+                <option value="expert">Expert</option>
+                <option value="auto">Auto</option>
+              </select>
+            </label>
+            <div id="aiBudgetStatus" class="aiBudgetStatus">AI: cheap planner ready</div>
+            <button id="aiExpertAnalysis" class="btn" type="button">Expert analysis</button>
             <label class="aiToggle">
               <input id="aiAllowTools" type="checkbox">
               <span>Allow AI to run safe tools</span>
@@ -763,12 +774,14 @@
               <span>Require approval before apply</span>
             </label>
             <div class="aiSafetyNote">No API key is stored in the browser. Structural changes and final apply remain gated here.</div>
+            <div id="aiUsageSummary" class="aiUsageSummary">AI usage: 0 requests • 0 tokens</div>
           </section>
         </aside>
 
         <section class="aiChat">
           <div id="aiChatHistory" class="aiChatHistory" aria-live="polite"></div>
           <div id="aiAutonomousLog" class="aiAutonomousLog" aria-live="polite"></div>
+          <div id="aiUsageLog" class="aiUsageLog" aria-live="polite"></div>
           <div id="aiActionQueue" class="aiActionQueue"></div>
           <form id="aiChatForm" class="aiComposer">
             <textarea id="aiChatInput" rows="3" placeholder="Make the corners sharper but keep it 50mm T2 full-frame."></textarea>

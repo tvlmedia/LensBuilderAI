@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const DEFAULT_TOP_K = 6;
+const DEFAULT_TOP_K = 3;
 const MAX_EXCERPT_CHARS = 180;
 const MAX_SUMMARY_CHARS = 220;
 const LOCAL_EMBEDDING_DIMENSIONS = 384;
@@ -210,7 +210,7 @@ function toRetrievedChunk(chunk, query, score) {
 
 async function retrieveLensKnowledge(query, options = {}) {
   const cleanQuery = normalizeText(query);
-  const topK = Math.max(1, Math.min(12, Number(options.topK || DEFAULT_TOP_K)));
+  const topK = Math.max(1, Math.min(3, Number(options.topK || DEFAULT_TOP_K)));
   const index = loadKnowledgeIndex(options.indexPath);
   const chunks = Array.isArray(index?.chunks) && index.chunks.length ? index.chunks : FALLBACK_CHUNKS;
   const queryEmbedding = await createQueryEmbedding(cleanQuery, index || { embeddingModel: "local-hash-v1", embeddingDimensions: LOCAL_EMBEDDING_DIMENSIONS });

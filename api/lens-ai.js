@@ -1,6 +1,14 @@
 "use strict";
 
 const OPENAI_URL = "https://api.openai.com/v1/responses";
+const DEFAULT_PROMPT_CACHE_KEY = "lensbuilder-ai-v1";
+const CHEAP_MODEL = process.env.OPENAI_LENS_ASSISTANT_MODEL_CHEAP ||
+  process.env.OPENAI_LENS_ASSISTANT_MODEL ||
+  "gpt-4.1-mini";
+const EXPERT_MODEL = process.env.OPENAI_LENS_ASSISTANT_MODEL_EXPERT ||
+  process.env.OPENAI_LENS_ASSISTANT_MODEL ||
+  "gpt-5.2";
+const EMBEDDING_MODEL = process.env.OPENAI_LENS_ASSISTANT_MODEL_EMBEDDING || "local-hash-v1";
 const {
   retrieveLensKnowledge,
   formatKnowledgeSourcesForPrompt,
@@ -49,16 +57,19 @@ function safeSliceArray(value, limit) {
 function buildInstructions() {
   return [
     "You are the AI Lens Assistant inside TVL LensBuilderAI.",
+    "Frugal controller rule: you are a planner, interpreter, and explainer only. Local deterministic LensBuilder code performs all raytracing, merit scoring, candidate generation, optimization loops, and JSON mutation.",
+    "Never ask to run AI inside a tuning loop. Use local actions such as run_local_tuner or run_auto_tuner; then reason from returned tool results.",
     "You are an autonomous optical design supervisor and planner/controller, not the optical engine. The existing LensBuilder raytrace, metrics, Corner Focus Test, and Auto Tuner are the source of truth.",
     "Never claim you directly optimized optics yourself. Request local tool actions and reason from returned tool results.",
     "Do not rewrite lens JSON. Do not request final application of a result unless the user explicitly asks, and keep apply_candidate requiring approval.",
+    "Prefer compact actions and concise messages. Do not request get_lens_state unless a full JSON inspection is truly required; lensSummary and metrics are normally enough.",
     "For reference-lens prompts such as Helios 44-2, Biotar, Cooke Panchro, or Petzval, use build_reference_lens. This creates a controlled starter prescription from a known design family and stages it as a candidate; it is not arbitrary JSON mutation.",
     "Use retrievedKnowledge when it is relevant. In assistantMessage, show only source title, page/section if available, a short summary, and at most a very short excerpt when needed. Do not output long copyrighted passages.",
     "Safety rules: never change OBJ or IMS, sensor W/H, IMS aperture, clear apertures, glass types, or surface labels unless explicitly allowed by the user.",
     "For 50mm F2 full-frame clean requests, default to hard EFL and T locks: EFL target 50mm or current EFL, tolerance +/-0.75mm; T target 2.0 or current T, tolerance +/-0.20; image circle 45mm soft unless hard requested.",
-    "For corner sharpness requests: first use get_lens_metrics and run_corner_focus_test. If field curvature is likely, run Auto Tuner preset cornerFlatten with field curvature target, radii, air gaps, stop position, front/rear group spacing, rear spacing, and FL/T hard locked. If coma/astigmatism is likely, run Auto Tuner with radii/air gaps/stop position and FL/T hard locked. If IC/COV is the issue, optimize image circle/COV softly first and do not change clear apertures unless explicitly approved.",
+    "For corner sharpness requests: first use get_lens_metrics and run_corner_focus_test. If field curvature is likely, request run_local_tuner with target improve_corners, field curvature target, radii, air gaps, stop position, front/rear group spacing, rear spacing, and FL/T hard locked. If coma/astigmatism is likely, request run_local_tuner with radii/air gaps/stop position and FL/T hard locked. If IC/COV is the issue, request run_local_tuner with target increase_image_circle and do not change clear apertures unless explicitly approved.",
     "When autonomousState.enabled is true, do not ask the user to click every diagnostic or tuner step. Return safe actions directly with autoRunnable true. Stop before approval-required structural or final apply actions.",
-    "Default autonomous strategy for 'Make corners sharper but keep 50mm T2 full-frame': metrics -> corner focus test -> one Auto Tuner run with hard EFL/T locks -> analyze result -> another safe tuner strategy if needed -> stop with best candidate or ask approval for rear flattener.",
+    "Default autonomous strategy for 'Make corners sharper but keep 50mm T2 full-frame': metrics -> corner focus test -> one local tuner run with hard EFL/T locks -> analyze result -> another safe tuner strategy if needed -> stop with best candidate or ask approval for rear flattener.",
     "Success criteria: EFL 49.25-50.75mm, T 1.80-2.20, COV YES, corner RMS improved vs original, center RMS not worse by more than 25%, field curvature delta improved if field curvature was detected. IC >=45mm is preferred.",
     "Reject candidates conceptually if FL/T constraints are broken, e.g. a 90mm T3.8 result is unacceptable even if corners look better.",
     "Always summarize what you tried and why. Return exact JSON matching the schema.",
@@ -94,6 +105,7 @@ function responseSchema() {
                 "build_reference_lens",
                 "run_corner_focus_test",
                 "suggest_auto_tuner_settings",
+                "run_local_tuner",
                 "run_auto_tuner",
                 "preview_candidate",
                 "copy_best_json",
@@ -147,6 +159,58 @@ function extractOutputText(data) {
   return chunks.join("\n").trim();
 }
 
+function envNumber(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function resolveAiRoute(body, message) {
+  const requested = String(body?.aiBudgetMode || "cheap").toLowerCase();
+  const forceExpert = !!body?.forceExpert;
+  const expertHint = /\b(expert|deep\s+report|detailed\s+analysis|ambiguous|optimizer\s+failed|local\s+optimizer\s+failed)\b/i.test(message || "");
+  if (requested === "local" && !forceExpert) {
+    return {
+      mode: "local",
+      model: null,
+      maxOutputTokens: 0,
+      reason: "local_only_budget_mode",
+      promptCacheKey: String(body?.promptCacheKey || DEFAULT_PROMPT_CACHE_KEY),
+    };
+  }
+  const expert = forceExpert || requested === "expert" || (requested === "auto" && expertHint);
+  return {
+    mode: expert ? "expert" : "cheap",
+    model: expert ? EXPERT_MODEL : CHEAP_MODEL,
+    maxOutputTokens: expert
+      ? envNumber("OPENAI_LENS_ASSISTANT_MAX_OUTPUT_TOKENS_EXPERT", 2200)
+      : envNumber("OPENAI_LENS_ASSISTANT_MAX_OUTPUT_TOKENS_CHEAP", 700),
+    reason: forceExpert ? "explicit_expert_analysis" : (expert ? "expert_route" : "cheap_planner"),
+    promptCacheKey: String(body?.promptCacheKey || DEFAULT_PROMPT_CACHE_KEY),
+  };
+}
+
+function extractUsage(data, route) {
+  const usage = data?.usage || {};
+  const inputTokens = numberOrNull(usage.input_tokens ?? usage.prompt_tokens) || 0;
+  const outputTokens = numberOrNull(usage.output_tokens ?? usage.completion_tokens) || 0;
+  const totalTokens = numberOrNull(usage.total_tokens) || (inputTokens + outputTokens);
+  const cachedInputTokens = numberOrNull(
+    usage.input_tokens_details?.cached_tokens ??
+    usage.prompt_tokens_details?.cached_tokens ??
+    usage.cached_tokens
+  ) || 0;
+  return {
+    model: route.model,
+    mode: route.mode,
+    reason: route.reason,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    totalTokens,
+    estimatedCost: null,
+  };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -167,23 +231,46 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    sendJson(res, 500, {
-      assistantMessage: "AI backend is not configured. Set OPENAI_API_KEY on the server.",
-      actions: [],
-      shouldContinue: false,
-      stopReason: "missing_openai_api_key",
-      goalStatus: { success: false, confidence: 0, summary: "AI backend is not configured." },
-    });
-    return;
-  }
-
+  let body;
   try {
-    const body = typeof req.body === "string"
+    body = typeof req.body === "string"
       ? JSON.parse(req.body || "{}")
       : (typeof req.body === "object" && req.body ? req.body : {});
     const message = String(body.message || "").slice(0, 4000);
+    const route = resolveAiRoute(body, message);
+    if (route.mode === "local") {
+      sendJson(res, 200, {
+        assistantMessage: "Local-only budget mode is active, so I skipped the API. Use the local parser/actions for common LensBuilder tasks.",
+        actions: [],
+        shouldContinue: false,
+        stopReason: route.reason,
+        goalStatus: { success: false, confidence: 0.5, summary: "AI skipped by budget mode." },
+        usage: {
+          model: "none",
+          mode: "local",
+          reason: route.reason,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          estimatedCost: 0,
+        },
+      });
+      return;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      sendJson(res, 500, {
+        assistantMessage: "AI backend is not configured. Set OPENAI_API_KEY on the server.",
+        actions: [],
+        shouldContinue: false,
+        stopReason: "missing_openai_api_key",
+        goalStatus: { success: false, confidence: 0, summary: "AI backend is not configured." },
+      });
+      return;
+    }
+
     const metrics = body.metrics || {};
     const recentAutoTuner = body.recentAutoTuner || null;
     const toolResults = safeSliceArray(body.toolResults, 5);
@@ -198,6 +285,7 @@ module.exports = async function handler(req, res) {
           "build_reference_lens",
           "run_corner_focus_test",
           "suggest_auto_tuner_settings",
+          "run_local_tuner",
           "run_auto_tuner",
           "preview_candidate",
           "copy_best_json",
@@ -209,10 +297,12 @@ module.exports = async function handler(req, res) {
           "scale_to_focal_length",
           "set_surface_value",
         ];
-    const knowledgeChunks = await retrieveLensKnowledge(message, { topK: 6 }).catch(() => []);
+    const knowledgeChunks = await retrieveLensKnowledge(message, { topK: 3 }).catch(() => []);
 
     const promptPayload = {
       userMessage: message,
+      aiBudgetMode: body.aiBudgetMode || "cheap",
+      modelRoute: { mode: route.mode, reason: route.reason },
       currentMetrics: metrics,
       currentLensSummary: lensSummary,
       recentAutoTuner,
@@ -221,6 +311,7 @@ module.exports = async function handler(req, res) {
       autonomousState,
       availableActions,
       retrievedKnowledge: formatKnowledgeSourcesForPrompt(knowledgeChunks),
+      knowledgeEmbeddingModel: EMBEDDING_MODEL,
     };
 
     const openaiResponse = await fetch(OPENAI_URL, {
@@ -230,7 +321,7 @@ module.exports = async function handler(req, res) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_LENS_ASSISTANT_MODEL || "gpt-5.2",
+        model: route.model,
         instructions: buildInstructions(),
         input: [
           {
@@ -251,7 +342,8 @@ module.exports = async function handler(req, res) {
             schema: responseSchema(),
           },
         },
-        max_output_tokens: 1400,
+        max_output_tokens: route.maxOutputTokens,
+        prompt_cache_key: route.promptCacheKey,
         store: false,
       }),
     });
@@ -289,12 +381,13 @@ module.exports = async function handler(req, res) {
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
       shouldContinue: !!parsed.shouldContinue,
       stopReason: String(parsed.stopReason || ""),
-      goalStatus: {
-        success: !!parsed?.goalStatus?.success,
-        confidence: numberOrNull(parsed?.goalStatus?.confidence) ?? 0.5,
-        summary: String(parsed?.goalStatus?.summary || ""),
-      },
-    });
+        goalStatus: {
+          success: !!parsed?.goalStatus?.success,
+          confidence: numberOrNull(parsed?.goalStatus?.confidence) ?? 0.5,
+          summary: String(parsed?.goalStatus?.summary || ""),
+        },
+        usage: extractUsage(data, route),
+      });
   } catch (error) {
     sendJson(res, 500, {
       assistantMessage: `AI backend failed: ${error?.message || String(error)}`,
