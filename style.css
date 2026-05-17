@@ -706,7 +706,7 @@ canvas{
 }
 .aiCandidateActions{
   display:grid;
-  grid-template-columns:1fr 1fr 1fr;
+  grid-template-columns:1fr 1fr;
   gap:7px;
   margin-top:8px;
 }
@@ -727,6 +727,36 @@ canvas{
   color:rgba(255,255,255,.58);
   font-size:12px;
   line-height:1.45;
+}
+.aiAutoGrid{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:8px;
+  margin:8px 0;
+}
+.aiAutoGrid label{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  font-size:12px;
+  color:rgba(255,255,255,.62);
+}
+.aiAutoGrid input{
+  border:1px solid rgba(255,255,255,.18);
+  background:#0a0f17;
+  color:rgba(255,255,255,.92);
+  border-radius:8px;
+  padding:7px 8px;
+}
+.aiAutonomousActions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin-top:8px;
+}
+.aiAutonomousActions .btn{
+  width:100%;
+  padding:8px 9px;
 }
 .aiChat{
   min-width:0;
@@ -777,6 +807,26 @@ canvas{
   padding:0 16px 12px 16px;
   display:grid;
   gap:8px;
+}
+.aiAutonomousLog{
+  flex:0 0 auto;
+  max-height:180px;
+  overflow:auto;
+  display:grid;
+  gap:6px;
+  padding:0 16px 12px 16px;
+}
+.aiLogLine{
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:10px;
+  padding:7px 9px;
+  background:rgba(0,0,0,.17);
+  color:rgba(255,255,255,.70);
+  font-size:12px;
+  line-height:1.35;
+}
+.aiLogLine strong{
+  color:rgba(255,255,255,.90);
 }
 .aiActionCard{
   border:1px solid rgba(255,255,255,.12);

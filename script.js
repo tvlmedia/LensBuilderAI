@@ -331,10 +331,19 @@
     aiCandidateSummary: $("#aiCandidateSummary"),
     aiPreviewCandidate: $("#aiPreviewCandidate"),
     aiApplyCandidate: $("#aiApplyCandidate"),
+    aiCopyBestJson: $("#aiCopyBestJson"),
     aiRevertCandidate: $("#aiRevertCandidate"),
+    aiAutonomousMode: $("#aiAutonomousMode"),
+    aiMaxSteps: $("#aiMaxSteps"),
+    aiMaxTunerRuns: $("#aiMaxTunerRuns"),
+    aiMaxTunerIterations: $("#aiMaxTunerIterations"),
+    aiStopOnSuccess: $("#aiStopOnSuccess"),
+    aiRunAutonomous: $("#aiRunAutonomous"),
+    aiStopAutonomous: $("#aiStopAutonomous"),
     aiAllowTools: $("#aiAllowTools"),
     aiRequireApproval: $("#aiRequireApproval"),
     aiChatHistory: $("#aiChatHistory"),
+    aiAutonomousLog: $("#aiAutonomousLog"),
     aiActionQueue: $("#aiActionQueue"),
     aiChatForm: $("#aiChatForm"),
     aiChatInput: $("#aiChatInput"),
@@ -10215,6 +10224,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     autoTunerState.stopReason = reason || "Stopped";
     updateAutoTunerProgress(true);
     updateLensAiCandidateFromAutoTuner();
+    notifyLensAiAutoTunerFinished(autoTunerState.stopReason);
     if (reason) toast(`Auto Tuner: ${reason}`, 1800);
   }
 
@@ -10226,6 +10236,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     autoTunerState.stopReason = `Crashed: ${error?.message || error}`;
     if (autoTunerState.originalLens) loadLens(autoTunerState.originalLens);
     updateAutoTunerProgress(true);
+    notifyLensAiAutoTunerFinished(autoTunerState.stopReason);
     toast("Auto Tuner stopped and original lens restored", 2600);
   }
 
@@ -10805,9 +10816,32 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     latestCandidateMerit: null,
     originalLens: null,
     busy: false,
+    autoTunerWaiters: [],
+    autonomous: {
+      running: false,
+      stopRequested: false,
+      goal: "",
+      steps: 0,
+      tunerRuns: 0,
+      maxSteps: 6,
+      maxTunerRuns: 3,
+      maxTunerIterations: 5000,
+      stopOnSuccess: true,
+      originalMetrics: null,
+      lastGoalStatus: null,
+      stopReason: "",
+    },
   };
 
-  const LENS_AI_SAFE_AUTORUN = new Set(["get_lens_state", "get_lens_metrics", "run_corner_focus_test"]);
+  const LENS_AI_SAFE_AUTORUN = new Set([
+    "get_lens_state",
+    "get_lens_metrics",
+    "run_corner_focus_test",
+    "suggest_auto_tuner_settings",
+    "run_auto_tuner",
+    "preview_candidate",
+    "copy_best_json",
+  ]);
   const LENS_AI_STRUCTURAL_ACTIONS = new Set([
     "apply_candidate",
     "add_weak_rear_field_flattener",
@@ -10875,7 +10909,54 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     };
   }
 
-  function getLensAiPayload(message) {
+  function getLensAiAvailableActions() {
+    return [
+      "get_lens_state",
+      "get_lens_metrics",
+      "run_corner_focus_test",
+      "suggest_auto_tuner_settings",
+      "run_auto_tuner",
+      "preview_candidate",
+      "copy_best_json",
+      "apply_candidate",
+      "revert_to_original",
+      "add_weak_rear_field_flattener",
+      "scale_to_focal_length",
+      "set_surface_value",
+    ];
+  }
+
+  function getLensAiAutonomousSettings() {
+    return {
+      enabled: !!ui.aiAutonomousMode?.checked,
+      maxSteps: Math.max(1, Math.min(20, Math.floor(num(ui.aiMaxSteps?.value, 6)))),
+      maxTunerRuns: Math.max(0, Math.min(10, Math.floor(num(ui.aiMaxTunerRuns?.value, 3)))),
+      maxTunerIterations: Math.max(50, Math.min(50000, Math.floor(num(ui.aiMaxTunerIterations?.value, 5000)))),
+      stopOnSuccess: ui.aiStopOnSuccess ? !!ui.aiStopOnSuccess.checked : true,
+      requireApprovalBeforeApply: ui.aiRequireApproval ? !!ui.aiRequireApproval.checked : true,
+    };
+  }
+
+  function getLensAiAutonomousPayloadState() {
+    const a = lensAiState.autonomous || {};
+    return {
+      enabled: !!ui.aiAutonomousMode?.checked,
+      running: !!a.running,
+      stopRequested: !!a.stopRequested,
+      steps: a.steps || 0,
+      tunerRuns: a.tunerRuns || 0,
+      maxSteps: a.maxSteps || num(ui.aiMaxSteps?.value, 6),
+      maxTunerRuns: a.maxTunerRuns || num(ui.aiMaxTunerRuns?.value, 3),
+      maxTunerIterations: a.maxTunerIterations || num(ui.aiMaxTunerIterations?.value, 5000),
+      stopOnSuccess: ui.aiStopOnSuccess ? !!ui.aiStopOnSuccess.checked : true,
+      originalMetrics: a.originalMetrics || null,
+      latestCandidate: getLensAiCandidateSummaryData(),
+      goalStatus: a.lastGoalStatus || null,
+      stopReason: a.stopReason || "",
+    };
+  }
+
+  function getLensAiPayload(message, opts = {}) {
     const lensJson = clone(lens);
     recomputeSurfacePositionsForLens(lensJson);
     return {
@@ -10886,6 +10967,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       recentAutoTuner: getLensAiRecentAutoTuner(),
       toolResults: lensAiState.toolResults.slice(-5),
       history: lensAiState.messages.slice(-12).map((m) => ({ role: m.role, content: m.content })),
+      autonomousState: opts.autonomousState || getLensAiAutonomousPayloadState(),
+      availableActions: getLensAiAvailableActions(),
     };
   }
 
@@ -10969,6 +11052,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const hasCandidate = !!candidate;
     ui.aiPreviewCandidate.disabled = !hasCandidate || autoTunerState.running;
     ui.aiApplyCandidate.disabled = !hasCandidate || autoTunerState.running;
+    if (ui.aiCopyBestJson) ui.aiCopyBestJson.disabled = !hasCandidate;
     ui.aiRevertCandidate.disabled = !lensAiState.originalLens && !autoTunerState.originalLens;
     if (!hasCandidate) {
       ui.aiCandidateSummary.textContent = "No candidate yet.";
@@ -10981,6 +11065,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       `<span>Best candidate</span><strong>${Number.isFinite(score) ? scoreText(score) : "Ready"}</strong>`,
       `EFL ${escapeAttr(mmText(m?.efl))} • ${escapeAttr(tText(m?.tStop))} • IC ${escapeAttr(mmText(m?.imageCircleMm, 1))}`,
       `COV ${m?.cov ? "YES" : "NO"} • corner RMS ${escapeAttr(mmText(m?.cornerRmsMm, 4))}`,
+      `center RMS ${escapeAttr(mmText(m?.centerRmsMm, 4))} • FC ${escapeAttr(mmText(m?.fieldCurvatureDeltaMm, 3))}`,
       Number.isFinite(iter) ? `Best iter ${Math.max(0, Math.floor(iter))}` : "",
     ].filter(Boolean).join("<br>");
   }
@@ -10992,6 +11077,24 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     } catch (_) {
       return null;
     }
+  }
+
+  function getLensAiCandidateSummaryData() {
+    const candidate = getLensAiCandidateLens();
+    const merit = getLensAiCandidateMerit();
+    const metrics = merit?.metrics ? compactLensAiMetrics(merit.metrics) : (candidate ? getLensAiMetricsForCandidate(candidate) : null);
+    const bestIter = Number(autoTunerState.bestIteration);
+    const iter = Number(autoTunerState.iteration || 0);
+    return {
+      exists: !!candidate,
+      score: finiteOrNull(merit?.totalScore),
+      metrics,
+      bestIteration: Number.isFinite(bestIter) ? bestIter : null,
+      sinceBest: Number.isFinite(bestIter) ? Math.max(0, iter - bestIter) : null,
+      accepted: autoTunerState.acceptedMoves || 0,
+      rejected: autoTunerState.rejectedMoves || 0,
+      invalid: autoTunerState.invalidMoves || 0,
+    };
   }
 
   function appendLensAiMessage(role, content) {
@@ -11013,11 +11116,27 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     lensAiState.toolResults.push(result);
     lensAiState.toolResults = lensAiState.toolResults.slice(-12);
     appendLensAiMessage("tool", `${result.title}\n${result.text}`);
+    return result;
+  }
+
+  function appendLensAiLog(label, text = "") {
+    if (!ui.aiAutonomousLog) return;
+    const d = document.createElement("div");
+    d.className = "aiLogLine";
+    d.innerHTML = `<strong>${escapeAttr(label)}</strong>${text ? ` ${escapeAttr(text)}` : ""}`;
+    ui.aiAutonomousLog.appendChild(d);
+    ui.aiAutonomousLog.scrollTop = ui.aiAutonomousLog.scrollHeight;
+  }
+
+  function clearLensAiLog() {
+    if (ui.aiAutonomousLog) ui.aiAutonomousLog.innerHTML = "";
   }
 
   function setLensAiBusy(busy, message = "") {
     lensAiState.busy = !!busy;
     if (ui.aiSend) ui.aiSend.disabled = !!busy;
+    if (ui.aiRunAutonomous) ui.aiRunAutonomous.disabled = !!busy || !!lensAiState.autonomous?.running;
+    if (ui.aiStopAutonomous) ui.aiStopAutonomous.disabled = !lensAiState.autonomous?.running;
     if (ui.aiStatus) ui.aiStatus.textContent = message || (busy ? "Thinking..." : "Ready.");
   }
 
@@ -11028,6 +11147,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     ui.aiAssistantModal.setAttribute("aria-hidden", "false");
     updateLensAiLensSummary();
     updateLensAiCandidateSummary();
+    setLensAiAutonomousRunning(!!lensAiState.autonomous?.running);
     if (!lensAiState.messages.length) {
       appendLensAiMessage(
         "assistant",
@@ -11065,8 +11185,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (t === "get_lens_state") return "Inspect lens JSON";
     if (t === "get_lens_metrics") return "Read current metrics";
     if (t === "run_corner_focus_test") return "Run Corner Focus Test";
+    if (t === "suggest_auto_tuner_settings") return "Suggest tuner settings";
     if (t === "run_auto_tuner") return "Run suggested tuner";
     if (t === "preview_candidate") return "Preview best";
+    if (t === "copy_best_json") return "Copy best JSON";
     if (t === "apply_candidate") return "Apply candidate";
     if (t === "revert_to_original") return "Revert";
     if (t === "add_weak_rear_field_flattener") return "Add rear flattener";
@@ -11108,6 +11230,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   function lensAiActionHint(action) {
     if (action.type === "run_auto_tuner") return "Uses existing Auto Tuner with hard FL/T constraints and no automatic apply.";
+    if (action.type === "suggest_auto_tuner_settings") return "Builds safe Auto Tuner settings without changing the lens.";
     if (action.type === "run_corner_focus_test") return "Checks whether corner blur looks like field curvature, coma/astigmatism, or coverage.";
     if (action.requiresApproval) return "Requires approval before changing the lens.";
     return "Safe read-only action.";
@@ -11121,10 +11244,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     setTimeout(() => executeLensAiAction(action), 80);
   }
 
-  async function requestLensAiPlan(message) {
+  async function requestLensAiPlan(message, opts = {}) {
     let payload;
     try {
-      payload = getLensAiPayload(message);
+      payload = getLensAiPayload(message, opts);
     } catch (e) {
       e.lensAiStage = "frontend";
       throw e;
@@ -11163,11 +11286,198 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
   }
 
+  function lensAiGoalMentionsCorners(goal) {
+    return /corner|hoek|sharp|scherp|field|coma|astig|circle|coverage|vignet/i.test(String(goal || ""));
+  }
+
+  function lensAiGoalStatusSummary() {
+    const original = lensAiState.autonomous?.originalMetrics || null;
+    const candidate = getLensAiCandidateSummaryData();
+    const m = candidate?.metrics || null;
+    if (!candidate?.exists || !m || !original) {
+      return {
+        success: false,
+        confidence: 0.2,
+        summary: "No candidate has been produced yet.",
+      };
+    }
+    const eflOk = Number.isFinite(Number(m.efl)) && m.efl >= 49.25 && m.efl <= 50.75;
+    const tOk = Number.isFinite(Number(m.tStop)) && m.tStop >= 1.80 && m.tStop <= 2.20;
+    const covOk = m.cov === true;
+    const cornerImproved = Number.isFinite(Number(m.cornerRmsMm)) &&
+      Number.isFinite(Number(original.cornerRmsMm)) &&
+      m.cornerRmsMm < original.cornerRmsMm;
+    const centerOk = !Number.isFinite(Number(m.centerRmsMm)) ||
+      !Number.isFinite(Number(original.centerRmsMm)) ||
+      m.centerRmsMm <= original.centerRmsMm * 1.25;
+    const fcOriginal = Math.abs(Number(original.fieldCurvatureDeltaMm));
+    const fcCandidate = Math.abs(Number(m.fieldCurvatureDeltaMm));
+    const fcImproved = Number.isFinite(fcOriginal) && Number.isFinite(fcCandidate) ? fcCandidate <= fcOriginal : true;
+    const icPreferred = Number.isFinite(Number(m.imageCircleMm)) && m.imageCircleMm >= 45;
+    const success = eflOk && tOk && covOk && cornerImproved && centerOk && fcImproved;
+    const checks = [eflOk, tOk, covOk, cornerImproved, centerOk, fcImproved, icPreferred].filter(Boolean).length;
+    return {
+      success,
+      confidence: Math.max(0.1, Math.min(1, checks / 7)),
+      summary: [
+        `EFL ${mmText(m.efl)} ${eflOk ? "OK" : "outside 49.25-50.75"}`,
+        `${tText(m.tStop)} ${tOk ? "OK" : "outside T1.80-T2.20"}`,
+        `COV ${covOk ? "YES" : "NO"}`,
+        `corner RMS ${mmText(original.cornerRmsMm, 4)} -> ${mmText(m.cornerRmsMm, 4)}${cornerImproved ? " improved" : " not improved"}`,
+        `center RMS ${centerOk ? "within limit" : "worse >25%"}`,
+        icPreferred ? "IC >=45mm" : `IC ${mmText(m.imageCircleMm, 1)}`,
+      ].join("; "),
+    };
+  }
+
+  function setLensAiAutonomousRunning(running) {
+    lensAiState.autonomous.running = !!running;
+    if (ui.aiRunAutonomous) ui.aiRunAutonomous.disabled = !!running || !!lensAiState.busy;
+    if (ui.aiStopAutonomous) ui.aiStopAutonomous.disabled = !running;
+    if (ui.aiAutonomousMode) ui.aiAutonomousMode.disabled = !!running;
+  }
+
+  function stopLensAiAutonomous(reason = "Stopped by user") {
+    lensAiState.autonomous.stopRequested = true;
+    lensAiState.autonomous.stopReason = reason;
+    if (autoTunerState.running) stopAutoTuner();
+    appendLensAiLog("Stop requested:", reason);
+    setLensAiAutonomousRunning(false);
+    setLensAiBusy(false, reason);
+  }
+
+  async function runLensAiAutonomousPreflight(goal) {
+    appendLensAiLog("Step 1:", "Reading current metrics");
+    const metrics = getLensAiMetrics({ includeFieldFocus: false });
+    lensAiState.autonomous.originalMetrics = metrics;
+    appendLensAiToolResult("Lens metrics", formatLensAiMetricsText(metrics), metrics);
+    updateLensAiLensSummary();
+
+    if (lensAiGoalMentionsCorners(goal)) {
+      appendLensAiLog("Step 2:", "Running Corner Focus Test");
+      lastCornerFocusReport = buildCornerFocusReport(lens);
+      if (isCornerFocusModalOpen()) renderCornerFocusReport(lastCornerFocusReport);
+      const result = lensAiCornerFocusToolResult(lastCornerFocusReport);
+      appendLensAiToolResult("Corner Focus Test", result.text, result.data);
+      lensAiState.autonomous.originalMetrics = getLensAiMetrics({ includeFieldFocus: true });
+    }
+  }
+
+  async function startLensAiAutonomous(goalRaw = "") {
+    const goal = String(goalRaw || ui.aiChatInput?.value || lensAiState.autonomous.goal || "").trim();
+    if (!goal || lensAiState.autonomous.running) return;
+    const settings = getLensAiAutonomousSettings();
+    lensAiState.originalLens = clone(lens);
+    lensAiState.autonomous = {
+      ...lensAiState.autonomous,
+      running: true,
+      stopRequested: false,
+      goal,
+      steps: 0,
+      tunerRuns: 0,
+      maxSteps: settings.maxSteps,
+      maxTunerRuns: settings.maxTunerRuns,
+      maxTunerIterations: settings.maxTunerIterations,
+      stopOnSuccess: settings.stopOnSuccess,
+      originalMetrics: null,
+      lastGoalStatus: null,
+      stopReason: "",
+    };
+    clearLensAiLog();
+    setLensAiAutonomousRunning(true);
+    setLensAiBusy(true, "AI is improving the lens...");
+
+    try {
+      await runLensAiAutonomousPreflight(goal);
+      while (
+        lensAiState.autonomous.running &&
+        !lensAiState.autonomous.stopRequested &&
+        lensAiState.autonomous.steps < lensAiState.autonomous.maxSteps
+      ) {
+        lensAiState.autonomous.steps++;
+        const stepNo = lensAiState.autonomous.steps;
+        appendLensAiLog(`Step ${stepNo}:`, "Asking AI for next strategy");
+        const result = await requestLensAiPlan(goal, {
+          autonomousState: getLensAiAutonomousPayloadState(),
+        });
+        const assistantMessage = String(result?.assistantMessage || result?.message || "Continuing autonomous lens improvement.");
+        appendLensAiMessage("assistant", assistantMessage);
+        const actions = (Array.isArray(result?.actions) ? result.actions : []).map(normalizeLensAiAction).filter((a) => a.type);
+        renderLensAiActions(actions);
+
+        if (!actions.length) {
+          lensAiState.autonomous.stopReason = result?.stopReason || "AI returned no further actions.";
+          break;
+        }
+
+        for (const action of actions) {
+          if (lensAiState.autonomous.stopRequested) break;
+          if (action.type === "run_auto_tuner" && lensAiState.autonomous.tunerRuns >= lensAiState.autonomous.maxTunerRuns) {
+            appendLensAiLog("Tuner limit:", `Skipped ${action.label}; max tuner runs reached.`);
+            appendLensAiToolResult("Tuner limit reached", `Skipped ${action.label}; max tuner runs reached.`);
+            continue;
+          }
+          if (action.requiresApproval) {
+            appendLensAiLog("Approval needed:", `${action.label}. Stopping autonomous loop before permanent/structural change.`);
+            lensAiState.autonomous.stopReason = `${action.label} requires approval.`;
+            lensAiState.autonomous.stopRequested = true;
+            break;
+          }
+          appendLensAiLog(`Step ${stepNo}:`, action.label);
+          await executeLensAiAction(action, { autonomous: true, headless: true });
+        }
+
+        const localGoal = lensAiGoalStatusSummary();
+        lensAiState.autonomous.lastGoalStatus = result?.goalStatus || localGoal;
+        updateLensAiCandidateSummary();
+        if (settings.stopOnSuccess && localGoal.success) {
+          lensAiState.autonomous.stopReason = "Success criteria met.";
+          break;
+        }
+        if (result?.shouldContinue === false) {
+          lensAiState.autonomous.stopReason = result?.stopReason || localGoal.summary || "AI stopped.";
+          break;
+        }
+      }
+
+      if (!lensAiState.autonomous.stopReason) {
+        lensAiState.autonomous.stopReason = lensAiState.autonomous.steps >= lensAiState.autonomous.maxSteps
+          ? "Reached max autonomous steps."
+          : "Stopped.";
+      }
+      const finalStatus = lensAiGoalStatusSummary();
+      lensAiState.autonomous.lastGoalStatus = finalStatus;
+      appendLensAiLog("Finished:", lensAiState.autonomous.stopReason);
+      appendLensAiMessage(
+        "assistant",
+        `Autonomous run finished: ${lensAiState.autonomous.stopReason}\n\n${finalStatus.summary}\n\nBest candidate is ready for Preview, Apply, Copy JSON, or Revert.`
+      );
+    } catch (e) {
+      if (lensAiState.originalLens) {
+        loadLens(lensAiState.originalLens);
+        renderAll();
+      }
+      const prefix = e?.lensAiStage === "frontend" ? "AI frontend error" : (e?.lensAiStage === "backend" ? "AI backend error" : "AI autonomous error");
+      appendLensAiMessage("assistant", `${prefix}: ${e?.message || e}`);
+      appendLensAiLog("Error:", "Original lens restored.");
+    } finally {
+      lensAiState.autonomous.running = false;
+      setLensAiAutonomousRunning(false);
+      setLensAiBusy(false, lensAiState.autonomous.stopReason || "Autonomous run complete.");
+      updateLensAiLensSummary();
+      updateLensAiCandidateSummary();
+    }
+  }
+
   async function submitLensAiMessage() {
     const message = String(ui.aiChatInput?.value || "").trim();
     if (!message || lensAiState.busy) return;
     ui.aiChatInput.value = "";
     appendLensAiMessage("user", message);
+    if (ui.aiAutonomousMode?.checked) {
+      await startLensAiAutonomous(message);
+      return;
+    }
     setLensAiBusy(true, "Asking AI assistant...");
     try {
       const result = await requestLensAiPlan(message);
@@ -11187,47 +11497,58 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return confirm(message || `${action?.label || "This action"} will change the lens. Continue?`);
   }
 
-  async function executeLensAiAction(actionRaw) {
+  async function executeLensAiAction(actionRaw, opts = {}) {
     const action = normalizeLensAiAction(actionRaw);
-    if (!action.type) return;
+    if (!action.type) return null;
+    if (opts.autonomous && action.requiresApproval) {
+      const text = `${action.label} requires user approval and was not run autonomously.`;
+      appendLensAiLog("Approval needed:", text);
+      return appendLensAiToolResult("Approval needed", text, { action });
+    }
     try {
       if (action.type === "get_lens_state") {
         const summary = compactLensForAiPrompt(lens);
-        appendLensAiToolResult("Lens state", `${summary.surfaceCount} surfaces loaded. OBJ/IMS are protected; labels are preserved.`, summary);
+        return appendLensAiToolResult("Lens state", `${summary.surfaceCount} surfaces loaded. OBJ/IMS are protected; labels are preserved.`, summary);
       } else if (action.type === "get_lens_metrics") {
         const metrics = getLensAiMetrics({ includeFieldFocus: false });
         updateLensAiLensSummary();
-        appendLensAiToolResult("Lens metrics", formatLensAiMetricsText(metrics), metrics);
+        return appendLensAiToolResult("Lens metrics", formatLensAiMetricsText(metrics), metrics);
       } else if (action.type === "run_corner_focus_test") {
         lastCornerFocusReport = buildCornerFocusReport(lens);
         if (isCornerFocusModalOpen()) renderCornerFocusReport(lastCornerFocusReport);
         const result = lensAiCornerFocusToolResult(lastCornerFocusReport);
-        appendLensAiToolResult("Corner Focus Test", result.text, result.data);
+        return appendLensAiToolResult("Corner Focus Test", result.text, result.data);
+      } else if (action.type === "suggest_auto_tuner_settings") {
+        const settings = buildLensAiSuggestedTunerSettings(action.args || {});
+        return appendLensAiToolResult("Suggested Auto Tuner settings", formatLensAiTunerSettingsText(settings), settings);
       } else if (action.type === "run_auto_tuner") {
-        runLensAiAutoTunerAction(action);
+        return await runLensAiAutoTunerAction(action, opts);
       } else if (action.type === "preview_candidate") {
-        previewLensAiCandidate();
+        return previewLensAiCandidate();
+      } else if (action.type === "copy_best_json") {
+        return await copyLensAiBestJson();
       } else if (action.type === "apply_candidate") {
-        applyLensAiCandidate(action);
+        return applyLensAiCandidate(action);
       } else if (action.type === "revert_to_original") {
-        revertLensAiOriginal();
+        return revertLensAiOriginal();
       } else if (action.type === "add_weak_rear_field_flattener") {
-        if (!requireLensAiApproval(action, "Add a weak rear field flattener before IMS?")) return;
+        if (!requireLensAiApproval(action, "Add a weak rear field flattener before IMS?")) return null;
         if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
         addWeakRearFieldFlattener();
         updateLensAiLensSummary();
-        appendLensAiToolResult("Added field flattener", formatLensAiMetricsText(getLensAiMetrics({ includeFieldFocus: false })));
+        return appendLensAiToolResult("Added field flattener", formatLensAiMetricsText(getLensAiMetrics({ includeFieldFocus: false })));
       } else if (action.type === "scale_to_focal_length") {
-        if (!requireLensAiApproval(action, "Scale optical geometry to the requested focal length?")) return;
-        scaleLensAiToFocalLength(action);
+        if (!requireLensAiApproval(action, "Scale optical geometry to the requested focal length?")) return null;
+        return scaleLensAiToFocalLength(action);
       } else if (action.type === "set_surface_value") {
-        appendLensAiToolResult("Surface edit blocked", "set_surface_value is disabled in v1. Use the surface table for direct edits.");
+        return appendLensAiToolResult("Surface edit blocked", "set_surface_value is disabled in v1. Use the surface table for direct edits.");
       } else {
-        appendLensAiToolResult("Unknown action", `Action type "${action.type}" is not implemented in v1.`);
+        return appendLensAiToolResult("Unknown action", `Action type "${action.type}" is not implemented in v1.`);
       }
-      updateLensAiCandidateSummary();
     } catch (e) {
-      appendLensAiToolResult("Action failed", `${action.label}: ${e?.message || e}`);
+      return appendLensAiToolResult("Action failed", `${action.label}: ${e?.message || e}`, { error: true });
+    } finally {
+      updateLensAiCandidateSummary();
     }
   }
 
@@ -11285,19 +11606,136 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return "unknown";
   }
 
-  function runLensAiAutoTunerAction(action) {
+  function buildLensAiSuggestedTunerSettings(args = {}) {
+    const current = getLensAiMetrics({ includeFieldFocus: false });
+    const targetFL = Number(args?.targets?.focalLength?.target ?? args?.targetFocalLength ?? current.efl ?? 50);
+    const targetT = Number(args?.targets?.tStop?.target ?? args?.targetTStop ?? current.tStop ?? 2);
+    return {
+      preset: String(args?.preset || "cornerFlatten"),
+      iterations: Math.max(50, Math.floor(Number(args?.iterations || lensAiState.autonomous?.maxTunerIterations || num(ui.aiMaxTunerIterations?.value, 5000)))),
+      stepSize: String(args?.stepSize || "small"),
+      runSpeed: String(args?.runSpeed || "safe"),
+      maxStuckIterations: Math.max(50, Math.floor(Number(args?.maxStuckIterations || 700))),
+      targets: {
+        focalLength: { enabled: true, target: Number.isFinite(targetFL) && targetFL > 0 ? targetFL : 50 },
+        tStop: { enabled: true, target: Number.isFinite(targetT) && targetT > 0 ? targetT : 2 },
+        imageCircle: { enabled: true, target: Number(args?.targets?.imageCircle?.target ?? 45) || 45 },
+      },
+      hardConstraints: {
+        focalLength: { enabled: true, tolerance: Number(args?.hardConstraints?.focalLength?.tolerance ?? 0.75) || 0.75 },
+        tStop: { enabled: true, tolerance: Number(args?.hardConstraints?.tStop?.tolerance ?? 0.20) || 0.20 },
+        imageCircle: { enabled: !!args?.hardConstraints?.imageCircle?.enabled, minimum: Number(args?.hardConstraints?.imageCircle?.minimum ?? 45) || 45 },
+      },
+      allowedVariables: {
+        radii: args?.allowedVariables?.radii !== false,
+        airGaps: args?.allowedVariables?.airGaps !== false,
+        stopPosition: args?.allowedVariables?.stopPosition !== false,
+        frontGroupSpacing: args?.allowedVariables?.frontGroupSpacing !== false,
+        rearGroupSpacing: args?.allowedVariables?.rearGroupSpacing !== false,
+        rearElementSpacing: args?.allowedVariables?.rearElementSpacing !== false,
+        fieldFlattenerRadii: !!args?.allowedVariables?.fieldFlattenerRadii,
+        fieldFlattenerPosition: !!args?.allowedVariables?.fieldFlattenerPosition,
+        fieldFlattenerThickness: !!args?.allowedVariables?.fieldFlattenerThickness,
+        clearApertures: false,
+        stopAperture: false,
+        glassThicknesses: false,
+        glassTypes: false,
+        sensorShift: false,
+        imsAperture: false,
+      },
+    };
+  }
+
+  function formatLensAiTunerSettingsText(settings) {
+    return [
+      `Preset: ${settings.preset}`,
+      `Iterations: ${settings.iterations}`,
+      `Step size: ${settings.stepSize}; speed: ${settings.runSpeed}`,
+      `Hard EFL: ${settings.targets.focalLength.target} +/- ${settings.hardConstraints.focalLength.tolerance}mm`,
+      `Hard T: ${settings.targets.tStop.target} +/- ${settings.hardConstraints.tStop.tolerance}`,
+      `IC target: ${settings.targets.imageCircle.target}mm${settings.hardConstraints.imageCircle.enabled ? " hard minimum" : " soft"}`,
+      `Allowed: ${Object.entries(settings.allowedVariables).filter(([, v]) => v).map(([k]) => k).join(", ") || "none"}`,
+    ].join("\n");
+  }
+
+  function notifyLensAiAutoTunerFinished(reason) {
+    const waiters = lensAiState.autoTunerWaiters.splice(0);
+    const summary = buildLensAiAutoTunerResult(reason || autoTunerState.stopReason || "Stopped");
+    for (const resolve of waiters) resolve(summary);
+  }
+
+  function waitForLensAiAutoTunerFinish() {
+    if (!autoTunerState.running) return Promise.resolve(buildLensAiAutoTunerResult(autoTunerState.stopReason || "Not running"));
+    return new Promise((resolve) => lensAiState.autoTunerWaiters.push(resolve));
+  }
+
+  function buildLensAiAutoTunerResult(reason = "") {
+    const merit = autoTunerState.bestMerit || null;
+    const metrics = merit?.metrics ? compactLensAiMetrics(merit.metrics) : null;
+    const bestIter = Number(autoTunerState.bestIteration);
+    const iter = Number(autoTunerState.iteration || 0);
+    const orig = Number(autoTunerState.originalMerit?.totalScore);
+    const best = Number(merit?.totalScore);
+    const improvement = Number.isFinite(orig) && Number.isFinite(best) && Math.abs(orig) > 1e-12
+      ? ((orig - best) / Math.abs(orig)) * 100
+      : null;
+    return {
+      reason,
+      bestScore: finiteOrNull(best),
+      bestMetrics: metrics,
+      bestIteration: Number.isFinite(bestIter) ? bestIter : null,
+      sinceBest: Number.isFinite(bestIter) ? Math.max(0, iter - bestIter) : null,
+      improvement: Number.isFinite(Number(improvement)) ? improvement : null,
+      accepted: autoTunerState.acceptedMoves || 0,
+      rejected: autoTunerState.rejectedMoves || 0,
+      invalid: autoTunerState.invalidMoves || 0,
+      hardRejectedFL: autoTunerState.hardRejectedFL || 0,
+      hardRejectedT: autoTunerState.hardRejectedT || 0,
+      hardRejectedIC: autoTunerState.hardRejectedIC || 0,
+    };
+  }
+
+  function formatLensAiAutoTunerResultText(result) {
+    const m = result?.bestMetrics || {};
+    return [
+      `Status: ${result?.reason || "Stopped"}`,
+      `Best score: ${scoreText(result?.bestScore)}`,
+      `Best iter: ${result?.bestIteration ?? "—"}; since best: ${result?.sinceBest ?? "—"}`,
+      `EFL: ${mmText(m.efl)}; ${tText(m.tStop)}; IC: ${mmText(m.imageCircleMm, 1)}; COV: ${m.cov ? "YES" : "NO"}`,
+      `Center RMS: ${mmText(m.centerRmsMm, 4)}; corner RMS: ${mmText(m.cornerRmsMm, 4)}; FC: ${mmText(m.fieldCurvatureDeltaMm, 3)}`,
+      `Accepted/rejected/invalid: ${result?.accepted || 0}/${result?.rejected || 0}/${result?.invalid || 0}`,
+    ].join("\n");
+  }
+
+  async function runLensAiAutoTunerAction(action, opts = {}) {
     if (autoTunerState.running) {
-      appendLensAiToolResult("Auto Tuner", "Auto Tuner is already running.");
-      return;
+      return appendLensAiToolResult("Auto Tuner", "Auto Tuner is already running.");
     }
     if (!lensAiState.originalLens) lensAiState.originalLens = clone(lens);
-    configureAutoTunerFromLensAiArgs(action.args || {});
-    openAutoTunerModal();
+    const settings = buildLensAiSuggestedTunerSettings(action.args || {});
+    if (opts.autonomous) {
+      const maxIter = Math.max(50, Number(lensAiState.autonomous?.maxTunerIterations || num(ui.aiMaxTunerIterations?.value, 5000)));
+      settings.iterations = Math.min(settings.iterations, maxIter);
+      lensAiState.autonomous.tunerRuns++;
+      appendLensAiLog(`Step ${lensAiState.autonomous.steps}:`, `Running Auto Tuner (${settings.iterations} iterations, ${settings.stepSize}, ${settings.runSpeed})`);
+    }
+    configureAutoTunerFromLensAiArgs(settings);
+    if (!opts.headless) openAutoTunerModal();
     startAutoTuner();
-    appendLensAiToolResult(
-      "Auto Tuner started",
-      "Running suggested tuner with existing Auto Tuner safety checks. It will not apply the best result automatically."
-    );
+    if (!autoTunerState.running) {
+      const result = buildLensAiAutoTunerResult(autoTunerState.stopReason || "Auto Tuner did not start");
+      return appendLensAiToolResult("Auto Tuner result", formatLensAiAutoTunerResultText(result), result);
+    }
+    if (!opts.autonomous) {
+      return appendLensAiToolResult(
+        "Auto Tuner started",
+        "Running suggested tuner with existing Auto Tuner safety checks. It will not apply the best result automatically.",
+        { settings }
+      );
+    }
+    const result = await waitForLensAiAutoTunerFinish();
+    updateLensAiCandidateFromAutoTuner();
+    return appendLensAiToolResult("Auto Tuner result", formatLensAiAutoTunerResultText(result), result);
   }
 
   function configureAutoTunerFromLensAiArgs(args) {
@@ -11370,6 +11808,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
     appendLensAiToolResult("Preview best", "Rendered the candidate in the ray pane without applying it permanently.");
     toast("Previewed AI candidate");
+    return { previewed: true };
   }
 
   function applyLensAiCandidate(action) {
@@ -11381,7 +11820,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     renderAll();
     if (preview.ready) scheduleRenderPreview({ force: true });
     updateLensAiLensSummary();
-    appendLensAiToolResult("Applied candidate", formatLensAiMetricsText(getLensAiMetrics({ includeFieldFocus: false })));
+    return appendLensAiToolResult("Applied candidate", formatLensAiMetricsText(getLensAiMetrics({ includeFieldFocus: false })));
   }
 
   function revertLensAiOriginal() {
@@ -11391,7 +11830,28 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     renderAll();
     if (preview.ready) scheduleRenderPreview({ force: true });
     updateLensAiLensSummary();
-    appendLensAiToolResult("Reverted", "Restored the AI Assistant original lens clone.");
+    return appendLensAiToolResult("Reverted", "Restored the AI Assistant original lens clone.");
+  }
+
+  async function copyLensAiBestJson() {
+    const candidate = getLensAiCandidateLens();
+    if (!candidate) return appendLensAiToolResult("Copy best JSON", "No best candidate available yet.");
+    const out = clone(candidate);
+    const iter = Number(autoTunerState.bestIteration);
+    const score = Number(getLensAiCandidateMerit()?.totalScore);
+    if (Number.isFinite(iter) && Number.isFinite(score)) {
+      const note = `AI Lens Assistant best candidate found at iteration ${Math.max(0, Math.floor(iter))}, score ${scoreText(score, 5)}`;
+      if (Array.isArray(out.notes)) {
+        if (!out.notes.includes(note)) out.notes.push(note);
+      } else if (out.notes == null || out.notes === "") {
+        out.notes = [note];
+      } else {
+        out.notes = [String(out.notes), note];
+      }
+    }
+    await copyTextToClipboard(JSON.stringify(out, null, 2));
+    toast("Copied AI best JSON");
+    return appendLensAiToolResult("Copy best JSON", "Copied the current AI best candidate JSON.");
   }
 
   function scaleLensAiToFocalLength(action) {
@@ -11426,7 +11886,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     renderAll();
     scheduleRenderPreview();
     updateLensAiLensSummary();
-    appendLensAiToolResult("Scaled focal length", `Scaled EFL ${cur.toFixed(2)}mm -> ${target.toFixed(2)}mm with k=${k.toFixed(4)}. Clear apertures ${allowClearApertures ? "scaled" : "preserved"}.`);
+    return appendLensAiToolResult("Scaled focal length", `Scaled EFL ${cur.toFixed(2)}mm -> ${target.toFixed(2)}mm with k=${k.toFixed(4)}. Clear apertures ${allowClearApertures ? "scaled" : "preserved"}.`);
   }
 
   function wireLensAiUI() {
@@ -11449,7 +11909,16 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
     if (ui.aiPreviewCandidate) ui.aiPreviewCandidate.addEventListener("click", () => previewLensAiCandidate());
     if (ui.aiApplyCandidate) ui.aiApplyCandidate.addEventListener("click", () => applyLensAiCandidate({ type: "apply_candidate", label: "Apply candidate", requiresApproval: true }));
+    if (ui.aiCopyBestJson) ui.aiCopyBestJson.addEventListener("click", () => copyLensAiBestJson());
     if (ui.aiRevertCandidate) ui.aiRevertCandidate.addEventListener("click", revertLensAiOriginal);
+    if (ui.aiRunAutonomous) {
+      ui.aiRunAutonomous.addEventListener("click", () => {
+        const goal = String(ui.aiChatInput?.value || lensAiState.autonomous.goal || "").trim();
+        if (goal) appendLensAiMessage("user", goal);
+        startLensAiAutonomous(goal || "Improve this lens safely within the current constraints.");
+      });
+    }
+    if (ui.aiStopAutonomous) ui.aiStopAutonomous.addEventListener("click", () => stopLensAiAutonomous());
     ui.aiAssistantModal.addEventListener("mousedown", (e) => {
       if (e.target === ui.aiAssistantModal) closeLensAiAssistant();
     });

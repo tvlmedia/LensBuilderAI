@@ -44,13 +44,17 @@ function safeSliceArray(value, limit) {
 function buildInstructions() {
   return [
     "You are the AI Lens Assistant inside TVL LensBuilderAI.",
-    "You are a planner/controller, not the optical engine. The existing LensBuilder raytrace, metrics, Corner Focus Test, and Auto Tuner are the source of truth.",
+    "You are an autonomous optical design supervisor and planner/controller, not the optical engine. The existing LensBuilder raytrace, metrics, Corner Focus Test, and Auto Tuner are the source of truth.",
     "Never claim you directly optimized optics yourself. Request local tool actions and reason from returned tool results.",
     "Do not rewrite lens JSON. Do not request final application of a result unless the user explicitly asks, and keep apply_candidate requiring approval.",
     "Safety rules: never change OBJ or IMS, sensor W/H, IMS aperture, clear apertures, glass types, or surface labels unless explicitly allowed by the user.",
     "For 50mm F2 full-frame clean requests, default to hard EFL and T locks: EFL target 50mm or current EFL, tolerance +/-0.75mm; T target 2.0 or current T, tolerance +/-0.20; image circle 45mm soft unless hard requested.",
-    "For corner sharpness requests: first prefer get_lens_metrics and run_corner_focus_test. If field curvature is likely, suggest field curvature tuner or rear flattener. If coma/astigmatism is likely, suggest Auto Tuner radii/spacing/stop-position with FL/T hard locked.",
-    "Return concise assistantMessage plus zero or more safe actions. v1 should usually return one diagnostic action and optionally one tuner action. Do not request set_surface_value except to say it is disabled.",
+    "For corner sharpness requests: first use get_lens_metrics and run_corner_focus_test. If field curvature is likely, run Auto Tuner preset cornerFlatten with field curvature target, radii, air gaps, stop position, front/rear group spacing, rear spacing, and FL/T hard locked. If coma/astigmatism is likely, run Auto Tuner with radii/air gaps/stop position and FL/T hard locked. If IC/COV is the issue, optimize image circle/COV softly first and do not change clear apertures unless explicitly approved.",
+    "When autonomousState.enabled is true, do not ask the user to click every diagnostic or tuner step. Return safe actions directly with autoRunnable true. Stop before approval-required structural or final apply actions.",
+    "Default autonomous strategy for 'Make corners sharper but keep 50mm T2 full-frame': metrics -> corner focus test -> one Auto Tuner run with hard EFL/T locks -> analyze result -> another safe tuner strategy if needed -> stop with best candidate or ask approval for rear flattener.",
+    "Success criteria: EFL 49.25-50.75mm, T 1.80-2.20, COV YES, corner RMS improved vs original, center RMS not worse by more than 25%, field curvature delta improved if field curvature was detected. IC >=45mm is preferred.",
+    "Reject candidates conceptually if FL/T constraints are broken, e.g. a 90mm T3.8 result is unacceptable even if corners look better.",
+    "Always summarize what you tried and why. Return exact JSON matching the schema.",
   ].join("\n");
 }
 
@@ -73,8 +77,10 @@ function responseSchema() {
                 "get_lens_state",
                 "get_lens_metrics",
                 "run_corner_focus_test",
+                "suggest_auto_tuner_settings",
                 "run_auto_tuner",
                 "preview_candidate",
+                "copy_best_json",
                 "apply_candidate",
                 "revert_to_original",
                 "add_weak_rear_field_flattener",
@@ -94,8 +100,20 @@ function responseSchema() {
           required: ["id", "type", "label", "rationale", "requiresApproval", "autoRunnable", "args"],
         },
       },
+      shouldContinue: { type: "boolean" },
+      stopReason: { type: "string" },
+      goalStatus: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          success: { type: "boolean" },
+          confidence: { type: "number" },
+          summary: { type: "string" },
+        },
+        required: ["success", "confidence", "summary"],
+      },
     },
-    required: ["assistantMessage", "actions"],
+    required: ["assistantMessage", "actions", "shouldContinue", "stopReason", "goalStatus"],
   };
 }
 
@@ -121,7 +139,13 @@ module.exports = async function handler(req, res) {
     return;
   }
   if (req.method !== "POST") {
-    sendJson(res, 405, { assistantMessage: "Use POST for /api/lens-ai.", actions: [] });
+    sendJson(res, 405, {
+      assistantMessage: "Use POST for /api/lens-ai.",
+      actions: [],
+      shouldContinue: false,
+      stopReason: "method_not_allowed",
+      goalStatus: { success: false, confidence: 0, summary: "Wrong HTTP method." },
+    });
     return;
   }
 
@@ -130,6 +154,9 @@ module.exports = async function handler(req, res) {
     sendJson(res, 500, {
       assistantMessage: "AI backend is not configured. Set OPENAI_API_KEY on the server.",
       actions: [],
+      shouldContinue: false,
+      stopReason: "missing_openai_api_key",
+      goalStatus: { success: false, confidence: 0, summary: "AI backend is not configured." },
     });
     return;
   }
@@ -144,6 +171,23 @@ module.exports = async function handler(req, res) {
     const toolResults = safeSliceArray(body.toolResults, 5);
     const history = safeSliceArray(body.history, 12);
     const lensSummary = compactLensSummary(body);
+    const autonomousState = body.autonomousState || { enabled: false };
+    const availableActions = Array.isArray(body.availableActions) && body.availableActions.length
+      ? body.availableActions
+      : [
+          "get_lens_state",
+          "get_lens_metrics",
+          "run_corner_focus_test",
+          "suggest_auto_tuner_settings",
+          "run_auto_tuner",
+          "preview_candidate",
+          "copy_best_json",
+          "apply_candidate",
+          "revert_to_original",
+          "add_weak_rear_field_flattener",
+          "scale_to_focal_length",
+          "set_surface_value",
+        ];
 
     const promptPayload = {
       userMessage: message,
@@ -152,18 +196,8 @@ module.exports = async function handler(req, res) {
       recentAutoTuner,
       recentToolResults: toolResults,
       chatHistory: history,
-      availableActions: [
-        "get_lens_state",
-        "get_lens_metrics",
-        "run_corner_focus_test",
-        "run_auto_tuner",
-        "preview_candidate",
-        "apply_candidate",
-        "revert_to_original",
-        "add_weak_rear_field_flattener",
-        "scale_to_focal_length",
-        "set_surface_value",
-      ],
+      autonomousState,
+      availableActions,
     };
 
     const openaiResponse = await fetch(OPENAI_URL, {
@@ -204,6 +238,9 @@ module.exports = async function handler(req, res) {
       sendJson(res, 502, {
         assistantMessage: `OpenAI request failed (${openaiResponse.status}).`,
         actions: [],
+        shouldContinue: false,
+        stopReason: "openai_request_failed",
+        goalStatus: { success: false, confidence: 0, summary: "OpenAI request failed." },
         detail: detail.slice(0, 1200),
       });
       return;
@@ -218,17 +255,30 @@ module.exports = async function handler(req, res) {
       parsed = {
         assistantMessage: text || "I could not form a structured plan.",
         actions: [],
+        shouldContinue: false,
+        stopReason: "unstructured_model_output",
+        goalStatus: { success: false, confidence: 0.2, summary: "Model returned unstructured output." },
       };
     }
 
     sendJson(res, 200, {
       assistantMessage: String(parsed.assistantMessage || "I made a safe plan."),
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+      shouldContinue: !!parsed.shouldContinue,
+      stopReason: String(parsed.stopReason || ""),
+      goalStatus: {
+        success: !!parsed?.goalStatus?.success,
+        confidence: numberOrNull(parsed?.goalStatus?.confidence) ?? 0.5,
+        summary: String(parsed?.goalStatus?.summary || ""),
+      },
     });
   } catch (error) {
     sendJson(res, 500, {
       assistantMessage: `AI backend failed: ${error?.message || String(error)}`,
       actions: [],
+      shouldContinue: false,
+      stopReason: "backend_error",
+      goalStatus: { success: false, confidence: 0, summary: "AI backend failed." },
     });
   }
 };

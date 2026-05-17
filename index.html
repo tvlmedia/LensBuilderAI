@@ -707,7 +707,38 @@
             <div class="aiCandidateActions">
               <button id="aiPreviewCandidate" class="btn" type="button" disabled>Preview best</button>
               <button id="aiApplyCandidate" class="btn" type="button" disabled>Apply</button>
+              <button id="aiCopyBestJson" class="btn" type="button" disabled>Copy JSON</button>
               <button id="aiRevertCandidate" class="btn" type="button" disabled>Revert</button>
+            </div>
+          </section>
+
+          <section class="aiSideSection">
+            <div class="atSectionTitle">Autonomous</div>
+            <label class="aiToggle">
+              <input id="aiAutonomousMode" type="checkbox">
+              <span>Autonomous multi-step mode</span>
+            </label>
+            <div class="aiAutoGrid">
+              <label for="aiMaxSteps">
+                <span>Max AI steps</span>
+                <input id="aiMaxSteps" type="number" min="1" max="20" step="1" value="6">
+              </label>
+              <label for="aiMaxTunerRuns">
+                <span>Max tuner runs</span>
+                <input id="aiMaxTunerRuns" type="number" min="0" max="10" step="1" value="3">
+              </label>
+              <label for="aiMaxTunerIterations">
+                <span>Max tuner iterations</span>
+                <input id="aiMaxTunerIterations" type="number" min="50" max="50000" step="50" value="5000">
+              </label>
+            </div>
+            <label class="aiToggle">
+              <input id="aiStopOnSuccess" type="checkbox" checked>
+              <span>Stop when success criteria met</span>
+            </label>
+            <div class="aiAutonomousActions">
+              <button id="aiRunAutonomous" class="btn btnPrimary" type="button">Let AI improve lens</button>
+              <button id="aiStopAutonomous" class="btn" type="button" disabled>Stop AI</button>
             </div>
           </section>
 
@@ -727,6 +758,7 @@
 
         <section class="aiChat">
           <div id="aiChatHistory" class="aiChatHistory" aria-live="polite"></div>
+          <div id="aiAutonomousLog" class="aiAutonomousLog" aria-live="polite"></div>
           <div id="aiActionQueue" class="aiActionQueue"></div>
           <form id="aiChatForm" class="aiComposer">
             <textarea id="aiChatInput" rows="3" placeholder="Make the corners sharper but keep it 50mm T2 full-frame."></textarea>
