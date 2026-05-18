@@ -377,6 +377,7 @@
     stockAvailabilityFilter: $("#stockAvailabilityFilter"),
     stockConfidenceFilter: $("#stockConfidenceFilter"),
     stockOnlyToggle: $("#stockOnlyToggle"),
+    stockReplacementBanner: $("#stockReplacementBanner"),
     stockLibrarySummary: $("#stockLibrarySummary"),
     stockResults: $("#stockResults"),
     stockImportSupplier: $("#stockImportSupplier"),
@@ -1603,6 +1604,7 @@ function warnMissingGlass(name) {
     elements: [],
     parsedImport: [],
     matchTarget: null,
+    replacementTarget: null,
     sourceSummary: "",
     loadError: "",
   };
@@ -1884,6 +1886,24 @@ function warnMissingGlass(name) {
     const r = Number.isFinite(Number(primaryR)) ? `R${Number(primaryR).toFixed(2)}` : "R—";
     const price = Number.isFinite(Number(element.price_usd)) ? `$${Number(element.price_usd).toFixed(2)}` : "$—";
     return `${element.type} ${element.material} Ø${mmText(element.diameter_mm, 1)} ${efl} CT${mmText(element.center_thickness_mm, 2)} ${r} ${element.coating || ""} ${price} ${element.delivery || ""}`;
+  }
+
+  function stockElementShortSpec(element) {
+    const e = normalizeStockElement(element);
+    const efl = Number.isFinite(Number(e.efl_mm)) ? `EFL ${Number(e.efl_mm).toFixed(1)}mm` : "EFL —";
+    return `${e.supplier} ${e.code} • ${e.type} • Ø${mmText(e.diameter_mm, 1)} • ${efl}`;
+  }
+
+  function stockFocalClass(element) {
+    const e = normalizeStockElement(element);
+    const explicit = String(e.focal_class || "").trim().toLowerCase();
+    if (explicit) return explicit;
+    const efl = Number(e.efl_mm);
+    if (Number.isFinite(efl) && Math.abs(efl) > 1e-9) return efl > 0 ? "positive" : "negative";
+    if (e.type === "window/filter") return "neutral";
+    if (/(convex|positive|achromatic)/.test(e.type)) return "positive";
+    if (/(concave|negative)/.test(e.type)) return "negative";
+    return "";
   }
 
   function stockGroupId() {
@@ -2290,6 +2310,32 @@ function warnMissingGlass(name) {
     return Math.round((score / Math.max(1, max)) * 1000) / 10;
   }
 
+  function scoreStockReplacementMatch(target, element) {
+    const current = normalizeStockElement(target?.catalog || {});
+    const e = normalizeStockElement(element);
+    let score = 0;
+    let max = 0;
+    const add = (weight, value) => { max += weight; score += weight * Math.max(0, Math.min(1, value)); };
+    add(24, current.type === e.type ? 1 : 0.08);
+    const cd = Number(current.diameter_mm);
+    const ed = Number(e.diameter_mm);
+    add(18, Number.isFinite(cd) && Number.isFinite(ed) ? 1 - Math.min(1, Math.abs(cd - ed) / Math.max(1, Math.abs(cd))) : 0.35);
+    const cf = Number(current.efl_mm);
+    const ef = Number(e.efl_mm);
+    add(16, Number.isFinite(cf) && Number.isFinite(ef) ? 1 - Math.min(1, Math.abs(cf - ef) / Math.max(1, Math.abs(cf))) : 0.4);
+    const currentMaterials = new Set([current.material, current.glass_catalog_name, ...(current.materials || [])].map(normalizeGlassInput).filter(Boolean));
+    const candidateMaterials = [e.material, e.glass_catalog_name, ...(e.materials || [])].map(normalizeGlassInput).filter(Boolean);
+    add(13, candidateMaterials.some((m) => currentMaterials.has(m)) ? 1 : 0.35);
+    const currentClass = stockFocalClass(current);
+    const candidateClass = stockFocalClass(e);
+    add(10, currentClass && candidateClass ? (currentClass === candidateClass ? 1 : 0.05) : 0.45);
+    add(7, current.supplier && e.supplier && current.supplier === e.supplier ? 1 : 0.35);
+    add(6, e.raytrace_confidence === "high" ? 1 : (e.raytrace_confidence === "medium" ? 0.55 : 0.15));
+    add(4, e.availability === "stock" ? 1 : (e.availability === "limited_stock" ? 0.75 : 0.25));
+    add(2, Number.isFinite(Number(e.price_usd)) ? 1 / (1 + Number(e.price_usd) / 80) : 0.5);
+    return Math.round((score / Math.max(1, max)) * 1000) / 10;
+  }
+
   function normalizeStockSearchText(value) {
     return String(value ?? "")
       .normalize("NFKD")
@@ -2373,6 +2419,7 @@ function warnMissingGlass(name) {
 
   function stockFilteredElements() {
     const q = String(ui.stockSearch?.value || "").trim();
+    const replacementTarget = stockLibraryState.replacementTarget;
     const supplier = String(ui.stockSupplierFilter?.value || "");
     const type = String(ui.stockTypeFilter?.value || "");
     const material = String(ui.stockMaterialFilter?.value || "");
@@ -2387,6 +2434,7 @@ function warnMissingGlass(name) {
     const stockOnly = !!ui.stockOnlyToggle?.checked;
     const filtered = (stockLibraryState.elements || []).filter((e) => {
       if (q && !stockSearchMatchesQuery(e, q)) return false;
+      if (replacementTarget && !stockRaytraceability(e).ok) return false;
       if (supplier && e.supplier !== supplier) return false;
       if (type && e.type !== type) return false;
       if (material && e.material !== material && e.glass_catalog_name !== material && !(e.materials || []).includes(material)) return false;
@@ -2404,6 +2452,19 @@ function warnMissingGlass(name) {
       if (Number.isFinite(maxPrice) && Number.isFinite(p) && p > maxPrice) return false;
       return true;
     });
+    if (replacementTarget) {
+      return filtered.sort((a, b) => {
+        if (q) {
+          const rankA = stockSearchRank(a, q) ?? 9999;
+          const rankB = stockSearchRank(b, q) ?? 9999;
+          if (rankA !== rankB) return rankA - rankB;
+        }
+        const scoreA = scoreStockReplacementMatch(replacementTarget, a);
+        const scoreB = scoreStockReplacementMatch(replacementTarget, b);
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        return `${a.supplier} ${a.code}`.localeCompare(`${b.supplier} ${b.code}`);
+      });
+    }
     if (!q) return filtered;
     return filtered.sort((a, b) => {
       const rankA = stockSearchRank(a, q) ?? 9999;
@@ -2432,6 +2493,64 @@ function warnMissingGlass(name) {
     fill(ui.stockConfidenceFilter, elements.map((e) => e.raytrace_confidence), "Any confidence");
   }
 
+  function setSelectValueIfPresent(select, value) {
+    if (!select || value == null || String(value).trim() === "") return;
+    const text = String(value);
+    if ([...select.options].some((o) => o.value === text)) select.value = text;
+  }
+
+  function applyStockReplacementPrefilters(target) {
+    const catalog = target?.catalog ? normalizeStockElement(target.catalog) : null;
+    if (!catalog) return;
+    if (ui.stockSearch) ui.stockSearch.value = "";
+    if (ui.stockSupplierFilter) ui.stockSupplierFilter.value = "";
+    setSelectValueIfPresent(ui.stockTypeFilter, catalog.type);
+    setSelectValueIfPresent(ui.stockMaterialFilter, catalog.glass_catalog_name || catalog.material);
+    if (ui.stockCoatingFilter) ui.stockCoatingFilter.value = "";
+    if (ui.stockAvailabilityFilter) ui.stockAvailabilityFilter.value = "";
+    setSelectValueIfPresent(ui.stockConfidenceFilter, "high");
+    if (ui.stockOnlyToggle) ui.stockOnlyToggle.checked = true;
+    if (ui.stockDiameterMin) ui.stockDiameterMin.value = "";
+    if (ui.stockDiameterMax) ui.stockDiameterMax.value = "";
+    if (ui.stockEflMin) ui.stockEflMin.value = "";
+    if (ui.stockEflMax) ui.stockEflMax.value = "";
+    const diameter = Number(catalog.diameter_mm);
+    if (Number.isFinite(diameter) && diameter > 0) {
+      const spread = Math.max(2, diameter * 0.10);
+      if (ui.stockDiameterMin) ui.stockDiameterMin.value = (diameter - spread).toFixed(1);
+      if (ui.stockDiameterMax) ui.stockDiameterMax.value = (diameter + spread).toFixed(1);
+    }
+    const efl = Number(catalog.efl_mm);
+    if (Number.isFinite(efl) && Math.abs(efl) > 0) {
+      const spread = Math.max(10, Math.abs(efl) * 0.80);
+      const a = efl - spread;
+      const b = efl + spread;
+      if (ui.stockEflMin) ui.stockEflMin.value = Math.min(a, b).toFixed(1);
+      if (ui.stockEflMax) ui.stockEflMax.value = Math.max(a, b).toFixed(1);
+    }
+    if (ui.stockMaxPrice) ui.stockMaxPrice.value = "";
+  }
+
+  function renderStockReplacementBanner() {
+    if (!ui.stockReplacementBanner) return;
+    const target = stockLibraryState.replacementTarget;
+    ui.stockReplacementBanner.classList.toggle("hidden", !target);
+    if (!target) {
+      ui.stockReplacementBanner.innerHTML = "";
+      return;
+    }
+    const current = stockElementShortSpec(target.catalog);
+    ui.stockReplacementBanner.innerHTML = `
+      <div>
+        <strong>Replace ${escapeAttr(target.catalog?.code || "stock element")} with selected stock element</strong>
+        <span>Replacing: ${escapeAttr(current)} • air gap after: ${escapeAttr(mmText(target.airGapAfterMm, 3))}</span>
+      </div>
+      <button id="stockCancelReplacement" class="btn" type="button">Cancel replacement</button>
+    `;
+    const cancel = $("#stockCancelReplacement");
+    if (cancel) cancel.addEventListener("click", cancelStockReplacementMode);
+  }
+
   function stockValidationWarnings(element) {
     const e = normalizeStockElement(element);
     const warnings = [];
@@ -2450,6 +2569,7 @@ function warnMissingGlass(name) {
   function stockCardHtml(element, options = {}) {
     const e = normalizeStockElement(element);
     const match = options.matchScore == null ? NaN : Number(options.matchScore);
+    const replaceMode = !!options.replaceMode;
     const warnings = stockValidationWarnings(e);
     const ray = stockRaytraceability(e);
     const price = Number.isFinite(Number(e.price_usd)) ? `$${Number(e.price_usd).toFixed(2)}` : "—";
@@ -2470,9 +2590,11 @@ function warnMissingGlass(name) {
         </div>
         ${warnings.length ? `<div class="stockWarnings">${warnings.map(escapeAttr).join(" • ")}</div>` : ""}
         <div class="stockCardActions">
-          <button class="btn btnPrimary stockAction" type="button" data-action="insert" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Insert locked stock</button>
+          ${replaceMode
+            ? `<button class="btn btnPrimary stockAction" type="button" data-action="replace-stock-group" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Change to this element</button>`
+            : `<button class="btn btnPrimary stockAction" type="button" data-action="insert" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Insert locked stock</button>`}
           <button class="btn stockAction" type="button" data-action="preview" data-id="${escapeAttr(e.id)}">Preview</button>
-          ${options.matchMode ? `<button class="btn stockAction" type="button" data-action="replace" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Replace With Stock</button>` : ""}
+          ${options.matchMode ? `<button class="btn stockAction" type="button" data-action="replace-custom" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Replace With Stock</button>` : ""}
         </div>
       </div>
     `;
@@ -2480,21 +2602,28 @@ function warnMissingGlass(name) {
 
   function renderStockLibraryResults() {
     if (!ui.stockResults) return;
+    renderStockReplacementBanner();
     const elements = stockFilteredElements();
     const matchMode = !!stockLibraryState.matchTarget;
-    const scored = matchMode
+    const replaceMode = !!stockLibraryState.replacementTarget;
+    const scored = replaceMode
+      ? elements.map((e) => ({ e, score: scoreStockReplacementMatch(stockLibraryState.replacementTarget, e) }))
+        .slice(0, 100)
+      : matchMode
       ? elements.map((e) => ({ e, score: scoreStockMatch(stockLibraryState.matchTarget.descriptor, e) }))
         .sort((a, b) => b.score - a.score)
         .slice(0, 10)
       : elements.map((e) => ({ e, score: null })).slice(0, 100);
     if (ui.stockLibrarySummary) {
       const source = stockLibraryState.loadError || stockLibraryState.sourceSummary || "./data/element-library.json";
-      ui.stockLibrarySummary.textContent = matchMode
+      ui.stockLibrarySummary.textContent = replaceMode
+        ? `Replace element mode. Showing ${scored.length} insertable suggestions sorted by similarity to ${stockElementTitle(stockLibraryState.replacementTarget.catalog)}. Search and filters still work normally. Source: ${source}.`
+        : matchMode
         ? `Closest stock matches for selected custom element. Showing ${scored.length} of ${elements.length} filtered rows. Source: ${source}.`
         : `${elements.length} matching stock elements. Source: ${source}. Stock elements insert as locked physical glass; only rear air gap/spacer remains editable.`;
     }
     ui.stockResults.innerHTML = scored.length
-      ? scored.map((item) => stockCardHtml(item.e, { matchScore: item.score, matchMode })).join("")
+      ? scored.map((item) => stockCardHtml(item.e, { matchScore: item.score, matchMode, replaceMode })).join("")
       : `<div class="stockEmpty">No stock elements match the current filters.</div>`;
     ui.stockResults.querySelectorAll(".stockAction").forEach((btn) => {
       btn.addEventListener("click", (e) => {
@@ -2502,10 +2631,11 @@ function warnMissingGlass(name) {
         const action = e.currentTarget.dataset.action;
         const element = stockLibraryState.elements.find((item) => item.id === id);
         if (!element) return;
-        if ((action === "insert" || action === "replace") && !stockRaytraceability(element).ok) return previewStockElement(element);
+        if ((action === "insert" || action === "replace-custom" || action === "replace-stock-group") && !stockRaytraceability(element).ok) return previewStockElement(element);
         if (action === "insert") insertStockElement(element);
         if (action === "preview") previewStockElement(element);
-        if (action === "replace") replaceCustomElementWithStock(element);
+        if (action === "replace-custom") replaceCustomElementWithStock(element);
+        if (action === "replace-stock-group") replaceStockGroupWithStock(element);
       });
     });
   }
@@ -2527,11 +2657,13 @@ function warnMissingGlass(name) {
   function openStockLibraryModal(options = {}) {
     loadStockElementLibrary().then(() => {
       stockLibraryState.matchTarget = options.matchTarget || null;
+      stockLibraryState.replacementTarget = options.replacementTarget || null;
       if (ui.stockLibraryModal) {
         ui.stockLibraryModal.classList.remove("hidden");
         ui.stockLibraryModal.setAttribute("aria-hidden", "false");
       }
       renderStockLibraryFilters();
+      if (stockLibraryState.replacementTarget) applyStockReplacementPrefilters(stockLibraryState.replacementTarget);
       renderStockLibraryResults();
     });
   }
@@ -2539,8 +2671,16 @@ function warnMissingGlass(name) {
   function closeStockLibraryModal() {
     if (!ui.stockLibraryModal) return;
     stockLibraryState.matchTarget = null;
+    stockLibraryState.replacementTarget = null;
+    renderStockReplacementBanner();
     ui.stockLibraryModal.classList.add("hidden");
     ui.stockLibraryModal.setAttribute("aria-hidden", "true");
+  }
+
+  function cancelStockReplacementMode() {
+    stockLibraryState.replacementTarget = null;
+    renderStockReplacementBanner();
+    renderStockLibraryResults();
   }
 
   function parseDelimitedRows(text) {
@@ -2642,6 +2782,75 @@ function warnMissingGlass(name) {
     scheduleRenderPreview();
     closeStockLibraryModal();
     toast(`Replaced custom element with locked stock: ${stockElementTitle(element)}`);
+  }
+
+  function stockOrientationCompatibleWithElement(element, orientation) {
+    const e = normalizeStockElement(element);
+    const options = Array.isArray(e.orientation_options) ? e.orientation_options : [];
+    if (!options.length) return true;
+    const wanted = normalizeStockOrientation(orientation);
+    return options.some((option) => normalizeStockOrientation(option) === wanted);
+  }
+
+  function replacementOrientationForElement(element, preferredOrientation) {
+    if (stockOrientationCompatibleWithElement(element, preferredOrientation)) {
+      return normalizeStockOrientation(preferredOrientation);
+    }
+    return normalizeStockOrientation(element?.default_orientation || element?.orientation);
+  }
+
+  function openChangeStockElement(index) {
+    const range = stockGroupRangeAt(index);
+    if (!range) return toast("Select a locked stock element group first.");
+    const first = lens.surfaces[range.start];
+    const catalog = first?.stockCatalog ? normalizeStockElement(first.stockCatalog) : null;
+    if (!catalog) return toast("Missing stock catalog snapshot.");
+    const rear = range.indices.map((i) => lens.surfaces[i]).find((s) => s.stockElementRearSurface);
+    const airGapAfterMm = Math.max(0, Number(rear?.t ?? first.stockAirGapAfterMm ?? catalog.air_gap_after_mm ?? 4) || 0);
+    openStockLibraryModal({
+      replacementTarget: {
+        groupId: first.stockElementGroupId,
+        catalog,
+        start: range.start,
+        end: range.end,
+        orientation: normalizeStockOrientation(first.stockOrientation),
+        airGapAfterMm,
+      },
+    });
+  }
+
+  function replaceStockGroupWithStock(element) {
+    const target = stockLibraryState.replacementTarget;
+    if (!target?.groupId) return toast("No stock replacement target selected.");
+    const range = stockGroupRangeById(target.groupId);
+    if (!range) return toast("Original stock element group is no longer available.");
+    const oldFirst = lens.surfaces[range.start];
+    const oldCatalog = oldFirst?.stockCatalog ? normalizeStockElement(oldFirst.stockCatalog) : target.catalog;
+    const oldRear = range.indices.map((i) => lens.surfaces[i]).find((s) => s.stockElementRearSurface);
+    const airGapAfterMm = Math.max(0, Number(oldRear?.t ?? target.airGapAfterMm ?? 4) || 0);
+    const ray = stockRaytraceability(element);
+    if (!ray.ok) return toast(ray.reason);
+    const orientation = replacementOrientationForElement(element, oldFirst?.stockOrientation || target.orientation);
+    const chunk = stockLensSurfaces(element, {
+      groupId: target.groupId,
+      orientation,
+      airGapAfterMm,
+    });
+    lens.surfaces.splice(range.start, range.end - range.start + 1, ...chunk);
+    selectedIndex = range.start;
+    if (!lens.stockPrototype || typeof lens.stockPrototype !== "object") lens.stockPrototype = {};
+    lens.stockPrototype.lastReplacedCatalogId = normalizeStockElement(element).id;
+    lens = sanitizeLens(lens);
+    buildTable();
+    applySensorToIMS();
+    updateStockPrototypeUi();
+    validateStockPrototypeMode();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    const oldTitle = oldCatalog ? stockElementTitle(oldCatalog) : "stock element";
+    const newTitle = stockElementTitle(normalizeStockElement(element));
+    closeStockLibraryModal();
+    toast(`Replaced ${oldTitle} with ${newTitle}. Air gap preserved: ${mmText(airGapAfterMm, 3)}`);
   }
 
   function findClosestStockForSurface(index) {
@@ -3441,7 +3650,7 @@ function warnMissingGlass(name) {
      const customCopy = !!s.customCopyOfStock;
      const rowWarn = !!lens?.stockPrototype?.enabled && !protectedSurface && !s.stop && !isAirSurfaceMedium(s) && !stockLocked;
      const stockActions = stockLocked
-       ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<span class="stockMiniHint">${escapeAttr(stockName)}</span><span class="stockMiniHint">${escapeAttr(stockOrientationLabel(stockOrientation))}</span><button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip element</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button><button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
+       ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<span class="stockMiniHint">${escapeAttr(stockName)}</span><span class="stockMiniHint">${escapeAttr(stockOrientationLabel(stockOrientation))}</span><button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip element</button><button class="miniBtn stockRowAction" type="button" data-action="change" data-i="${idx}">Change element</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button><button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
        : "";
      const customActions = (!stockLocked && !protectedSurface && !s.stop && !isAirSurfaceMedium(s))
        ? `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find Closest Stock Match</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}${customElementFirst ? `<button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
@@ -3520,6 +3729,7 @@ tr.innerHTML = `
         if (action === "find") findClosestStockForSurface(selectedIndex);
         if (action === "custom-copy") convertStockGroupToCustomCopy(selectedIndex);
         if (action === "flip") flipStockGroup(selectedIndex);
+        if (action === "change") openChangeStockElement(selectedIndex);
         if (action === "remove-element") removeElementAt(selectedIndex);
       });
     });

@@ -931,6 +931,28 @@ canvas{
   font-size:12px;
   line-height:1.45;
 }
+.stockReplaceBanner{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  margin:10px 0;
+  padding:10px 12px;
+  border:1px solid rgba(42,110,242,.45);
+  border-radius:10px;
+  background:rgba(42,110,242,.13);
+  color:rgba(225,235,255,.95);
+  font-size:12px;
+  line-height:1.4;
+}
+.stockReplaceBanner strong{
+  display:block;
+  color:#fff;
+  margin-bottom:2px;
+}
+.stockReplaceBanner .btn{
+  flex:0 0 auto;
+}
 .stockResults{
   display:grid;
   grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));
