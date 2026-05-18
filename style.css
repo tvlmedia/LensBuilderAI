@@ -900,7 +900,16 @@ canvas{
   width:min(1500px, calc(100vw - 32px));
   height:min(86vh, 920px);
 }
+.stockExplorerCard{
+  width:min(1680px, calc(100vw - 28px));
+  height:min(92vh, 980px);
+}
 .stockModalScroll{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:14px;
+}
+.stockExplorerScroll{
   display:grid;
   grid-template-columns:minmax(0,1fr);
   gap:14px;
@@ -916,6 +925,25 @@ canvas{
   grid-template-columns:2fr repeat(4, minmax(120px, 1fr));
   gap:8px;
   align-items:end;
+}
+.stockExplorerGrid{
+  display:grid;
+  grid-template-columns:repeat(6, minmax(130px, 1fr));
+  gap:9px;
+  align-items:end;
+}
+.stockExplorerGrid label{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  color:rgba(255,255,255,.62);
+  font-size:12px;
+}
+.stockExplorerActions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:10px;
 }
 .stockOnlyToggle{
   margin:0;
@@ -1062,6 +1090,39 @@ canvas{
   background:rgba(255,255,255,.03);
   padding:10px;
   line-height:1.55;
+}
+.stockExplorerResults{
+  overflow:auto;
+  max-height:58vh;
+}
+.stockExplorerTable{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  font-size:12px;
+}
+.stockExplorerTable th,
+.stockExplorerTable td{
+  padding:8px 7px;
+  border-bottom:1px solid rgba(255,255,255,.08);
+  vertical-align:top;
+  text-align:left;
+}
+.stockExplorerTable th{
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:#111820;
+  color:rgba(255,255,255,.70);
+}
+.stockExplorerTable td{
+  color:rgba(255,255,255,.76);
+}
+.stockExplorerTable .stockExplorerActionsCell{
+  min-width:220px;
+}
+.stockExplorerWarn{
+  color:#ffd18a;
 }
 .aiChat{
   min-width:0;
@@ -1579,6 +1640,7 @@ canvas{
   .topbar{ height:auto; flex:0 0 auto; }
   .toolbar{ gap:8px; }
   .stockFilters{ grid-template-columns:1fr 1fr; }
+  .stockExplorerGrid{ grid-template-columns:1fr 1fr; }
   .stockResults{ grid-template-columns:1fr; }
   .stockImportGrid{ grid-template-columns:1fr; }
 }

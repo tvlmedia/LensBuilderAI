@@ -169,6 +169,7 @@
     btnAdd: $("#btnAdd"),
     btnAddElement: $("#btnAddElement"),
     btnStockLibrary: $("#btnStockLibrary"),
+    btnStockDesignExplorer: $("#btnStockDesignExplorer"),
     btnPrototypeBom: $("#btnPrototypeBom"),
     btnStockPrototypeMode: $("#btnStockPrototypeMode"),
     btnAddFieldFlattener: $("#btnAddFieldFlattener"),
@@ -394,6 +395,26 @@
     bomExportJson: $("#bomExportJson"),
     bomExportCsv: $("#bomExportCsv"),
     bomExportLens: $("#bomExportLens"),
+    stockExplorerModal: $("#stockExplorerModal"),
+    stockExplorerClose: $("#stockExplorerClose"),
+    sePreset: $("#sePreset"),
+    seSearchMode: $("#seSearchMode"),
+    seTargetEfl: $("#seTargetEfl"),
+    seEflTolerance: $("#seEflTolerance"),
+    seTargetT: $("#seTargetT"),
+    seSensorPreset: $("#seSensorPreset"),
+    seMinBfl: $("#seMinBfl"),
+    seMinRearClear: $("#seMinRearClear"),
+    seMaxVignetting: $("#seMaxVignetting"),
+    seMaxLength: $("#seMaxLength"),
+    seMaxElements: $("#seMaxElements"),
+    seMinDiameter: $("#seMinDiameter"),
+    seStockOnly: $("#seStockOnly"),
+    seStart: $("#seStart"),
+    seCancel: $("#seCancel"),
+    seExportResults: $("#seExportResults"),
+    seProgress: $("#seProgress"),
+    seResults: $("#seResults"),
 
     verifyPanel: $("#verifyPanel"),
     verifyControls: $("#verifyControls"),
@@ -3108,8 +3129,840 @@ function warnMissingGlass(name) {
     downloadTextFile(`${String(out.name || "stock-prototype-lens").replace(/[^\w\-]+/g, "_")}.json`, JSON.stringify(out, null, 2), "application/json");
   }
 
+  // -------------------- deterministic stock design explorer --------------------
+  const STOCK_EXPLORER_GAPS_FULL = [0.5, 1, 2, 3, 5, 8, 12, 16, 24, 35, 50];
+  const STOCK_EXPLORER_GAPS_QUICK = [1, 3, 8, 16, 35];
+  const stockExplorerState = {
+    running: false,
+    cancel: false,
+    plans: [],
+    results: [],
+    evaluated: 0,
+    rejected: 0,
+    invalid: 0,
+    startedAt: 0,
+    settings: null,
+  };
+
+  function populateStockExplorerSensorSelect() {
+    if (!ui.seSensorPreset) return;
+    const current = ui.seSensorPreset.value || ui.sensorPreset?.value || DEFAULT_SENSOR_PRESET;
+    ui.seSensorPreset.innerHTML = Object.keys(SENSOR_PRESETS).map((name) =>
+      `<option value="${escapeAttr(name)}">${escapeAttr(name)}</option>`
+    ).join("");
+    ui.seSensorPreset.value = SENSOR_PRESETS[current] ? current : DEFAULT_SENSOR_PRESET;
+  }
+
+  function stockExplorerPresetConfig(preset) {
+    const p = String(preset || "50t2");
+    const base = {
+      sensorPreset: "ARRI Alexa Mini LF (LF)",
+      minBfl: 52,
+      minRearClear: 0,
+      maxVignettingPct: 2,
+      maxElements: 4,
+      minDiameter: 25.4,
+      stockOnly: true,
+    };
+    if (p === "85t2") return { ...base, targetEfl: 85, eflTolerance: 8, targetT: 2.0, maxLength: 160 };
+    if (p === "50t28") return { ...base, targetEfl: 50, eflTolerance: 8, targetT: 2.8, maxLength: 140 };
+    if (p === "85t28") return { ...base, targetEfl: 85, eflTolerance: 8, targetT: 2.8, maxLength: 160 };
+    return { ...base, targetEfl: 50, eflTolerance: 8, targetT: 2.0, maxLength: 140 };
+  }
+
+  function applyStockExplorerPreset() {
+    const cfg = stockExplorerPresetConfig(ui.sePreset?.value);
+    if (ui.sePreset?.value === "custom") return;
+    if (ui.seTargetEfl) ui.seTargetEfl.value = String(cfg.targetEfl);
+    if (ui.seEflTolerance) ui.seEflTolerance.value = String(cfg.eflTolerance);
+    if (ui.seTargetT) ui.seTargetT.value = String(cfg.targetT);
+    if (ui.seSensorPreset) ui.seSensorPreset.value = cfg.sensorPreset;
+    if (ui.seMinBfl) ui.seMinBfl.value = String(cfg.minBfl);
+    if (ui.seMinRearClear) ui.seMinRearClear.value = String(cfg.minRearClear);
+    if (ui.seMaxVignetting) ui.seMaxVignetting.value = String(cfg.maxVignettingPct);
+    if (ui.seMaxLength) ui.seMaxLength.value = String(cfg.maxLength);
+    if (ui.seMaxElements) ui.seMaxElements.value = String(cfg.maxElements);
+    if (ui.seMinDiameter) ui.seMinDiameter.value = String(cfg.minDiameter);
+    if (ui.seStockOnly) ui.seStockOnly.checked = cfg.stockOnly;
+  }
+
+  function readStockExplorerSettings() {
+    const preset = String(ui.sePreset?.value || "50t2");
+    const mode = String(ui.seSearchMode?.value || "quick");
+    return {
+      preset,
+      mode,
+      targetEfl: Math.max(1, num(ui.seTargetEfl?.value, 50)),
+      eflTolerance: Math.max(0.1, num(ui.seEflTolerance?.value, 8)),
+      targetT: Math.max(0.7, num(ui.seTargetT?.value, 2)),
+      sensorPreset: ui.seSensorPreset?.value || DEFAULT_SENSOR_PRESET,
+      minBfl: Math.max(0, num(ui.seMinBfl?.value, 52)),
+      minRearClear: num(ui.seMinRearClear?.value, 0),
+      maxVignettingPct: Math.max(0, num(ui.seMaxVignetting?.value, 2)),
+      maxLength: Math.max(10, num(ui.seMaxLength?.value, 140)),
+      maxElements: Math.max(2, Math.min(5, Math.round(num(ui.seMaxElements?.value, 4)))),
+      minDiameter: Math.max(1, num(ui.seMinDiameter?.value, 25.4)),
+      stockOnly: !!ui.seStockOnly?.checked,
+      wavePreset: ui.wavePreset?.value || "d",
+    };
+  }
+
+  function applyStockExplorerSensor(settings) {
+    const p = SENSOR_PRESETS[settings?.sensorPreset] || SENSOR_PRESETS[DEFAULT_SENSOR_PRESET];
+    if (ui.sensorPreset && SENSOR_PRESETS[settings?.sensorPreset]) ui.sensorPreset.value = settings.sensorPreset;
+    if (ui.sensorW) ui.sensorW.value = p.w.toFixed(2);
+    if (ui.sensorH) ui.sensorH.value = p.h.toFixed(2);
+  }
+
+  function stockExplorerAvailabilityOk(element, settings) {
+    if (!settings.stockOnly) return true;
+    return element.availability === "stock" || element.availability === "limited_stock";
+  }
+
+  function stockExplorerIsPositive(element) {
+    const e = normalizeStockElement(element);
+    const fc = stockFocalClass(e);
+    return fc === "positive" || Number(e.efl_mm) > 0;
+  }
+
+  function stockExplorerIsNegative(element) {
+    const e = normalizeStockElement(element);
+    const fc = stockFocalClass(e);
+    return fc === "negative" || Number(e.efl_mm) < 0 || e.type === "plano-concave";
+  }
+
+  function stockExplorerPoolScore(element, settings, role = "P") {
+    const e = normalizeStockElement(element);
+    const efl = Math.abs(Number(e.efl_mm));
+    const diameter = Number(e.diameter_mm);
+    const target = Math.max(1, Number(settings.targetEfl) || 50);
+    const targetDiameter = settings.targetT <= 2.05
+      ? (target >= 80 ? 75 : 50.8)
+      : (target >= 80 ? 50.8 : 25.4);
+    let score = 0;
+    if (/achromatic/.test(e.type)) score += 24;
+    if (e.type === "plano-convex" && role !== "N") score += 8;
+    if (e.type === "plano-concave" && role === "N") score += 18;
+    if (Number.isFinite(diameter)) score += 22 * (1 - Math.min(1, Math.abs(diameter - targetDiameter) / Math.max(1, targetDiameter)));
+    if (Number.isFinite(efl)) {
+      const desired = role === "N" ? target * 1.4 : (role === "C" ? target * 3.0 : target * 1.7);
+      score += 22 * (1 - Math.min(1, Math.abs(efl - desired) / Math.max(1, desired)));
+    }
+    if (/AC508|ACT508|AACD|PAC|1101|1103/i.test(`${e.supplier} ${e.code}`)) score += 8;
+    if (e.availability === "stock") score += 7;
+    if (e.availability === "limited_stock") score += 4;
+    if (e.raytrace_confidence === "high") score += 7;
+    if (Number.isFinite(Number(e.price_usd))) score += 4 / (1 + Number(e.price_usd) / 100);
+    return score;
+  }
+
+  function stockExplorerPools(settings) {
+    const elements = (stockLibraryState.elements || [])
+      .map(normalizeStockElement)
+      .filter((e) => stockRaytraceability(e).ok && stockExplorerAvailabilityOk(e, settings));
+    const minMain = Number(settings.minDiameter) || 25.4;
+    const positives = elements
+      .filter((e) => stockExplorerIsPositive(e) && Number(e.diameter_mm) >= minMain)
+      .sort((a, b) => stockExplorerPoolScore(b, settings, "P") - stockExplorerPoolScore(a, settings, "P"));
+    const negatives = elements
+      .filter((e) => stockExplorerIsNegative(e) && Number(e.diameter_mm) >= Math.min(25.4, minMain))
+      .sort((a, b) => stockExplorerPoolScore(b, settings, "N") - stockExplorerPoolScore(a, settings, "N"));
+    const correctors = positives
+      .filter((e) => e.type === "plano-convex" || Math.abs(Number(e.efl_mm) || 0) >= settings.targetEfl * 1.4)
+      .sort((a, b) => stockExplorerPoolScore(b, settings, "C") - stockExplorerPoolScore(a, settings, "C"));
+    const quick = settings.mode !== "deep";
+    const posLimit = quick ? 7 : 13;
+    const negLimit = quick ? 5 : 9;
+    const corLimit = quick ? 5 : 9;
+    return {
+      P: positives.slice(0, posLimit),
+      PSTRONG: positives.filter((e) => Math.abs(Number(e.efl_mm) || 9999) <= settings.targetEfl * 2.2).slice(0, posLimit),
+      PWEAK: positives.filter((e) => Math.abs(Number(e.efl_mm) || 0) >= settings.targetEfl * 1.1).slice(0, posLimit),
+      N: negatives.slice(0, negLimit),
+      C: correctors.slice(0, corLimit),
+    };
+  }
+
+  function stockExplorerFamilies(settings) {
+    const max = Number(settings.maxElements) || 4;
+    const all = [
+      { name: "A: 2-group positive-positive", slots: ["P", "STOP", "P"] },
+      { name: "B: 3-group positive-positive-positive", slots: ["P", "STOP", "P", "P"] },
+      { name: "C: positive-negative-positive", slots: ["P", "STOP", "N", "P"] },
+      { name: "D: positive-negative-stop-negative-positive", slots: ["P", "N", "STOP", "N", "P"] },
+      { name: "E: Petzval-ish", slots: ["PSTRONG", "STOP", "PWEAK", "C"] },
+      { name: "F1: 4-group mixed", slots: ["P", "STOP", "P", "N", "P"] },
+      { name: "F2: 4-group mixed", slots: ["P", "N", "STOP", "P", "P"] },
+      { name: "F3: 4-group mixed", slots: ["P", "STOP", "N", "P", "P"] },
+    ];
+    return all.filter((family) => family.slots.filter((slot) => slot !== "STOP").length <= max);
+  }
+
+  function stockExplorerPlanApproxScore(tokens, settings) {
+    const power = tokens.reduce((sum, token) => {
+      const f = Number(token.element?.efl_mm);
+      return Number.isFinite(f) && Math.abs(f) > 1e-9 ? sum + 1 / f : sum;
+    }, 0);
+    const approxF = Math.abs(power) > 1e-9 ? 1 / power : null;
+    const target = Number(settings.targetEfl) || 50;
+    const eflScore = Number.isFinite(approxF) ? Math.abs(approxF - target) / target : 3;
+    const diameterPenalty = tokens.reduce((sum, token) => {
+      const d = Number(token.element?.diameter_mm);
+      return sum + (Number.isFinite(d) ? Math.max(0, settings.minDiameter - d) / settings.minDiameter : 1);
+    }, 0);
+    return eflScore + diameterPenalty * 0.5;
+  }
+
+  function stockExplorerBuildPlans(settings) {
+    const pools = stockExplorerPools(settings);
+    const families = stockExplorerFamilies(settings);
+    const gaps = settings.mode === "deep" ? STOCK_EXPLORER_GAPS_FULL : STOCK_EXPLORER_GAPS_QUICK;
+    const maxPlans = settings.mode === "deep" ? 4200 : 1100;
+    const rawPlans = [];
+    const pushIfRoom = (plan) => {
+      if (rawPlans.length < maxPlans * 3) rawPlans.push(plan);
+    };
+
+    const buildElementCombos = (slots, idx, acc, cb) => {
+      if (idx >= slots.length) return cb(acc);
+      const role = slots[idx];
+      if (role === "STOP") return buildElementCombos(slots, idx + 1, [...acc, { role: "STOP", element: null }], cb);
+      const pool = pools[role] || pools.P || [];
+      const perRoleLimit = settings.mode === "deep" ? pool.length : Math.min(pool.length, role === "N" ? 4 : 6);
+      for (const element of pool.slice(0, perRoleLimit)) {
+        buildElementCombos(slots, idx + 1, [...acc, { role, element }], cb);
+        if (rawPlans.length >= maxPlans * 3) return;
+      }
+    };
+
+    const buildOrientationCombos = (tokens, idx, acc, cb) => {
+      if (idx >= tokens.length) return cb(acc);
+      const token = tokens[idx];
+      if (!token.element) return buildOrientationCombos(tokens, idx + 1, [...acc, token], cb);
+      for (const orientation of [STOCK_ORIENTATION_PUBLISHED, STOCK_ORIENTATION_FLIPPED]) {
+        buildOrientationCombos(tokens, idx + 1, [...acc, { ...token, orientation }], cb);
+      }
+    };
+
+    const buildGapCombos = (slotCount, idx, acc, cb) => {
+      if (idx >= slotCount - 1) return cb([...acc, Math.max(0.1, settings.minBfl)]);
+      for (const gap of gaps) {
+        buildGapCombos(slotCount, idx + 1, [...acc, gap], cb);
+        if (rawPlans.length >= maxPlans * 3) return;
+      }
+    };
+
+    for (const family of families) {
+      buildElementCombos(family.slots, 0, [], (baseTokens) => {
+        buildOrientationCombos(baseTokens, 0, [], (tokens) => {
+          buildGapCombos(tokens.length, 0, [], (gapList) => {
+            pushIfRoom({
+              id: `se_${rawPlans.length + 1}`,
+              family: family.name,
+              tokens,
+              gaps: gapList,
+              approxScore: stockExplorerPlanApproxScore(tokens.filter((t) => t.element), settings),
+            });
+          });
+        });
+      });
+      if (rawPlans.length >= maxPlans * 3) break;
+    }
+    return rawPlans
+      .sort((a, b) => a.approxScore - b.approxScore)
+      .slice(0, maxPlans)
+      .map((plan, index) => ({ ...plan, id: `se_${index + 1}` }));
+  }
+
+  function stockExplorerBuildLens(plan, settings) {
+    const { halfH } = getSensorWH();
+    const stopAp = Math.max(AP_MIN, (Number(settings.targetEfl) || 50) / (2 * (Number(settings.targetT) || 2)));
+    const surfaces = [
+      { type: "OBJ", R: 0, t: 0, ap: 90, ap_optical: 90, glass: "AIR", stop: false, surfaceLabel: "OBJ", surfaceLabelAuto: false },
+    ];
+    const elements = [];
+    plan.tokens.forEach((token, i) => {
+      const gap = Math.max(0.1, Number(plan.gaps?.[i]) || 0.1);
+      if (token.role === "STOP") {
+        surfaces.push({
+          type: "STOP",
+          R: 0,
+          t: gap,
+          ap: stopAp,
+          ap_optical: stopAp,
+          glass: "AIR",
+          stop: true,
+          surfaceLabel: "STOP",
+          surfaceLabelAuto: false,
+        });
+        return;
+      }
+      const element = normalizeStockElement(token.element);
+      elements.push(element);
+      const chunk = stockLensSurfaces(element, {
+        orientation: token.orientation,
+        airGapAfterMm: gap,
+      });
+      surfaces.push(...chunk);
+    });
+    surfaces.push({ type: "IMS", R: 0, t: 0, ap: halfH || 12.77, ap_optical: halfH || 12.77, glass: "AIR", stop: false, surfaceLabel: "IMS", surfaceLabelAuto: false });
+    const L = sanitizeLens({
+      name: `${settings.targetEfl}mm T${settings.targetT} stock explorer candidate`,
+      notes: [
+        "Generated by Stock Design Explorer from locked catalog elements.",
+        `Family: ${plan.family}`,
+      ],
+      sourceType: "stock_design_explorer",
+      stockPrototype: { enabled: true, explorerFamily: plan.family },
+      surfaces,
+    });
+    return { lensJson: L, elements };
+  }
+
+  function stockExplorerSetTargetTStop(lensObj, targetT, wavePreset) {
+    const stopIdx = findStopSurfaceIndex(lensObj.surfaces);
+    const efl = estimateEflBflParaxial(lensObj.surfaces, wavePreset).efl;
+    if (stopIdx < 0 || !Number.isFinite(efl) || efl <= 0 || !(targetT > 0)) {
+      return { ok: false, reason: "T-stop cannot be achieved" };
+    }
+    const stopSurf = lensObj.surfaces[stopIdx];
+    const lo = AP_MIN;
+    const hi = Math.max(lo, maxApForSurface(stopSurf));
+    let bestAp = Math.max(lo, Math.min(efl / (2 * targetT), hi));
+    let bestErr = Infinity;
+    const evalAtAp = (ap) => {
+      stopSurf.ap = ap;
+      stopSurf.ap_optical = ap;
+      const t = estimateTStopApprox(efl, lensObj.surfaces, wavePreset);
+      return Number.isFinite(t) ? t : null;
+    };
+    for (let iter = 0, a = lo, b = hi; iter < 24; iter++) {
+      const mid = 0.5 * (a + b);
+      const measured = evalAtAp(mid);
+      if (measured == null) { b = mid; continue; }
+      const err = Math.abs(measured - targetT);
+      if (err < bestErr) { bestErr = err; bestAp = mid; }
+      if (measured > targetT) a = mid;
+      else b = mid;
+    }
+    stopSurf.ap = Math.max(lo, Math.min(bestAp, hi));
+    stopSurf.ap_optical = stopSurf.ap;
+    const achieved = estimateTStopApprox(efl, lensObj.surfaces, wavePreset);
+    return {
+      ok: Number.isFinite(achieved) && Math.abs(achieved - targetT) <= Math.max(0.35, targetT * 0.18),
+      achieved,
+      stopAp: stopSurf.ap,
+      reason: Number.isFinite(achieved) ? `T${achieved.toFixed(2)}` : "T-stop cannot be achieved",
+    };
+  }
+
+  function stockExplorerRefocusCandidate(lensObj, settings) {
+    const parax = estimateEflBflParaxial(lensObj.surfaces, settings.wavePreset);
+    const bfl = Number(parax?.bfl);
+    const imsIdx = lensObj.surfaces.findIndex((s) => String(s?.type || "").toUpperCase() === "IMS");
+    if (imsIdx <= 1 || !Number.isFinite(bfl) || bfl <= 0) return { ok: false, bfl: null };
+    lensObj.surfaces[imsIdx - 1].t = Math.max(0.1, bfl);
+    if (isStockRearAirSurface(lensObj.surfaces[imsIdx - 1])) {
+      lensObj.surfaces[imsIdx - 1].stockAirGapAfterMm = lensObj.surfaces[imsIdx - 1].t;
+    }
+    recomputeSurfacePositionsForLens(lensObj);
+    return { ok: true, bfl };
+  }
+
+  function stockExplorerVignettingPct(metrics) {
+    const rates = [
+      Number(metrics?.centerSpot?.hitRate),
+      Number(metrics?.midSpot?.hitRate),
+      Number(metrics?.cornerSpot?.hitRate),
+    ].filter(Number.isFinite);
+    if (!rates.length) return 100;
+    return Math.max(0, (1 - Math.min(...rates)) * 100);
+  }
+
+  function stockExplorerElementList(plan) {
+    return plan.tokens
+      .filter((t) => t.element)
+      .map((t) => `${t.element.supplier} ${t.element.code}${isStockOrientationFlipped(t.orientation) ? " flipped" : ""}`);
+  }
+
+  function stockExplorerCost(plan) {
+    return plan.tokens.reduce((sum, t) => {
+      const price = Number(t.element?.price_usd);
+      return sum + (Number.isFinite(price) ? price : 0);
+    }, 0);
+  }
+
+  function stockExplorerWarnings(plan, metrics, settings) {
+    const warnings = [];
+    for (const token of plan.tokens.filter((t) => t.element)) {
+      const e = normalizeStockElement(token.element);
+      if (e.availability !== "stock" && e.availability !== "limited_stock") warnings.push(`${e.supplier} ${e.code}: availability ${e.availability}`);
+      if (e.raytrace_confidence !== "high") warnings.push(`${e.supplier} ${e.code}: ${e.raytrace_confidence} confidence`);
+      if (stockExplorerIsNegative(e) && Number(e.diameter_mm) <= 25.5 && stockExplorerVignettingPct(metrics) > settings.maxVignettingPct) {
+        warnings.push(`${e.supplier} ${e.code}: 25.4mm negative element may clip ray bundle`);
+      }
+    }
+    return warnings;
+  }
+
+  function stockExplorerClippingDiagnostics(lensObj, settings, metricsInput = null) {
+    const surfaces = clone(lensObj?.surfaces || []);
+    if (!surfaces.length) return { ok: true, warnings: [] };
+    recomputeSurfacePositionsForLens({ ...lensObj, surfaces });
+    const metrics = metricsInput || getAutoTunerMetrics(lensObj, { wavePreset: settings.wavePreset, includeFieldFocus: false });
+    const angles = getAutoTunerFieldAngles(metrics.sensorDiag, metrics.efl);
+    const objectDistanceMm = getFocusChartDistanceMm();
+    const fields = [angles.center, angles.mid, angles.corner].filter(Number.isFinite);
+    const maxBySurface = new Map();
+    for (const field of fields) {
+      let rays = [];
+      try {
+        const bundle = buildEntrancePupilLimitedRays(surfaces, 9, field, settings.wavePreset, objectDistanceMm);
+        rays = Array.isArray(bundle?.rays) && bundle.rays.length ? bundle.rays : buildRays(surfaces, field, 9, objectDistanceMm);
+      } catch (_) {
+        rays = buildRays(surfaces, field, 9, objectDistanceMm);
+      }
+      for (let ri = 0; ri < rays.length; ri++) {
+        const tr = traceRayForward(clone(rays[ri]), surfaces, settings.wavePreset, { rayIndex: ri });
+        if (!tr?.pts?.length) continue;
+        for (let si = 1; si < surfaces.length - 1; si++) {
+          const pt = tr.pts[si];
+          if (!pt || !Number.isFinite(Number(pt.y))) continue;
+          maxBySurface.set(si, Math.max(maxBySurface.get(si) || 0, Math.abs(Number(pt.y))));
+        }
+      }
+    }
+    const warnings = [];
+    let ok = true;
+    const seenGroups = new Set();
+    surfaces.forEach((surface, index) => {
+      const groupId = surface?.stockElementGroupId;
+      if (!groupId || seenGroups.has(groupId)) return;
+      seenGroups.add(groupId);
+      const catalog = surface.stockCatalog ? normalizeStockElement(surface.stockCatalog) : null;
+      if (!catalog || !stockExplorerIsNegative(catalog) || Number(catalog.diameter_mm) > 25.5) return;
+      const groupIndices = surfaces.map((s, i) => s.stockElementGroupId === groupId ? i : -1).filter((i) => i >= 0);
+      const maxY = groupIndices.reduce((m, i) => Math.max(m, maxBySurface.get(i) || 0), 0);
+      if (maxY > 11.5 + 1e-6) {
+        ok = false;
+        warnings.push(`${catalog.supplier} ${catalog.code}: ray bundle semi-diameter ${maxY.toFixed(2)}mm exceeds 11.5mm safe limit for 25.4mm negative element`);
+      }
+    });
+    return { ok, warnings };
+  }
+
+  function stockExplorerScore(metrics, fieldFocus, settings, plan) {
+    const efl = Number(metrics?.efl);
+    const t = Number(metrics?.T);
+    const bfl = Number(metrics?.bfl);
+    const rear = Number(metrics?.rearClearance);
+    const length = Number(metrics?.compactLength);
+    const focusDelta = Math.abs(Number(fieldFocus?.fieldCurvatureDeltaMm));
+    const cornerRms = Number(fieldFocus?.cornerBestRmsMm ?? metrics?.cornerSpot?.rmsMm);
+    const midRms = Number(fieldFocus?.midBestRmsMm ?? metrics?.midSpot?.rmsMm);
+    const centerRms = Number(fieldFocus?.centerBestRmsMm ?? metrics?.centerSpot?.rmsMm);
+    const vig = stockExplorerVignettingPct(metrics);
+    const cost = stockExplorerCost(plan);
+    const quotePenalty = plan.tokens.filter((t) => t.element && !["stock", "limited_stock"].includes(t.element.availability)).length;
+    let score = 0;
+    score += Number.isFinite(focusDelta) ? focusDelta * 80 : 500;
+    score += Number.isFinite(cornerRms) ? cornerRms * 420 : 600;
+    score += Number.isFinite(midRms) ? midRms * 160 : 180;
+    score += Number.isFinite(centerRms) ? centerRms * 90 : 120;
+    score += Number.isFinite(efl) ? Math.abs(efl - settings.targetEfl) * 4 : 300;
+    score += Number.isFinite(t) ? Math.abs(t - settings.targetT) * 20 : 80;
+    score += Number.isFinite(bfl) ? Math.max(0, settings.minBfl - bfl) * 25 : 300;
+    score += Number.isFinite(rear) ? Math.max(0, settings.minRearClear - rear) * 30 : 200;
+    score += Math.max(0, vig - settings.maxVignettingPct) * 18;
+    score += Number.isFinite(length) ? Math.max(0, length - settings.maxLength) * 4 + length * 0.04 : 80;
+    score += plan.tokens.filter((t) => t.element).length * 3;
+    score += cost * 0.04;
+    score += quotePenalty * 35;
+    return score;
+  }
+
+  function stockExplorerEvaluatePlan(plan, settings, opts = {}) {
+    try {
+      const built = stockExplorerBuildLens(plan, settings);
+      const lensJson = built.lensJson;
+      stockExplorerSetTargetTStop(lensJson, settings.targetT, settings.wavePreset);
+      stockExplorerRefocusCandidate(lensJson, settings);
+      stockExplorerSetTargetTStop(lensJson, settings.targetT, settings.wavePreset);
+      const metrics = getAutoTunerMetrics(lensJson, {
+        wavePreset: settings.wavePreset,
+        includeFieldFocus: opts.includeFieldFocus !== false,
+        focusRayCount: settings.mode === "deep" ? 9 : 7,
+      });
+      const fieldFocus = metrics.fieldFocus || null;
+      const vignettingPct = stockExplorerVignettingPct(metrics);
+      const warnings = stockExplorerWarnings(plan, metrics, settings);
+      const clipping = stockExplorerClippingDiagnostics(lensJson, settings, metrics);
+      warnings.push(...clipping.warnings);
+      const rejectReasons = [];
+      const efl = Number(metrics.efl);
+      const t = Number(metrics.T);
+      if (!Number.isFinite(efl)) rejectReasons.push("EFL unavailable");
+      else if (Math.abs(efl - settings.targetEfl) > settings.eflTolerance) rejectReasons.push(`EFL ${efl.toFixed(2)} outside target`);
+      if (!Number.isFinite(t) || Math.abs(t - settings.targetT) > Math.max(0.35, settings.targetT * 0.18)) rejectReasons.push("T-stop cannot be achieved");
+      if (!Number.isFinite(Number(metrics.bfl)) || Number(metrics.bfl) < settings.minBfl) rejectReasons.push("BFL below minimum");
+      if (!Number.isFinite(Number(metrics.rearClearance)) || Number(metrics.rearClearance) < settings.minRearClear) rejectReasons.push("rear intrusion / clearance below minimum");
+      if (vignettingPct > settings.maxVignettingPct) rejectReasons.push("vignetting above maximum");
+      if (!Number.isFinite(Number(metrics.compactLength)) || Number(metrics.compactLength) > settings.maxLength) rejectReasons.push("physical length above maximum");
+      if (Number(metrics.centerSpot?.hitRate || 0) <= 0 || Number(metrics.cornerSpot?.hitRate || 0) <= 0) rejectReasons.push("no IMS hits");
+      if (!clipping.ok) rejectReasons.push("element physically clips ray bundle");
+      if (!Number.isFinite(Number(fieldFocus?.fieldCurvatureDeltaMm))) rejectReasons.push("impossible focus shift");
+      if ([metrics.efl, metrics.bfl, metrics.T, metrics.imageCircleMm].some((v) => !Number.isFinite(Number(v)))) rejectReasons.push("NaN/invalid raytrace");
+      const valid = rejectReasons.length === 0;
+      const score = stockExplorerScore(metrics, fieldFocus, settings, plan);
+      return {
+        id: plan.id,
+        valid,
+        score,
+        family: plan.family,
+        plan: clone(plan),
+        lensJson,
+        metrics,
+        fieldFocus,
+        vignettingPct,
+        elements: stockExplorerElementList(plan),
+        spacings: plan.gaps.slice(),
+        orientations: plan.tokens.filter((t) => t.element).map((t) => stockOrientationLabel(t.orientation)),
+        totalCost: stockExplorerCost(plan),
+        warnings,
+        rejectReasons,
+      };
+    } catch (err) {
+      return {
+        id: plan.id,
+        valid: false,
+        score: AUTO_TUNER_INVALID_SCORE,
+        family: plan.family,
+        plan: clone(plan),
+        lensJson: null,
+        metrics: null,
+        fieldFocus: null,
+        vignettingPct: 100,
+        elements: stockExplorerElementList(plan),
+        spacings: plan.gaps.slice(),
+        orientations: [],
+        totalCost: stockExplorerCost(plan),
+        warnings: [],
+        rejectReasons: [err?.message || String(err)],
+      };
+    }
+  }
+
+  function stockExplorerResultSort(a, b) {
+    if (!!a.valid !== !!b.valid) return a.valid ? -1 : 1;
+    const ad = Math.abs(Number(a.fieldFocus?.fieldCurvatureDeltaMm));
+    const bd = Math.abs(Number(b.fieldFocus?.fieldCurvatureDeltaMm));
+    if (Number.isFinite(ad) && Number.isFinite(bd) && Math.abs(ad - bd) > 1e-9) return ad - bd;
+    const ac = Number(a.fieldFocus?.cornerBestRmsMm ?? a.metrics?.cornerSpot?.rmsMm);
+    const bc = Number(b.fieldFocus?.cornerBestRmsMm ?? b.metrics?.cornerSpot?.rmsMm);
+    if (Number.isFinite(ac) && Number.isFinite(bc) && Math.abs(ac - bc) > 1e-9) return ac - bc;
+    const ae = Math.abs(Number(a.metrics?.efl) - Number(stockExplorerState.settings?.targetEfl || 0));
+    const be = Math.abs(Number(b.metrics?.efl) - Number(stockExplorerState.settings?.targetEfl || 0));
+    if (Number.isFinite(ae) && Number.isFinite(be) && Math.abs(ae - be) > 1e-9) return ae - be;
+    const ar = Number(a.metrics?.rearClearance);
+    const br = Number(b.metrics?.rearClearance);
+    if (Number.isFinite(ar) && Number.isFinite(br) && Math.abs(ar - br) > 1e-9) return br - ar;
+    if (Math.abs(a.vignettingPct - b.vignettingPct) > 1e-9) return a.vignettingPct - b.vignettingPct;
+    return a.totalCost - b.totalCost;
+  }
+
+  function stockExplorerKeepResult(result) {
+    if (!result.valid) return;
+    stockExplorerState.results.push(result);
+    stockExplorerState.results.sort(stockExplorerResultSort);
+    stockExplorerState.results = stockExplorerState.results.slice(0, 50);
+  }
+
+  function stockExplorerProgressText(done = stockExplorerState.evaluated, total = stockExplorerState.plans.length) {
+    const valid = stockExplorerState.results.length;
+    const elapsed = stockExplorerState.startedAt ? ((Date.now() - stockExplorerState.startedAt) / 1000).toFixed(1) : "0.0";
+    const best = stockExplorerState.results[0];
+    const bestTxt = best
+      ? `best ${mmText(best.metrics?.efl)} ${tText(best.metrics?.T)} corner ${mmText(best.fieldFocus?.cornerBestRmsMm, 4)}`
+      : "no valid candidate yet";
+    return `${stockExplorerState.running ? "Running" : "Idle"} • ${done}/${total} tested • valid ${valid} • rejected ${stockExplorerState.rejected} • invalid ${stockExplorerState.invalid} • ${bestTxt} • ${elapsed}s`;
+  }
+
+  function renderStockExplorerResults() {
+    if (!ui.seResults) return;
+    const results = stockExplorerState.results || [];
+    if (ui.seProgress) ui.seProgress.textContent = stockExplorerProgressText();
+    if (ui.seExportResults) ui.seExportResults.disabled = !results.length;
+    if (!results.length) {
+      ui.seResults.innerHTML = `<div class="stockEmpty">No valid candidates yet.</div>`;
+      return;
+    }
+    const rows = results.map((r, idx) => {
+      const m = r.metrics || {};
+      const ff = r.fieldFocus || {};
+      const warn = [...(r.warnings || []), ...(r.rejectReasons || [])].slice(0, 3).join(" • ");
+      return `
+        <tr>
+          <td>${idx + 1}</td>
+          <td>${r.score.toFixed(2)}</td>
+          <td>${escapeAttr(mmText(m.efl, 2))}</td>
+          <td>${escapeAttr(mmText(m.bfl, 2))}</td>
+          <td>${escapeAttr(tText(m.T))}</td>
+          <td>${escapeAttr(mmText(m.rearClearance, 2))}</td>
+          <td>${r.vignettingPct.toFixed(1)}%</td>
+          <td>${escapeAttr(mmText(ff.fieldCurvatureDeltaMm, 3))}</td>
+          <td>${escapeAttr(mmText(ff.centerBestRmsMm, 4))} / ${escapeAttr(mmText(ff.midBestRmsMm, 4))} / ${escapeAttr(mmText(ff.cornerBestRmsMm, 4))}</td>
+          <td>${escapeAttr(r.elements.join(" -> "))}</td>
+          <td>${escapeAttr(r.spacings.map((g) => Number(g).toFixed(2)).join(", "))}</td>
+          <td>$${r.totalCost.toFixed(2)}</td>
+          <td class="stockExplorerWarn">${escapeAttr(warn || "—")}</td>
+          <td class="stockExplorerActionsCell">
+            <button class="miniBtn seResultAction" data-action="load" data-i="${idx}" type="button">Load candidate</button>
+            <button class="miniBtn seResultAction" data-action="save" data-i="${idx}" type="button">Save JSON</button>
+            <button class="miniBtn seResultAction" data-action="bom" data-i="${idx}" type="button">Export BOM</button>
+            <button class="miniBtn seResultAction" data-action="duplicate" data-i="${idx}" type="button">Duplicate</button>
+            <button class="miniBtn seResultAction" data-action="fine" data-i="${idx}" type="button">Fine optimize</button>
+          </td>
+        </tr>
+      `;
+    }).join("");
+    ui.seResults.innerHTML = `
+      <table class="stockExplorerTable">
+        <thead><tr><th>#</th><th>Score</th><th>EFL</th><th>BFL</th><th>T</th><th>Rear clear</th><th>Vig</th><th>Focus delta</th><th>RMS C/M/K</th><th>Elements</th><th>Spacings</th><th>Cost</th><th>Warnings</th><th>Actions</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+    ui.seResults.querySelectorAll(".seResultAction").forEach((button) => {
+      button.addEventListener("click", (e) => {
+        const idx = Number(e.currentTarget.dataset.i);
+        const action = e.currentTarget.dataset.action;
+        handleStockExplorerResultAction(action, idx);
+      });
+    });
+  }
+
+  function stockExplorerBomForLens(lensObj) {
+    const groups = [];
+    const seen = new Set();
+    (lensObj?.surfaces || []).forEach((s) => {
+      if (!s?.stockElementGroupId || seen.has(s.stockElementGroupId)) return;
+      seen.add(s.stockElementGroupId);
+      const group = (lensObj.surfaces || []).filter((surface) => surface.stockElementGroupId === s.stockElementGroupId);
+      const rear = group.find((surface) => surface.stockElementRearSurface) || group[group.length - 1];
+      const catalog = s.stockCatalog ? normalizeStockElement(s.stockCatalog) : null;
+      if (!catalog) return;
+      groups.push({
+        supplier: catalog.supplier,
+        code: catalog.code,
+        type: catalog.type,
+        material: catalog.glass_catalog_name || catalog.material,
+        diameter_mm: catalog.diameter_mm,
+        focal_length_mm: catalog.efl_mm,
+        price_usd: catalog.price_usd,
+        delivery: catalog.delivery,
+        availability: catalog.availability,
+        orientation: stockOrientationLabel(s.stockOrientation),
+        air_gap_after_mm: Number(rear?.t || 0),
+        source_url: catalog.source_url || "",
+      });
+    });
+    return {
+      lensName: lensObj?.name || "Stock Explorer candidate",
+      generatedAt: new Date().toISOString(),
+      totalEstimatedGlassCostUsd: groups.reduce((sum, g) => sum + (Number.isFinite(Number(g.price_usd)) ? Number(g.price_usd) : 0), 0),
+      items: groups,
+      spacers: groups.map((g, i) => ({ after_element: i + 1, air_gap_mm: g.air_gap_after_mm })),
+    };
+  }
+
+  function stockExplorerResultFilename(result, suffix = "json") {
+    const codes = (result?.elements || []).map((v) => String(v).split(" ").slice(-1)[0]).join("_");
+    return `stock-explorer-${mmText(result?.metrics?.efl, 0).replace(/[^\d.]+/g, "")}mm-${codes || "candidate"}.${suffix}`;
+  }
+
+  function handleStockExplorerResultAction(action, idx) {
+    const result = stockExplorerState.results[idx];
+    if (!result) return;
+    if (action === "load" || action === "duplicate") {
+      const L = clone(result.lensJson);
+      if (action === "duplicate") L.name = `${L.name || "Stock Explorer candidate"} copy`;
+      applyStockExplorerSensor(stockExplorerState.settings || readStockExplorerSettings());
+      loadLens(L);
+      setStockPrototypeMode(true);
+      toast(action === "duplicate" ? "Duplicated stock explorer candidate" : "Loaded stock explorer candidate");
+      return;
+    }
+    if (action === "save") {
+      downloadTextFile(stockExplorerResultFilename(result), JSON.stringify(result.lensJson, null, 2), "application/json");
+      return;
+    }
+    if (action === "bom") {
+      downloadTextFile(stockExplorerResultFilename(result, "bom.json"), JSON.stringify(stockExplorerBomForLens(result.lensJson), null, 2), "application/json");
+      return;
+    }
+    if (action === "fine") {
+      fineOptimizeStockExplorerResult(idx);
+    }
+  }
+
+  function stockExplorerSetRunning(running) {
+    stockExplorerState.running = !!running;
+    if (ui.seStart) ui.seStart.disabled = running;
+    if (ui.seCancel) ui.seCancel.disabled = !running;
+  }
+
+  function openStockExplorerModal() {
+    populateStockExplorerSensorSelect();
+    applyStockExplorerPreset();
+    if (ui.stockExplorerModal) {
+      ui.stockExplorerModal.classList.remove("hidden");
+      ui.stockExplorerModal.setAttribute("aria-hidden", "false");
+    }
+    renderStockExplorerResults();
+  }
+
+  function closeStockExplorerModal() {
+    if (stockExplorerState.running) stockExplorerState.cancel = true;
+    if (!ui.stockExplorerModal) return;
+    ui.stockExplorerModal.classList.add("hidden");
+    ui.stockExplorerModal.setAttribute("aria-hidden", "true");
+  }
+
+  function stockExplorerCandidatePlanWithGaps(plan, gaps) {
+    return { ...clone(plan), gaps: gaps.map((g) => Math.max(0.1, Number(g) || 0.1)) };
+  }
+
+  async function stockExplorerFineTuneResultObject(result, settings, progressPrefix = "Fine optimizing") {
+    let best = result;
+    const adjustable = Math.max(0, (result.plan?.gaps?.length || 1) - 1);
+    const passes = [
+      { range: 10, step: 1 },
+      { range: 2, step: 0.25 },
+    ];
+    for (const pass of passes) {
+      for (let gi = 0; gi < adjustable; gi++) {
+        const base = Number(best.plan.gaps[gi]) || 0.1;
+        for (let delta = -pass.range; delta <= pass.range + 1e-9; delta += pass.step) {
+          if (stockExplorerState.cancel) return best;
+          const nextGaps = best.plan.gaps.slice();
+          nextGaps[gi] = Math.max(0.1, base + delta);
+          const candidate = stockExplorerEvaluatePlan(stockExplorerCandidatePlanWithGaps(best.plan, nextGaps), settings, { includeFieldFocus: true });
+          stockExplorerState.evaluated++;
+          if (candidate.valid && stockExplorerResultSort(candidate, best) < 0) best = candidate;
+        }
+        if (ui.seProgress) ui.seProgress.textContent = `${progressPrefix} gap ${gi + 1}/${adjustable} • ${stockExplorerProgressText()}`;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    return best;
+  }
+
+  async function fineOptimizeStockExplorerResult(idx) {
+    const result = stockExplorerState.results[idx];
+    if (!result || stockExplorerState.running) return;
+    stockExplorerSetRunning(true);
+    stockExplorerState.cancel = false;
+    try {
+      const settings = stockExplorerState.settings || readStockExplorerSettings();
+      const improved = await stockExplorerFineTuneResultObject(result, settings, "Fine optimizing selected candidate");
+      stockExplorerState.results[idx] = improved;
+      stockExplorerState.results.sort(stockExplorerResultSort);
+      stockExplorerState.results = stockExplorerState.results.slice(0, 50);
+      renderStockExplorerResults();
+      toast("Fine optimize complete");
+    } finally {
+      stockExplorerSetRunning(false);
+      renderStockExplorerResults();
+    }
+  }
+
+  async function startStockDesignExplorer() {
+    if (stockExplorerState.running) return;
+    await loadStockElementLibrary();
+    const settings = readStockExplorerSettings();
+    stockExplorerState.settings = settings;
+    applyStockExplorerSensor(settings);
+    applySensorToIMS({ force: true });
+    stockExplorerState.cancel = false;
+    stockExplorerState.results = [];
+    stockExplorerState.evaluated = 0;
+    stockExplorerState.rejected = 0;
+    stockExplorerState.invalid = 0;
+    stockExplorerState.startedAt = Date.now();
+    stockExplorerState.plans = stockExplorerBuildPlans(settings);
+    stockExplorerSetRunning(true);
+    renderStockExplorerResults();
+    if (!stockExplorerState.plans.length) {
+      if (ui.seProgress) ui.seProgress.textContent = "No insertable stock candidates match the current constraints.";
+      stockExplorerSetRunning(false);
+      return;
+    }
+
+    try {
+      const chunkSize = settings.mode === "deep" ? 6 : 10;
+      for (let i = 0; i < stockExplorerState.plans.length; i++) {
+        if (stockExplorerState.cancel) break;
+        const result = stockExplorerEvaluatePlan(stockExplorerState.plans[i], settings, { includeFieldFocus: true });
+        stockExplorerState.evaluated++;
+        if (result.valid) stockExplorerKeepResult(result);
+        else if (result.score >= AUTO_TUNER_INVALID_SCORE) stockExplorerState.invalid++;
+        else stockExplorerState.rejected++;
+        if (i % chunkSize === chunkSize - 1) {
+          renderStockExplorerResults();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+
+      if (!stockExplorerState.cancel && settings.mode === "deep" && stockExplorerState.results.length) {
+        const top = stockExplorerState.results.slice(0, 3);
+        for (let i = 0; i < top.length; i++) {
+          if (stockExplorerState.cancel) break;
+          const improved = await stockExplorerFineTuneResultObject(top[i], settings, `Deep fine search ${i + 1}/${top.length}`);
+          const idx = stockExplorerState.results.indexOf(top[i]);
+          if (idx >= 0) stockExplorerState.results[idx] = improved;
+          else stockExplorerState.results.push(improved);
+          stockExplorerState.results.sort(stockExplorerResultSort);
+          stockExplorerState.results = stockExplorerState.results.slice(0, 50);
+          renderStockExplorerResults();
+        }
+      }
+    } finally {
+      stockExplorerSetRunning(false);
+      if (ui.seProgress) {
+        ui.seProgress.textContent = `${stockExplorerState.cancel ? "Cancelled" : "Done"} • ${stockExplorerProgressText()}`;
+      }
+      renderStockExplorerResults();
+    }
+  }
+
+  function cancelStockDesignExplorer() {
+    stockExplorerState.cancel = true;
+    if (ui.seProgress) ui.seProgress.textContent = `Cancelling after current candidate... ${stockExplorerProgressText()}`;
+  }
+
+  function exportStockExplorerResults() {
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      settings: stockExplorerState.settings,
+      results: stockExplorerState.results.map((r) => ({
+        score: r.score,
+        family: r.family,
+        metrics: compactLensAiMetrics(r.metrics),
+        fieldFocus: r.fieldFocus,
+        vignettingPct: r.vignettingPct,
+        elements: r.elements,
+        spacings: r.spacings,
+        orientations: r.orientations,
+        totalCost: r.totalCost,
+        warnings: r.warnings,
+        lensJson: r.lensJson,
+      })),
+    };
+    downloadTextFile("stock-design-explorer-results.json", JSON.stringify(payload, null, 2), "application/json");
+  }
+
   function wireStockLibraryUI() {
     if (ui.btnStockLibrary) ui.btnStockLibrary.addEventListener("click", () => openStockLibraryModal());
+    if (ui.btnStockDesignExplorer) ui.btnStockDesignExplorer.addEventListener("click", openStockExplorerModal);
     if (ui.btnPrototypeBom) ui.btnPrototypeBom.addEventListener("click", openPrototypeBomModal);
     if (ui.btnStockPrototypeMode) ui.btnStockPrototypeMode.addEventListener("click", () => setStockPrototypeMode(!lens?.stockPrototype?.enabled));
     if (ui.stockClose) ui.stockClose.addEventListener("click", closeStockLibraryModal);
@@ -3145,9 +3998,18 @@ function warnMissingGlass(name) {
     if (ui.bomExportJson) ui.bomExportJson.addEventListener("click", exportPrototypeBomJson);
     if (ui.bomExportCsv) ui.bomExportCsv.addEventListener("click", exportPrototypeBomCsv);
     if (ui.bomExportLens) ui.bomExportLens.addEventListener("click", exportStockPrototypeLensJson);
+    if (ui.stockExplorerClose) ui.stockExplorerClose.addEventListener("click", closeStockExplorerModal);
+    if (ui.stockExplorerModal) ui.stockExplorerModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.stockExplorerModal) closeStockExplorerModal();
+    });
+    if (ui.sePreset) ui.sePreset.addEventListener("change", applyStockExplorerPreset);
+    if (ui.seStart) ui.seStart.addEventListener("click", startStockDesignExplorer);
+    if (ui.seCancel) ui.seCancel.addEventListener("click", cancelStockDesignExplorer);
+    if (ui.seExportResults) ui.seExportResults.addEventListener("click", exportStockExplorerResults);
     loadStockElementLibrary().then(() => {
       renderStockLibraryFilters();
       updateStockPrototypeUi();
+      populateStockExplorerSensorSelect();
     });
   }
 

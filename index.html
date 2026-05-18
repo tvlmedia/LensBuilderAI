@@ -31,6 +31,7 @@
       <button id="btnAdd" class="btn" type="button">+ Surface</button>
       <button id="btnAddElement" class="btn" type="button">+ Element</button>
       <button id="btnStockLibrary" class="btn" type="button">Stock Library</button>
+      <button id="btnStockDesignExplorer" class="btn" type="button">Stock Design Explorer</button>
       <button id="btnPrototypeBom" class="btn" type="button">Prototype BOM</button>
       <button id="btnStockPrototypeMode" class="btn" type="button" aria-pressed="false">Stock Mode: OFF</button>
       <button id="btnAddFieldFlattener" class="btn" type="button">Add rear flattener</button>
@@ -1016,6 +1017,83 @@
         <button id="bomExportJson" class="btn" type="button">Export BOM JSON</button>
         <button id="bomExportCsv" class="btn" type="button">Export BOM CSV</button>
         <button id="bomExportLens" class="btn btnPrimary" type="button">Export stock-prototype lens JSON</button>
+      </div>
+    </div>
+  </div>
+  <div id="stockExplorerModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard stockExplorerCard" role="dialog" aria-modal="true" aria-labelledby="stockExplorerTitle">
+      <div class="modalTop">
+        <div>
+          <div id="stockExplorerTitle" class="modalTitle">Stock Design Explorer</div>
+          <div class="modalSub">Deterministic brute-force search through /data/element-library.json. No AI, no API calls.</div>
+        </div>
+        <button id="stockExplorerClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modalScroll stockExplorerScroll">
+        <section class="stockPanel">
+          <div class="atSectionTitle">Target / constraints</div>
+          <div class="stockExplorerGrid">
+            <label>Preset
+              <select id="sePreset" class="cellSelect">
+                <option value="50t2">50mm T2 Full Frame / Mini LF</option>
+                <option value="85t2">85mm T2 Full Frame / Mini LF</option>
+                <option value="50t28">50mm T2.8 Full Frame / Mini LF</option>
+                <option value="85t28">85mm T2.8 Full Frame / Mini LF</option>
+                <option value="custom">Custom target</option>
+              </select>
+            </label>
+            <label>Search depth
+              <select id="seSearchMode" class="cellSelect">
+                <option value="quick">Quick search</option>
+                <option value="deep">Deep search</option>
+              </select>
+            </label>
+            <label>Target EFL
+              <input id="seTargetEfl" class="cellInput" type="number" step="0.1" value="50">
+            </label>
+            <label>EFL tolerance ±
+              <input id="seEflTolerance" class="cellInput" type="number" step="0.1" value="8">
+            </label>
+            <label>Target T-stop
+              <input id="seTargetT" class="cellInput" type="number" step="0.05" value="2.0">
+            </label>
+            <label>Sensor preset
+              <select id="seSensorPreset" class="cellSelect"></select>
+            </label>
+            <label>Minimum BFL
+              <input id="seMinBfl" class="cellInput" type="number" step="0.5" value="52">
+            </label>
+            <label>Minimum rear clear
+              <input id="seMinRearClear" class="cellInput" type="number" step="0.5" value="0">
+            </label>
+            <label>Max vignetting %
+              <input id="seMaxVignetting" class="cellInput" type="number" step="0.5" value="2">
+            </label>
+            <label>Max lens length
+              <input id="seMaxLength" class="cellInput" type="number" step="1" value="140">
+            </label>
+            <label>Max stock elements
+              <input id="seMaxElements" class="cellInput" type="number" step="1" min="2" max="5" value="4">
+            </label>
+            <label>Minimum main Ø
+              <input id="seMinDiameter" class="cellInput" type="number" step="0.1" value="25.4">
+            </label>
+            <label class="aiToggle stockOnlyToggle">
+              <input id="seStockOnly" type="checkbox" checked>
+              <span>Only stock / available elements</span>
+            </label>
+          </div>
+          <div class="stockExplorerActions">
+            <button id="seStart" class="btn btnPrimary" type="button">Start search</button>
+            <button id="seCancel" class="btn" type="button" disabled>Cancel</button>
+            <button id="seExportResults" class="btn" type="button" disabled>Export results JSON</button>
+          </div>
+          <div id="seProgress" class="stockSummary">Idle.</div>
+        </section>
+        <section class="stockPanel">
+          <div class="atSectionTitle">Top candidates</div>
+          <div id="seResults" class="stockExplorerResults stockEmpty">No candidates yet.</div>
+        </section>
       </div>
     </div>
   </div>
