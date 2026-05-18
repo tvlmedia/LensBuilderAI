@@ -912,6 +912,10 @@ canvas{
   background:rgba(255,255,255,.035);
   padding:10px;
 }
+.stockCardDisabled{
+  border-color:rgba(255,209,138,.28);
+  background:rgba(255,209,138,.045);
+}
 .stockCardTop{
   display:flex;
   flex-wrap:wrap;

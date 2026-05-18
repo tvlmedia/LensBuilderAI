@@ -368,6 +368,7 @@
     stockSupplierFilter: $("#stockSupplierFilter"),
     stockTypeFilter: $("#stockTypeFilter"),
     stockMaterialFilter: $("#stockMaterialFilter"),
+    stockCoatingFilter: $("#stockCoatingFilter"),
     stockDiameterMin: $("#stockDiameterMin"),
     stockDiameterMax: $("#stockDiameterMax"),
     stockEflMin: $("#stockEflMin"),
@@ -880,6 +881,11 @@ const GLASS_ALIASES = {
   "N-BK7": "N-BK7HT",
   BK7: "N-BK7HT",
   F2: "N-F2",
+  SF2: "N-SF2",
+  SF5: "N-SF5",
+  SF6: "N-SF6",
+  "N-SF6HT": "N-SF6",
+  SF6HT: "N-SF6",
 
   // your preset names
   LASF35: "N-LASF43",     // kies de beste match in jouw DB
@@ -1576,10 +1582,11 @@ function warnMissingGlass(name) {
     "positive-meniscus",
     "negative-meniscus",
     "achromatic-doublet",
+    "achromatic-cemented-doublet",
     "window/filter",
     "unknown/other",
   ]);
-  const STOCK_AVAILABILITY = new Set(["stock", "limited_stock", "inquire", "custom", "unknown"]);
+  const STOCK_AVAILABILITY = new Set(["stock", "limited_stock", "inquire", "quote", "lead_time", "lead_time_3_weeks", "custom", "unknown"]);
   const STOCK_CONFIDENCE = new Set(["high", "medium", "low", "unavailable"]);
   const STOCK_GLASS_ND = {
     "N-BK7": 1.5168,
@@ -1591,126 +1598,13 @@ function warnMissingGlass(name) {
     "N-SF5": 1.6727,
     SF5: 1.6727,
   };
-  const STOCK_LIBRARY_FALLBACK = [
-    {
-      id: "shalom-1101-078",
-      supplier: "Shalom EO",
-      code: "1101-078",
-      category: "singlet",
-      type: "plano-convex",
-      material: "N-BK7",
-      glass_catalog_name: "N-BK7",
-      diameter_mm: 25,
-      semi_diameter_mm: 12.5,
-      center_thickness_mm: 5.3,
-      edge_thickness_mm: 2.1,
-      efl_mm: 50,
-      radius_1_mm: 25.84,
-      radius_2_mm: null,
-      radius_2_type: "plano",
-      radius_from_efl_mm: 25.84,
-      radius_from_sag_mm: 26.01,
-      selected_radius_mm: 25.84,
-      radius_estimation_error_mm: 0.17,
-      coating: "Uncoated",
-      price_usd: 12,
-      delivery: "1 Week",
-      availability: "stock",
-      raytrace_confidence: "high",
-      prescription_status: "estimated_from_catalog",
-      notes: "Radius estimated from EFL and checked against CT/ET sag.",
-    },
-    {
-      id: "shalom-1101-151",
-      supplier: "Shalom EO",
-      code: "1101-151",
-      category: "singlet",
-      type: "plano-convex",
-      material: "N-BK7",
-      glass_catalog_name: "N-BK7",
-      diameter_mm: 25,
-      semi_diameter_mm: 12.5,
-      center_thickness_mm: 11.7,
-      edge_thickness_mm: 2,
-      efl_mm: 25.4,
-      radius_1_mm: 13.13,
-      radius_2_mm: null,
-      radius_2_type: "plano",
-      radius_from_efl_mm: 13.13,
-      radius_from_sag_mm: 12.92,
-      selected_radius_mm: 13.13,
-      radius_estimation_error_mm: 0.21,
-      coating: "350-650nm AR Coating",
-      price_usd: 18.5,
-      delivery: "Inquire",
-      availability: "inquire",
-      raytrace_confidence: "high",
-      prescription_status: "estimated_from_catalog",
-      notes: "Starter row from Shalom-style PCX catalog data.",
-    },
-    {
-      id: "shalom-1103-001",
-      supplier: "Shalom EO",
-      code: "1103-001",
-      category: "singlet",
-      type: "plano-concave",
-      material: "N-BK7",
-      glass_catalog_name: "N-BK7",
-      diameter_mm: 12.7,
-      semi_diameter_mm: 6.35,
-      center_thickness_mm: 1.8,
-      edge_thickness_mm: 3.5,
-      efl_mm: -25,
-      radius_1_mm: -12.92,
-      radius_2_mm: null,
-      radius_2_type: "plano",
-      radius_from_efl_mm: 12.92,
-      radius_from_sag_mm: 12.72,
-      selected_radius_mm: 12.92,
-      radius_estimation_error_mm: 0.20,
-      coating: "Uncoated",
-      price_usd: 12,
-      delivery: "2-3 Days",
-      availability: "stock",
-      raytrace_confidence: "high",
-      prescription_status: "estimated_from_catalog",
-      notes: "Radius estimated from EFL and checked against CT/ET sag.",
-    },
-    {
-      id: "shalom-1103-009",
-      supplier: "Shalom EO",
-      code: "1103-009",
-      category: "singlet",
-      type: "plano-concave",
-      material: "N-BK7",
-      glass_catalog_name: "N-BK7",
-      diameter_mm: 12.7,
-      semi_diameter_mm: 6.35,
-      center_thickness_mm: 2.7,
-      edge_thickness_mm: 3.5,
-      efl_mm: -50,
-      radius_1_mm: -25.84,
-      radius_2_mm: null,
-      radius_2_type: "plano",
-      radius_from_efl_mm: 25.84,
-      radius_from_sag_mm: 25.60,
-      selected_radius_mm: 25.84,
-      radius_estimation_error_mm: 0.24,
-      coating: "Uncoated",
-      price_usd: 12,
-      delivery: "2-3 Days",
-      availability: "stock",
-      raytrace_confidence: "high",
-      prescription_status: "estimated_from_catalog",
-      notes: "Radius estimated from EFL and checked against CT/ET sag.",
-    },
-  ];
-
   const stockLibraryState = {
     loaded: false,
-    elements: STOCK_LIBRARY_FALLBACK.map((e) => normalizeStockElement(e)),
+    elements: [],
     parsedImport: [],
     matchTarget: null,
+    sourceSummary: "",
+    loadError: "",
   };
 
   function stockSlug(value) {
@@ -1738,8 +1632,11 @@ function warnMissingGlass(name) {
     const text = String(delivery || "").trim().toLowerCase();
     if (!text) return "unknown";
     if (text.includes("inquire")) return "inquire";
+    if (text.includes("quote")) return "quote";
     if (text.includes("custom")) return "custom";
     if (text.includes("limited")) return "limited_stock";
+    if (text.includes("lead") && text.includes("3")) return "lead_time_3_weeks";
+    if (text.includes("lead")) return "lead_time";
     if (/(day|week|stock)/.test(text)) return "stock";
     return "unknown";
   }
@@ -1752,6 +1649,7 @@ function warnMissingGlass(name) {
     if (t.includes("bi") && t.includes("concave")) return "biconcave";
     if (t.includes("positive") && t.includes("meniscus")) return "positive-meniscus";
     if (t.includes("negative") && t.includes("meniscus")) return "negative-meniscus";
+    if (t.includes("achrom") && t.includes("cement")) return "achromatic-cemented-doublet";
     if (t.includes("achrom")) return "achromatic-doublet";
     if (t.includes("window") || t.includes("filter")) return "window/filter";
     return STOCK_TYPES.has(t) ? t : "unknown/other";
@@ -1797,19 +1695,43 @@ function warnMissingGlass(name) {
     };
   }
 
+  function normalizeStockSurfaceRecord(surface) {
+    if (!surface || typeof surface !== "object") return null;
+    const radiusType = String(surface.radius_type || surface.radiusType || "").toLowerCase();
+    const radiusRaw = surface.radius_mm ?? surface.radius ?? surface.R;
+    const radius = radiusRaw == null || radiusType === "plano"
+      ? 0
+      : parseStockNumber(radiusRaw);
+    const thickness = parseStockNumber(surface.thickness_mm ?? surface.thickness ?? surface.t);
+    const semi = parseStockNumber(surface.semi_diameter_mm ?? surface.semiDiameterMm ?? surface.ap ?? surface.aperture_mm);
+    return {
+      surface_index: parseStockNumber(surface.surface_index ?? surface.index),
+      radius_mm: Number.isFinite(radius) ? radius : 0,
+      radius_type: radiusType || (radiusRaw == null ? "plano" : null),
+      thickness_mm: Number.isFinite(thickness) ? thickness : null,
+      medium_after: String(surface.medium_after || surface.mediumAfter || surface.glass_after || surface.glass || "AIR").trim() || "AIR",
+      semi_diameter_mm: Number.isFinite(semi) ? semi : null,
+      surface_role: String(surface.surface_role || surface.role || ""),
+    };
+  }
+
   function normalizeStockElement(raw) {
-    const supplier = String(raw?.supplier || "Unknown supplier").trim();
-    const code = String(raw?.code || raw?.part_number || raw?.id || "unknown").trim();
+    const supplier = String(raw?.supplier || raw?.store || "Unknown supplier").trim();
+    const code = String(raw?.code || raw?.part_number || raw?.partNumber || raw?.id || "unknown").trim();
     const type = normalizeStockType(raw?.type || raw?.element_type || raw?.category);
-    const material = String(raw?.material || raw?.glass_catalog_name || raw?.glass || "N-BK7").trim();
+    const materials = Array.isArray(raw?.materials)
+      ? raw.materials.map((m) => String(m || "").trim()).filter(Boolean)
+      : String(raw?.materials || "").split(/[\/,]/).map((m) => m.trim()).filter(Boolean);
+    const material = String(raw?.material || raw?.glass_catalog_name || raw?.glass_1 || raw?.glass || materials[0] || "N-BK7").trim();
     const diameter = parseStockNumber(raw?.diameter_mm ?? raw?.diameter ?? raw?.Dia ?? raw?.D);
-    const ct = parseStockNumber(raw?.center_thickness_mm ?? raw?.ct ?? raw?.CT ?? raw?.["Center Thickness"]);
+    const ct = parseStockNumber(raw?.center_thickness_mm ?? raw?.center_thickness_total_mm ?? raw?.ct ?? raw?.CT ?? raw?.["Center Thickness"]);
     const et = parseStockNumber(raw?.edge_thickness_mm ?? raw?.et ?? raw?.ET ?? raw?.["Edge Thickness"]);
     const efl = parseStockNumber(raw?.efl_mm ?? raw?.focal_length_mm ?? raw?.focal_length ?? raw?.FL ?? raw?.EFL ?? raw?.["Focal length"]);
     const delivery = String(raw?.delivery || raw?.Delivery || "").trim();
     const availabilityRaw = String(raw?.availability || "").trim().toLowerCase();
-    const availability = STOCK_AVAILABILITY.has(availabilityRaw) ? availabilityRaw : stockAvailabilityFromDelivery(delivery);
-    const coating = String(raw?.coating || raw?.Coating || "Uncoated").trim() || "Uncoated";
+    const availability = STOCK_AVAILABILITY.has(availabilityRaw) ? availabilityRaw : stockAvailabilityFromDelivery(delivery || availabilityRaw);
+    const coatingRaw = raw?.coating ?? raw?.Coating;
+    const coating = coatingRaw == null || String(coatingRaw).trim() === "" ? "" : String(coatingRaw).trim();
     const radiusEstimate = estimateStockRadius({
       ...raw,
       type,
@@ -1821,25 +1743,41 @@ function warnMissingGlass(name) {
       efl_mm: efl,
     });
     const id = String(raw?.id || `${stockSlug(supplier)}-${stockSlug(code)}`).trim();
-    const price = parseStockNumber(raw?.price_usd ?? raw?.price ?? raw?.["Unit Price"] ?? raw?.Price);
+    const price = parseStockNumber(raw?.price_usd ?? raw?.price ?? raw?.price_raw ?? raw?.["Unit Price"] ?? raw?.Price);
+    const surfaces = Array.isArray(raw?.surfaces)
+      ? raw.surfaces.map(normalizeStockSurfaceRecord).filter(Boolean)
+      : [];
+    const confidenceRaw = String(raw?.raytrace_confidence || radiusEstimate.raytrace_confidence || "medium").toLowerCase();
     const out = {
       id,
       supplier,
+      store: String(raw?.store || supplier),
       code,
-      source_url: String(raw?.source_url || raw?.url || ""),
-      category: String(raw?.category || (type === "achromatic-doublet" ? "doublet" : "singlet")),
+      source_url: String(raw?.source_url || raw?.sourceUrl || raw?.url || ""),
+      source_table: String(raw?.source_table || ""),
+      category: String(raw?.category || (type.includes("achromatic") ? "achromat" : "singlet")),
       type,
+      focal_class: String(raw?.focal_class || ""),
+      insertable: raw?.insertable !== false,
+      locked_by_default: raw?.locked_by_default !== false,
       material,
+      materials: materials.length ? materials : [material],
+      glass_1: String(raw?.glass_1 || material),
+      glass_2: raw?.glass_2 ? String(raw.glass_2) : "",
       glass_catalog_name: String(raw?.glass_catalog_name || material),
       diameter_mm: diameter,
       semi_diameter_mm: Number.isFinite(Number(raw?.semi_diameter_mm)) ? Number(raw.semi_diameter_mm) : (Number.isFinite(diameter) ? diameter / 2 : null),
       clear_aperture_mm: parseStockNumber(raw?.clear_aperture_mm ?? raw?.clear_aperture),
       center_thickness_mm: ct,
+      center_thickness_total_mm: parseStockNumber(raw?.center_thickness_total_mm ?? ct),
+      center_thickness_1_mm: parseStockNumber(raw?.center_thickness_1_mm),
+      center_thickness_2_mm: parseStockNumber(raw?.center_thickness_2_mm),
       edge_thickness_mm: et,
       efl_mm: efl,
       bfl_mm: parseStockNumber(raw?.bfl_mm ?? raw?.BFL),
       radius_1_mm: parseStockNumber(raw?.radius_1_mm ?? raw?.R1),
       radius_2_mm: parseStockNumber(raw?.radius_2_mm ?? raw?.R2),
+      radius_3_mm: parseStockNumber(raw?.radius_3_mm ?? raw?.R3),
       radius_2_type: raw?.radius_2_type || (type.includes("plano") ? "plano" : null),
       ...radiusEstimate,
       coating,
@@ -1847,9 +1785,17 @@ function warnMissingGlass(name) {
       surface_quality: raw?.surface_quality ?? null,
       irregularity: String(raw?.irregularity || raw?.Irregularity || ""),
       price_usd: Number.isFinite(price) ? price : null,
+      price_raw: raw?.price_raw ?? raw?.price ?? null,
       delivery,
       availability,
-      prescription_status: String(raw?.prescription_status || "estimated_from_catalog"),
+      raytrace_confidence: STOCK_CONFIDENCE.has(confidenceRaw) ? confidenceRaw : "medium",
+      prescription_status: String(raw?.prescription_status || (surfaces.length ? "complete_surface_prescription" : "estimated_from_catalog")),
+      air_gap_after_mm: parseStockNumber(raw?.air_gap_after_mm),
+      orientation: String(raw?.orientation || raw?.default_orientation || "curved-first"),
+      default_orientation: String(raw?.default_orientation || raw?.orientation || "curved-first"),
+      orientation_options: Array.isArray(raw?.orientation_options) ? raw.orientation_options.slice() : [],
+      surfaces,
+      warnings: Array.isArray(raw?.warnings) ? raw.warnings.slice() : [],
       notes: String(raw?.notes || ""),
     };
     if (out.type === "plano-convex" && out.selected_radius_mm) {
@@ -1861,9 +1807,6 @@ function warnMissingGlass(name) {
       out.radius_2_mm = Number.isFinite(Number(out.radius_2_mm)) ? out.radius_2_mm : null;
       out.radius_2_type = "plano";
     }
-    out.raytrace_confidence = STOCK_CONFIDENCE.has(String(out.raytrace_confidence).toLowerCase())
-      ? String(out.raytrace_confidence).toLowerCase()
-      : "medium";
     if (raw?.raw) out.raw = clone(raw.raw);
     return out;
   }
@@ -1900,17 +1843,32 @@ function warnMissingGlass(name) {
     return [...byId.values()].sort((a, b) => `${a.supplier} ${a.code}`.localeCompare(`${b.supplier} ${b.code}`));
   }
 
+  function extractStockLibraryEntries(json) {
+    if (Array.isArray(json)) return json;
+    if (Array.isArray(json?.entries)) return json.entries;
+    if (Array.isArray(json?.elements)) return json.elements;
+    return [];
+  }
+
   async function loadStockElementLibrary() {
     if (stockLibraryState.loaded) return stockLibraryState.elements;
     let fileElements = [];
+    stockLibraryState.loadError = "";
     try {
       const res = await fetch("./data/element-library.json", { cache: "no-store" });
       if (res.ok) {
         const json = await res.json();
-        fileElements = Array.isArray(json?.elements) ? json.elements : [];
+        fileElements = extractStockLibraryEntries(json);
+        stockLibraryState.sourceSummary = json?.library_name
+          ? `${json.library_name} (${fileElements.length} entries)`
+          : `./data/element-library.json (${fileElements.length} entries)`;
+      } else {
+        stockLibraryState.loadError = `Could not load ./data/element-library.json (${res.status})`;
       }
-    } catch (_) {}
-    stockLibraryState.elements = mergeStockElements(STOCK_LIBRARY_FALLBACK, fileElements, getStockLibraryCustomEntries());
+    } catch (err) {
+      stockLibraryState.loadError = `Could not load ./data/element-library.json: ${err?.message || err}`;
+    }
+    stockLibraryState.elements = mergeStockElements(fileElements, getStockLibraryCustomEntries());
     stockLibraryState.loaded = true;
     renderStockLibraryFilters();
     return stockLibraryState.elements;
@@ -1922,7 +1880,8 @@ function warnMissingGlass(name) {
 
   function stockElementLine(element) {
     const efl = Number.isFinite(Number(element.efl_mm)) ? `FL${Number(element.efl_mm).toFixed(1)}` : "FL—";
-    const r = Number.isFinite(Number(element.selected_radius_mm)) ? `R${Number(element.selected_radius_mm).toFixed(2)}` : "R—";
+    const primaryR = stockPrimaryRadius(element);
+    const r = Number.isFinite(Number(primaryR)) ? `R${Number(primaryR).toFixed(2)}` : "R—";
     const price = Number.isFinite(Number(element.price_usd)) ? `$${Number(element.price_usd).toFixed(2)}` : "$—";
     return `${element.type} ${element.material} Ø${mmText(element.diameter_mm, 1)} ${efl} CT${mmText(element.center_thickness_mm, 2)} ${r} ${element.coating || ""} ${price} ${element.delivery || ""}`;
   }
@@ -1959,11 +1918,122 @@ function warnMissingGlass(name) {
     return normalizeGlassInput(element.glass_catalog_name || element.material || "N-BK7HT");
   }
 
+  function stockPrimaryRadius(element) {
+    const values = [
+      element?.selected_radius_mm,
+      element?.radius_1_mm,
+      element?.radius_2_mm,
+      element?.radius_3_mm,
+    ].map(Number).filter((v) => Number.isFinite(v) && Math.abs(v) > 1e-9);
+    return values.length ? Math.max(...values.map((v) => Math.abs(v))) : null;
+  }
+
+  function stockBaseSurfacesFromStoredPrescription(elementRaw) {
+    const element = normalizeStockElement(elementRaw);
+    const rawSurfaces = Array.isArray(element.surfaces) ? element.surfaces : [];
+    if (rawSurfaces.length < 2) return null;
+    const labelBase = `${element.supplier} ${element.code}`.trim();
+    const fallbackAp = Math.max(0.1, stockApertureForElement(element));
+    const base = rawSurfaces.map((surface, index) => {
+      const radius = Number(surface.radius_mm);
+      const thickness = Number(surface.thickness_mm);
+      const ap = Number(surface.semi_diameter_mm);
+      const glass = normalizeGlassInput(surface.medium_after || (index === rawSurfaces.length - 1 ? "AIR" : stockGlassName(element)));
+      const role = String(surface.surface_role || "").trim();
+      return {
+        type: "",
+        R: Number.isFinite(radius) ? radius : 0,
+        t: Number.isFinite(thickness) ? Math.max(0, thickness) : 0,
+        ap: Number.isFinite(ap) && ap > 0 ? ap : fallbackAp,
+        ap_optical: Number.isFinite(ap) && ap > 0 ? ap : fallbackAp,
+        glass,
+        stop: false,
+        surfaceLabel: `${labelBase} ${role || `S${index + 1}`}`.trim(),
+        surfaceLabelAuto: false,
+      };
+    });
+    const hasBad = base.some((surface) =>
+      !Number.isFinite(surface.R) ||
+      !Number.isFinite(surface.t) ||
+      !Number.isFinite(surface.ap) ||
+      !Number.isFinite(surface.ap_optical)
+    );
+    if (hasBad) return null;
+    if (resolveGlassName(base[base.length - 1].glass) !== "AIR") base[base.length - 1].glass = "AIR";
+    return base;
+  }
+
+  function orientStockBaseSurfaces(baseSurfaces, orientation, rearAir) {
+    const rear = Math.max(0, Number(rearAir) || 0);
+    const base = (baseSurfaces || []).map((surface) => ({ ...surface }));
+    if (!base.length) return null;
+    if (orientation !== "flipped") {
+      base[base.length - 1].t = rear;
+      base[base.length - 1].glass = "AIR";
+      return base;
+    }
+    const flipped = [];
+    for (let k = 0; k < base.length; k++) {
+      const originalIndex = base.length - 1 - k;
+      const original = base[originalIndex];
+      const mediumSource = originalIndex > 0 ? base[originalIndex - 1] : null;
+      flipped.push({
+        ...original,
+        R: Math.abs(Number(original.R)) <= 1e-12 ? 0 : -Number(original.R),
+        t: mediumSource ? Math.max(0, Number(mediumSource.t) || 0) : rear,
+        glass: mediumSource ? normalizeGlassInput(mediumSource.glass) : "AIR",
+        surfaceLabel: String(original.surfaceLabel || `S${originalIndex + 1}`).replace(/\bFRONT\b/i, "TEMP_REAR").replace(/\bREAR\b/i, "FRONT").replace(/\bTEMP_REAR\b/i, "REAR"),
+      });
+    }
+    flipped[flipped.length - 1].t = rear;
+    flipped[flipped.length - 1].glass = "AIR";
+    return flipped;
+  }
+
+  function decorateStockSurfaces(surfaces, element, groupId, orientation, rearAir) {
+    const catalog = stockCatalogSnapshot(element);
+    return (surfaces || []).map((surface, index) => ({
+      ...surface,
+      stockElementGroupId: groupId,
+      stockElementSurfaceIndex: index,
+      stockElementSurfaceRole: index === 0 ? "front" : (index === surfaces.length - 1 ? "rear" : "internal"),
+      stockElementLocked: true,
+      stockElementRearSurface: index === surfaces.length - 1,
+      stockCatalog: catalog,
+      stockOrientation: orientation,
+      stockAirGapAfterMm: index === surfaces.length - 1 ? rearAir : null,
+    }));
+  }
+
+  function stockRaytraceability(elementRaw) {
+    const element = normalizeStockElement(elementRaw);
+    if (element.insertable === false) return { ok: false, reason: "Cannot raytrace: incomplete physical prescription." };
+    const stored = stockBaseSurfacesFromStoredPrescription(element);
+    if (stored && stored.length >= 2) return { ok: true, source: "stored_surfaces" };
+    const ap = stockApertureForElement(element);
+    const ct = Number(element.center_thickness_mm);
+    const glass = stockGlassName(element);
+    const simple = (
+      (element.type === "plano-convex" || element.type === "plano-concave" || element.type === "window/filter") &&
+      Number.isFinite(ap) && ap > 0 &&
+      Number.isFinite(ct) && ct > 0 &&
+      (element.type === "window/filter" || Number.isFinite(Number(element.selected_radius_mm || element.radius_1_mm)))
+    );
+    if (simple && glass) return { ok: true, source: "generated_simple" };
+    return { ok: false, reason: "Cannot raytrace: incomplete physical prescription." };
+  }
+
   function stockLensSurfaces(elementRaw, options = {}) {
     const element = normalizeStockElement(elementRaw);
     const groupId = options.groupId || stockGroupId();
     const orientation = options.orientation === "flipped" ? "flipped" : "curved-first";
     const rearAir = Math.max(0, Number(options.airGapAfterMm ?? options.rearAir ?? 4) || 0);
+    const storedBase = stockBaseSurfacesFromStoredPrescription(element);
+    if (storedBase && storedBase.length >= 2) {
+      const oriented = orientStockBaseSurfaces(storedBase, orientation, rearAir);
+      return decorateStockSurfaces(oriented, element, groupId, orientation, rearAir);
+    }
+
     const ap = Math.max(0.1, stockApertureForElement(element));
     const ct = Math.max(0.01, Number(element.center_thickness_mm) || 1);
     const R = Math.max(0.0001, Math.abs(Number(element.selected_radius_mm || element.radius_1_mm || 0)) || 1000);
@@ -2025,6 +2095,12 @@ function warnMissingGlass(name) {
   }
 
   function insertStockElement(element, options = {}) {
+    const ray = stockRaytraceability(element);
+    if (!ray.ok) {
+      toast(ray.reason);
+      if (ui.stockLibrarySummary) ui.stockLibrarySummary.textContent = ray.reason;
+      return [];
+    }
     const rearAir = Math.max(0, Number(options.airGapAfterMm ?? elUI?.rear?.value ?? 4) || 0);
     const chunk = stockLensSurfaces(element, { orientation: options.orientation, airGapAfterMm: rearAir });
     let insertAt = Number.isFinite(Number(options.insertAt)) ? Number(options.insertAt) : safeInsertAtAfterSelected();
@@ -2156,15 +2232,17 @@ function warnMissingGlass(name) {
     let max = 0;
     const add = (weight, value) => { max += weight; score += weight * Math.max(0, Math.min(1, value)); };
     add(28, custom.type === e.type ? 1 : (custom.type === "unknown/other" ? 0.45 : 0.05));
-    add(18, normalizeGlassInput(custom.material) === normalizeGlassInput(e.glass_catalog_name || e.material) ? 1 : 0.35);
+    const materialMatch = normalizeGlassInput(custom.material) === normalizeGlassInput(e.glass_catalog_name || e.material)
+      || (e.materials || []).some((m) => normalizeGlassInput(custom.material) === normalizeGlassInput(m));
+    add(18, materialMatch ? 1 : 0.35);
     const cr = Number(custom.radius_mm);
-    const er = Number(e.selected_radius_mm);
+    const er = Number(stockPrimaryRadius(e));
     add(18, Number.isFinite(cr) && Number.isFinite(er) ? 1 - Math.min(1, Math.abs(cr - er) / Math.max(1, Math.abs(cr))) : 0.35);
     const cd = Number(custom.diameter_mm);
     const ed = Number(e.diameter_mm);
     add(14, Number.isFinite(cd) && Number.isFinite(ed) ? 1 - Math.min(1, Math.abs(cd - ed) / Math.max(1, Math.abs(cd))) : 0.35);
     const cct = Number(custom.center_thickness_mm);
-    const ect = Number(e.center_thickness_mm);
+    const ect = Number(e.center_thickness_mm ?? e.center_thickness_total_mm);
     add(8, Number.isFinite(cct) && Number.isFinite(ect) ? 1 - Math.min(1, Math.abs(cct - ect) / Math.max(1, Math.abs(cct))) : 0.4);
     add(5, e.availability === "stock" ? 1 : (e.availability === "limited_stock" ? 0.7 : 0.25));
     add(5, e.raytrace_confidence === "high" ? 1 : (e.raytrace_confidence === "medium" ? 0.65 : 0.2));
@@ -2177,6 +2255,7 @@ function warnMissingGlass(name) {
     const supplier = String(ui.stockSupplierFilter?.value || "");
     const type = String(ui.stockTypeFilter?.value || "");
     const material = String(ui.stockMaterialFilter?.value || "");
+    const coating = String(ui.stockCoatingFilter?.value || "");
     const availability = String(ui.stockAvailabilityFilter?.value || "");
     const confidence = String(ui.stockConfidenceFilter?.value || "");
     const dMin = parseStockNumber(ui.stockDiameterMin?.value);
@@ -2186,11 +2265,12 @@ function warnMissingGlass(name) {
     const maxPrice = parseStockNumber(ui.stockMaxPrice?.value);
     const stockOnly = !!ui.stockOnlyToggle?.checked;
     return (stockLibraryState.elements || []).filter((e) => {
-      const hay = `${e.supplier} ${e.code} ${e.type} ${e.material} ${e.glass_catalog_name} ${e.coating} ${e.delivery} ${e.availability}`.toLowerCase();
+      const hay = `${e.supplier} ${e.code} ${e.type} ${e.material} ${e.glass_catalog_name} ${(e.materials || []).join(" ")} ${e.coating} ${e.delivery} ${e.availability} ${e.source_url}`.toLowerCase();
       if (q && !hay.includes(q)) return false;
       if (supplier && e.supplier !== supplier) return false;
       if (type && e.type !== type) return false;
-      if (material && e.material !== material && e.glass_catalog_name !== material) return false;
+      if (material && e.material !== material && e.glass_catalog_name !== material && !(e.materials || []).includes(material)) return false;
+      if (coating && (e.coating || "Uncoated / none") !== coating) return false;
       if (availability && e.availability !== availability) return false;
       if (confidence && e.raytrace_confidence !== confidence) return false;
       if (stockOnly && e.availability !== "stock" && e.availability !== "limited_stock") return false;
@@ -2220,13 +2300,19 @@ function warnMissingGlass(name) {
     fill(ui.stockSupplierFilter, elements.map((e) => e.supplier), "All suppliers");
     fill(ui.stockTypeFilter, elements.map((e) => e.type), "All types");
     fill(ui.stockMaterialFilter, elements.map((e) => e.glass_catalog_name || e.material), "All materials");
+    fill(ui.stockCoatingFilter, elements.map((e) => e.coating || "Uncoated / none"), "All coatings");
+    fill(ui.stockAvailabilityFilter, elements.map((e) => e.availability), "Any availability");
+    fill(ui.stockConfidenceFilter, elements.map((e) => e.raytrace_confidence), "Any confidence");
   }
 
   function stockValidationWarnings(element) {
     const e = normalizeStockElement(element);
     const warnings = [];
-    if (e.availability === "inquire") warnings.push("May not be directly stock.");
-    if (e.raytrace_confidence === "low") warnings.push("Approximate catalog data only.");
+    const ray = stockRaytraceability(e);
+    if (!ray.ok) warnings.push(ray.reason);
+    if (e.availability === "inquire" || e.availability === "quote") warnings.push("May not be directly stock.");
+    if (e.availability && !["stock", "limited_stock"].includes(e.availability) && e.availability !== "unknown") warnings.push("Verify supplier lead time before ordering.");
+    if (e.raytrace_confidence === "low" || e.raytrace_confidence === "medium") warnings.push("Approximate catalog data only.");
     if (String(e.prescription_status || "").includes("estimated")) warnings.push("Radius estimated from catalog EFL/geometry.");
     const err = Number(e.radius_estimation_error_mm);
     const r = Number(e.selected_radius_mm);
@@ -2238,12 +2324,14 @@ function warnMissingGlass(name) {
     const e = normalizeStockElement(element);
     const match = Number(options.matchScore);
     const warnings = stockValidationWarnings(e);
+    const ray = stockRaytraceability(e);
     const price = Number.isFinite(Number(e.price_usd)) ? `$${Number(e.price_usd).toFixed(2)}` : "—";
     const title = stockElementTitle(e);
-    const radius = Number.isFinite(Number(e.selected_radius_mm)) ? Number(e.selected_radius_mm).toFixed(2) : "—";
+    const primaryR = stockPrimaryRadius(e);
+    const radius = Number.isFinite(Number(primaryR)) ? Number(primaryR).toFixed(2) : "—";
     const matchBadge = Number.isFinite(match) ? `<span class="stockBadge stockMatch">${match.toFixed(1)}% match</span>` : "";
     return `
-      <div class="stockCard" data-stock-id="${escapeAttr(e.id)}">
+      <div class="stockCard ${ray.ok ? "" : "stockCardDisabled"}" data-stock-id="${escapeAttr(e.id)}">
         <div class="stockCardTop">
           <strong>${escapeAttr(title)}</strong>
           <span class="stockBadge">${escapeAttr(e.availability)}</span>
@@ -2255,9 +2343,9 @@ function warnMissingGlass(name) {
         </div>
         ${warnings.length ? `<div class="stockWarnings">${warnings.map(escapeAttr).join(" • ")}</div>` : ""}
         <div class="stockCardActions">
-          <button class="btn btnPrimary stockAction" type="button" data-action="insert" data-id="${escapeAttr(e.id)}">Insert locked stock</button>
+          <button class="btn btnPrimary stockAction" type="button" data-action="insert" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Insert locked stock</button>
           <button class="btn stockAction" type="button" data-action="preview" data-id="${escapeAttr(e.id)}">Preview</button>
-          ${options.matchMode ? `<button class="btn stockAction" type="button" data-action="replace" data-id="${escapeAttr(e.id)}">Replace With Stock</button>` : ""}
+          ${options.matchMode ? `<button class="btn stockAction" type="button" data-action="replace" data-id="${escapeAttr(e.id)}" ${ray.ok ? "" : "disabled"}>Replace With Stock</button>` : ""}
         </div>
       </div>
     `;
@@ -2273,9 +2361,10 @@ function warnMissingGlass(name) {
         .slice(0, 10)
       : elements.map((e) => ({ e, score: null })).slice(0, 100);
     if (ui.stockLibrarySummary) {
+      const source = stockLibraryState.loadError || stockLibraryState.sourceSummary || "./data/element-library.json";
       ui.stockLibrarySummary.textContent = matchMode
-        ? `Closest stock matches for selected custom element. Showing ${scored.length} of ${elements.length} filtered rows.`
-        : `${elements.length} matching stock elements. Stock elements insert as locked physical glass; only rear air gap/spacer remains editable.`;
+        ? `Closest stock matches for selected custom element. Showing ${scored.length} of ${elements.length} filtered rows. Source: ${source}.`
+        : `${elements.length} matching stock elements. Source: ${source}. Stock elements insert as locked physical glass; only rear air gap/spacer remains editable.`;
     }
     ui.stockResults.innerHTML = scored.length
       ? scored.map((item) => stockCardHtml(item.e, { matchScore: item.score, matchMode })).join("")
@@ -2286,6 +2375,7 @@ function warnMissingGlass(name) {
         const action = e.currentTarget.dataset.action;
         const element = stockLibraryState.elements.find((item) => item.id === id);
         if (!element) return;
+        if ((action === "insert" || action === "replace") && !stockRaytraceability(element).ok) return previewStockElement(element);
         if (action === "insert") insertStockElement(element);
         if (action === "preview") previewStockElement(element);
         if (action === "replace") replaceCustomElementWithStock(element);
@@ -2295,6 +2385,11 @@ function warnMissingGlass(name) {
 
   function previewStockElement(element) {
     const e = normalizeStockElement(element);
+    const ray = stockRaytraceability(e);
+    if (!ray.ok) {
+      if (ui.stockLibrarySummary) ui.stockLibrarySummary.textContent = `${stockElementTitle(e)}: ${ray.reason}`;
+      return;
+    }
     const surfaces = stockLensSurfaces(e, { airGapAfterMm: 4 });
     const lines = surfaces.map((s, i) => `S${i + 1}: R=${Number(s.R).toFixed(3)} t=${Number(s.t).toFixed(3)} ap=${Number(s.ap).toFixed(3)} glass=${s.glass}`);
     if (ui.stockLibrarySummary) {
@@ -2377,7 +2472,7 @@ function warnMissingGlass(name) {
     if (!parsed.length) return;
     const custom = mergeStockElements(getStockLibraryCustomEntries(), parsed);
     saveStockLibraryCustomEntries(custom);
-    stockLibraryState.elements = mergeStockElements(STOCK_LIBRARY_FALLBACK, stockLibraryState.elements, custom);
+    stockLibraryState.elements = mergeStockElements(stockLibraryState.elements, custom);
     renderStockLibraryFilters();
     renderStockLibraryResults();
     toast(`Added ${parsed.length} parsed stock rows to local library`);
@@ -2396,9 +2491,9 @@ function warnMissingGlass(name) {
 
   function exportStockLibraryJson() {
     const payload = {
-      schema: "tvl-stock-optical-element-library-v1",
+      schema_version: "tvl-stock-optical-element-library-v2-compatible",
       updated: new Date().toISOString(),
-      elements: (stockLibraryState.elements || []).map(normalizeStockElement),
+      entries: (stockLibraryState.elements || []).map(normalizeStockElement),
     };
     downloadTextFile("element-library.json", JSON.stringify(payload, null, 2), "application/json");
   }
@@ -2406,6 +2501,8 @@ function warnMissingGlass(name) {
   function replaceCustomElementWithStock(element) {
     const target = stockLibraryState.matchTarget;
     if (!target?.range) return toast("Select a custom element and run Find Closest Stock Match first.");
+    const ray = stockRaytraceability(element);
+    if (!ray.ok) return toast(ray.reason);
     const range = findCustomElementRange(target.range.start) || target.range;
     const rearAir = Number(target.descriptor?.air_gap_after_mm ?? range.surfaces?.[range.surfaces.length - 1]?.t ?? 4);
     const chunk = stockLensSurfaces(element, { airGapAfterMm: rearAir });
@@ -2461,6 +2558,8 @@ function warnMissingGlass(name) {
     if (!catalog) return toast("Missing stock catalog snapshot.");
     const rear = range.indices.map((i) => lens.surfaces[i]).find((s) => s.stockElementRearSurface);
     const nextOrientation = first.stockOrientation === "flipped" ? "curved-first" : "flipped";
+    const ray = stockRaytraceability(catalog);
+    if (!ray.ok) return toast(ray.reason);
     const chunk = stockLensSurfaces(catalog, { orientation: nextOrientation, airGapAfterMm: Number(rear?.t || 4), groupId: first.stockElementGroupId });
     lens.surfaces.splice(range.start, range.end - range.start + 1, ...chunk);
     selectedIndex = range.start;
@@ -2484,8 +2583,9 @@ function warnMissingGlass(name) {
     for (const group of groups) {
       const c = group.catalog;
       if (!c) continue;
-      if (c.availability === "inquire") warnings.push(`${c.supplier} ${c.code}: May not be directly stock.`);
-      if (c.raytrace_confidence === "low") warnings.push(`${c.supplier} ${c.code}: Approximate catalog data only.`);
+      if (c.availability === "inquire" || c.availability === "quote") warnings.push(`${c.supplier} ${c.code}: May not be directly stock.`);
+      if (c.availability && !["stock", "limited_stock"].includes(c.availability) && c.availability !== "unknown") warnings.push(`${c.supplier} ${c.code}: Verify supplier lead time before ordering.`);
+      if (c.raytrace_confidence === "low" || c.raytrace_confidence === "medium") warnings.push(`${c.supplier} ${c.code}: Approximate catalog data only.`);
       if (Number.isFinite(stopAp) && stopAp > 0 && Number(c.semi_diameter_mm) < stopAp * 1.05) warnings.push(`${c.supplier} ${c.code}: Likely vignetting/clipping.`);
     }
     if (!stockIds.size && customCount > 0) warnings.push("Stock Prototype Mode expects catalog elements; current design is still theoretical/custom.");
@@ -2570,12 +2670,13 @@ function warnMissingGlass(name) {
           <td>${Number.isFinite(Number(item.price_usd)) ? `$${Number(item.price_usd).toFixed(2)}` : "—"}</td>
           <td>${escapeAttr(item.delivery)}</td>
           <td>${escapeAttr(item.availability)}</td>
+          <td>${item.source_url ? `<a href="${escapeAttr(item.source_url)}" target="_blank" rel="noopener">source</a>` : "—"}</td>
         </tr>
       `).join("");
       ui.prototypeBomBody.innerHTML = `
         <table class="stockBomTable">
-          <thead><tr><th>#</th><th>Supplier</th><th>Code</th><th>Type</th><th>Material</th><th>Ø</th><th>FL</th><th>Coating</th><th>Price</th><th>Delivery</th><th>Avail.</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="11">No stock elements in this lens yet.</td></tr>`}</tbody>
+          <thead><tr><th>#</th><th>Supplier</th><th>Code</th><th>Type</th><th>Material</th><th>Ø</th><th>FL</th><th>Coating</th><th>Price</th><th>Delivery</th><th>Avail.</th><th>Source</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="12">No stock elements in this lens yet.</td></tr>`}</tbody>
         </table>
         <div class="stockBomBlock"><strong>Air gaps / spacers</strong><br>${bom.spacers.length ? bom.spacers.map((s) => `after element ${s.after_element}: ${mmText(s.air_gap_mm, 3)}`).join("<br>") : "No stock spacers yet."}</div>
         <div class="stockBomBlock"><strong>Warnings</strong><br>${bom.warnings.length ? bom.warnings.map(escapeAttr).join("<br>") : "No stock prototype warnings."}</div>
@@ -2613,6 +2714,7 @@ function warnMissingGlass(name) {
       ui.stockSupplierFilter,
       ui.stockTypeFilter,
       ui.stockMaterialFilter,
+      ui.stockCoatingFilter,
       ui.stockDiameterMin,
       ui.stockDiameterMax,
       ui.stockEflMin,
@@ -3113,7 +3215,7 @@ tr.innerHTML = `
           <input type="checkbox" data-lock-k="glass" data-i="${idx}" ${locks.glass || protectedSurface || stockLocked ? "checked" : ""} ${protectedSurface || stockLocked ? "disabled" : ""} title="Lock glass">
         </td>
         <td class="stockActionCell">
-          ${stockLocked ? `<span class="stockMiniBadge">LOCKED STOCK</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Custom copy</button>` : ""}` : (protectedSurface || s.stop || isAirSurfaceMedium(s) ? "" : `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find stock</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}`)}
+          ${stockLocked ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button>` : ""}` : (protectedSurface || s.stop || isAirSurfaceMedium(s) ? "" : `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find Closest Stock Match</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}`)}
         </td>
       `;
       ui.tbody.appendChild(tr);
