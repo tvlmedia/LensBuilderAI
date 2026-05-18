@@ -37,7 +37,7 @@
       <button id="btnDuplicate" class="btn" type="button">Duplicate</button>
       <button id="btnMoveUp" class="btn" type="button">↑</button>
       <button id="btnMoveDown" class="btn" type="button">↓</button>
-      <button id="btnRemove" class="btn btnDanger" type="button">Delete</button>
+      <button id="btnRemove" class="btn btnDanger" type="button" title="Delete selected surface row. Use Remove element in the table to delete a whole optical element.">Delete row</button>
 
       <div class="sep" aria-hidden="true"></div>
 
@@ -300,13 +300,13 @@
                 <th style="width:48px">Lock t</th>
                 <th style="width:56px">Lock ap</th>
                 <th style="width:64px">Lock glass</th>
-                <th style="width:148px">Stock / Match</th>
+                <th style="width:230px">Element actions</th>
               </tr>
             </thead>
             <tbody id="surfTbody"></tbody>
           </table>
           <div id="surfaceTableHelp" class="srOnly">
-            Gebruik pijltjes/duplicate/delete buttons om geselecteerde surface te beheren.
+            Gebruik Remove element in de rij om een heel optisch element te verwijderen. Delete verwijdert de geselecteerde surface.
           </div>
         </section>
       </div>

@@ -247,7 +247,7 @@ body{
 
 .tbl{
   width:100%;
-  min-width:940px;
+  min-width:1060px;
   border-collapse:separate;
   border-spacing:0;
   font-size:12px;
@@ -284,7 +284,7 @@ body{
 .lockCell{ text-align:center; }
 .lockCell input{ transform:scale(1.04); }
 .stockActionCell{
-  min-width:148px;
+  min-width:220px;
   color:var(--muted);
 }
 .stockMiniBadge,
@@ -316,6 +316,12 @@ body{
   cursor:pointer;
 }
 .miniBtn:hover{ background:rgba(255,255,255,.08); }
+.miniBtnDanger{
+  border-color:rgba(217,91,91,.48);
+  color:#ffd7d7;
+  background:rgba(217,91,91,.10);
+}
+.miniBtnDanger:hover{ background:rgba(217,91,91,.18); }
 
 /* ===========================
    STATUS (left bottom)

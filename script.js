@@ -2571,6 +2571,71 @@ function warnMissingGlass(name) {
     toast(`Flipped ${catalog.supplier} ${catalog.code}`);
   }
 
+  function elementRemovalRangeAt(index) {
+    if (!Number.isFinite(Number(index))) return null;
+    const i = Number(index);
+    if (!lens?.surfaces?.[i] || isProtectedIndex(i)) return null;
+    const stockRange = stockGroupRangeAt(i);
+    if (stockRange) {
+      const first = lens.surfaces[stockRange.start];
+      const catalog = first?.stockCatalog ? normalizeStockElement(first.stockCatalog) : null;
+      return {
+        kind: "stock",
+        start: stockRange.start,
+        end: stockRange.end,
+        label: catalog ? `${catalog.supplier} ${catalog.code}` : `stock element rows ${stockRange.start}-${stockRange.end}`,
+      };
+    }
+    const customRange = findCustomElementRange(i);
+    if (!customRange) return null;
+    const rangeSurfaces = lens.surfaces.slice(customRange.start, customRange.end + 1);
+    const optical = rangeSurfaces
+      .map((surface, offset) => ({ surface, index: customRange.start + offset }))
+      .filter((item) => !isAirSurfaceMedium(item.surface) && !item.surface?.stop);
+    const label = optical.length
+      ? `custom element ${getSurfaceDisplayLabel(optical[0].surface, optical[0].index)}`
+      : `custom element rows ${customRange.start}-${customRange.end}`;
+    return {
+      kind: "custom",
+      start: customRange.start,
+      end: customRange.end,
+      label,
+    };
+  }
+
+  function removeElementAt(index, options = {}) {
+    const range = elementRemovalRangeAt(index);
+    if (!range) {
+      if (isProtectedIndex(Number(index))) toast("Cannot remove OBJ/IMS");
+      else toast("Select the first row of a custom or stock element to remove it.");
+      return false;
+    }
+    for (let i = range.start; i <= range.end; i++) {
+      if (isProtectedIndex(i)) {
+        toast("Cannot remove an element range that includes OBJ/IMS");
+        return false;
+      }
+    }
+    const count = range.end - range.start + 1;
+    const shouldConfirm = options.confirm !== false;
+    if (shouldConfirm && typeof window !== "undefined" && typeof window.confirm === "function") {
+      const ok = window.confirm(`Remove ${range.label}?\n\nThis deletes surface rows ${range.start}-${range.end}.`);
+      if (!ok) return false;
+    }
+    lens.surfaces.splice(range.start, count);
+    selectedIndex = Math.max(0, Math.min(range.start - 1, lens.surfaces.length - 1));
+    lens = sanitizeLens(lens);
+    clampAllApertures(lens.surfaces);
+    buildTable();
+    applySensorToIMS();
+    updateStockPrototypeUi();
+    validateStockPrototypeMode();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    toast(`Removed ${range.label}`);
+    return true;
+  }
+
   function stockPrototypeWarnings() {
     const warnings = [];
     const groups = collectStockGroups();
@@ -3174,8 +3239,17 @@ function warnMissingGlass(name) {
      const stockLocked = isStockLockedSurface(s);
      const stockRearAir = isStockRearAirSurface(s);
      const stockFirst = stockLocked && stockGroupRangeAt(idx)?.start === idx;
+     const customElementRange = (!stockLocked && !protectedSurface && !s.stop && !isAirSurfaceMedium(s)) ? findCustomElementRange(idx) : null;
+     const customElementFirst = !!customElementRange && customElementRange.start === idx;
      const customCopy = !!s.customCopyOfStock;
      const rowWarn = !!lens?.stockPrototype?.enabled && !protectedSurface && !s.stop && !isAirSurfaceMedium(s) && !stockLocked;
+     const stockActions = stockLocked
+       ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button><button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
+       : "";
+     const customActions = (!stockLocked && !protectedSurface && !s.stop && !isAirSurfaceMedium(s))
+       ? `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find Closest Stock Match</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}${customElementFirst ? `<button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
+       : "";
+     const rowActions = stockActions || customActions;
      tr.classList.toggle("stockLockedRow", stockLocked);
      tr.classList.toggle("stockPrototypeWarnRow", rowWarn);
 
@@ -3215,7 +3289,7 @@ tr.innerHTML = `
           <input type="checkbox" data-lock-k="glass" data-i="${idx}" ${locks.glass || protectedSurface || stockLocked ? "checked" : ""} ${protectedSurface || stockLocked ? "disabled" : ""} title="Lock glass">
         </td>
         <td class="stockActionCell">
-          ${stockLocked ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button>` : ""}` : (protectedSurface || s.stop || isAirSurfaceMedium(s) ? "" : `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find Closest Stock Match</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}`)}
+          ${rowActions}
         </td>
       `;
       ui.tbody.appendChild(tr);
@@ -3249,6 +3323,7 @@ tr.innerHTML = `
         if (action === "find") findClosestStockForSurface(selectedIndex);
         if (action === "custom-copy") convertStockGroupToCustomCopy(selectedIndex);
         if (action === "flip") flipStockGroup(selectedIndex);
+        if (action === "remove-element") removeElementAt(selectedIndex);
       });
     });
 
@@ -7837,6 +7912,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function removeSelected() {
     clampSelected();
     if (isProtectedIndex(selectedIndex)) return toast("Cannot remove OBJ/IMS");
+    if (isStockLockedSurface(lens.surfaces[selectedIndex])) return removeElementAt(selectedIndex);
     lens.surfaces.splice(selectedIndex, 1);
     selectedIndex = Math.max(0, selectedIndex - 1);
 
