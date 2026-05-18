@@ -2250,8 +2250,55 @@ function warnMissingGlass(name) {
     return Math.round((score / Math.max(1, max)) * 1000) / 10;
   }
 
+  function normalizeStockSearchText(value) {
+    return String(value ?? "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[‐‑‒–—−_\-/]+/g, " ")
+      .replace(/[^a-z0-9.+]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function compactStockSearchText(value) {
+    return normalizeStockSearchText(value).replace(/\s+/g, "");
+  }
+
+  function stockSearchTokens(query) {
+    return normalizeStockSearchText(query).split(" ").filter(Boolean);
+  }
+
+  function stockSearchableText(element) {
+    const e = normalizeStockElement(element);
+    return [
+      e.id,
+      e.supplier,
+      e.store,
+      e.code,
+      e.type,
+      e.material,
+      e.glass_catalog_name,
+      ...(Array.isArray(e.materials) ? e.materials : []),
+      e.coating,
+      e.efl_mm,
+      e.diameter_mm,
+    ].filter((value) => value != null && String(value).trim() !== "").join(" ");
+  }
+
+  function stockSearchMatchesQuery(element, query) {
+    const tokens = stockSearchTokens(query);
+    if (!tokens.length) return true;
+    const searchable = stockSearchableText(element);
+    const normalized = normalizeStockSearchText(searchable);
+    const compact = compactStockSearchText(searchable);
+    return tokens.every((token) =>
+      normalized.includes(token) || compact.includes(compactStockSearchText(token))
+    );
+  }
+
   function stockFilteredElements() {
-    const q = String(ui.stockSearch?.value || "").trim().toLowerCase();
+    const q = String(ui.stockSearch?.value || "").trim();
     const supplier = String(ui.stockSupplierFilter?.value || "");
     const type = String(ui.stockTypeFilter?.value || "");
     const material = String(ui.stockMaterialFilter?.value || "");
@@ -2265,8 +2312,7 @@ function warnMissingGlass(name) {
     const maxPrice = parseStockNumber(ui.stockMaxPrice?.value);
     const stockOnly = !!ui.stockOnlyToggle?.checked;
     return (stockLibraryState.elements || []).filter((e) => {
-      const hay = `${e.supplier} ${e.code} ${e.type} ${e.material} ${e.glass_catalog_name} ${(e.materials || []).join(" ")} ${e.coating} ${e.delivery} ${e.availability} ${e.source_url}`.toLowerCase();
-      if (q && !hay.includes(q)) return false;
+      if (q && !stockSearchMatchesQuery(e, q)) return false;
       if (supplier && e.supplier !== supplier) return false;
       if (type && e.type !== type) return false;
       if (material && e.material !== material && e.glass_catalog_name !== material && !(e.materials || []).includes(material)) return false;
