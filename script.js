@@ -1890,6 +1890,25 @@ function warnMissingGlass(name) {
     return `stock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   }
 
+  const STOCK_ORIENTATION_PUBLISHED = "as_published_left_to_right";
+  const STOCK_ORIENTATION_FLIPPED = "flipped_right_to_left";
+
+  function normalizeStockOrientation(orientation) {
+    const text = String(orientation || "").trim().toLowerCase();
+    if (text === STOCK_ORIENTATION_FLIPPED || text === "flipped" || text === "flat-first" || text === "right_to_left" || text === "right-to-left") {
+      return STOCK_ORIENTATION_FLIPPED;
+    }
+    return STOCK_ORIENTATION_PUBLISHED;
+  }
+
+  function isStockOrientationFlipped(orientation) {
+    return normalizeStockOrientation(orientation) === STOCK_ORIENTATION_FLIPPED;
+  }
+
+  function stockOrientationLabel(orientation) {
+    return isStockOrientationFlipped(orientation) ? "flipped" : "as published";
+  }
+
   function isStockLockedSurface(surface) {
     return !!surface?.stockElementLocked && !!surface?.stockElementGroupId;
   }
@@ -1966,8 +1985,9 @@ function warnMissingGlass(name) {
   function orientStockBaseSurfaces(baseSurfaces, orientation, rearAir) {
     const rear = Math.max(0, Number(rearAir) || 0);
     const base = (baseSurfaces || []).map((surface) => ({ ...surface }));
+    const normalizedOrientation = normalizeStockOrientation(orientation);
     if (!base.length) return null;
-    if (orientation !== "flipped") {
+    if (normalizedOrientation !== STOCK_ORIENTATION_FLIPPED) {
       base[base.length - 1].t = rear;
       base[base.length - 1].glass = "AIR";
       return base;
@@ -1990,8 +2010,20 @@ function warnMissingGlass(name) {
     return flipped;
   }
 
+  function applyStockSurfaceLabels(surfaces, element, orientation) {
+    const e = normalizeStockElement(element);
+    const labelBase = `${e.supplier} ${e.code}`.trim();
+    const suffix = isStockOrientationFlipped(orientation) ? " (flipped)" : "";
+    return (surfaces || []).map((surface, index) => ({
+      ...surface,
+      surfaceLabel: `${labelBase} S${index + 1}${suffix}`,
+      surfaceLabelAuto: false,
+    }));
+  }
+
   function decorateStockSurfaces(surfaces, element, groupId, orientation, rearAir) {
     const catalog = stockCatalogSnapshot(element);
+    const normalizedOrientation = normalizeStockOrientation(orientation);
     return (surfaces || []).map((surface, index) => ({
       ...surface,
       stockElementGroupId: groupId,
@@ -2000,7 +2032,7 @@ function warnMissingGlass(name) {
       stockElementLocked: true,
       stockElementRearSurface: index === surfaces.length - 1,
       stockCatalog: catalog,
-      stockOrientation: orientation,
+      stockOrientation: normalizedOrientation,
       stockAirGapAfterMm: index === surfaces.length - 1 ? rearAir : null,
     }));
   }
@@ -2026,11 +2058,11 @@ function warnMissingGlass(name) {
   function stockLensSurfaces(elementRaw, options = {}) {
     const element = normalizeStockElement(elementRaw);
     const groupId = options.groupId || stockGroupId();
-    const orientation = options.orientation === "flipped" ? "flipped" : "curved-first";
+    const orientation = normalizeStockOrientation(options.orientation || element.default_orientation || element.orientation);
     const rearAir = Math.max(0, Number(options.airGapAfterMm ?? options.rearAir ?? 4) || 0);
     const storedBase = stockBaseSurfacesFromStoredPrescription(element);
     if (storedBase && storedBase.length >= 2) {
-      const oriented = orientStockBaseSurfaces(storedBase, orientation, rearAir);
+      const oriented = applyStockSurfaceLabels(orientStockBaseSurfaces(storedBase, orientation, rearAir), element, orientation);
       return decorateStockSurfaces(oriented, element, groupId, orientation, rearAir);
     }
 
@@ -2043,7 +2075,7 @@ function warnMissingGlass(name) {
     let surfaces = [];
 
     if (element.type === "plano-convex") {
-      surfaces = orientation === "flipped"
+      surfaces = isStockOrientationFlipped(orientation)
         ? [
             { type: "", R: 0, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
             { type: "", R: -R, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} CURVED`, surfaceLabelAuto: false },
@@ -2053,7 +2085,7 @@ function warnMissingGlass(name) {
             { type: "", R: 0, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
           ];
     } else if (element.type === "plano-concave") {
-      surfaces = orientation === "flipped"
+      surfaces = isStockOrientationFlipped(orientation)
         ? [
             { type: "", R: 0, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
             { type: "", R: R, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} CURVED`, surfaceLabelAuto: false },
@@ -2070,7 +2102,7 @@ function warnMissingGlass(name) {
     } else {
       const r1 = Number.isFinite(Number(element.radius_1_mm)) ? Number(element.radius_1_mm) : R;
       const r2 = Number.isFinite(Number(element.radius_2_mm)) ? Number(element.radius_2_mm) : -r1;
-      surfaces = orientation === "flipped"
+      surfaces = isStockOrientationFlipped(orientation)
         ? [
             { type: "", R: -r2, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} REAR`, surfaceLabelAuto: false },
             { type: "", R: -r1, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} FRONT`, surfaceLabelAuto: false },
@@ -2081,7 +2113,7 @@ function warnMissingGlass(name) {
           ];
     }
 
-    return surfaces.map((surface, index) => ({
+    return applyStockSurfaceLabels(surfaces, element, orientation).map((surface, index) => ({
       ...surface,
       stockElementGroupId: groupId,
       stockElementSurfaceIndex: index,
@@ -2092,6 +2124,14 @@ function warnMissingGlass(name) {
       stockOrientation: orientation,
       stockAirGapAfterMm: index === surfaces.length - 1 ? rearAir : null,
     }));
+  }
+
+  function generateStockElementSurfaces(catalogItem, orientation = STOCK_ORIENTATION_PUBLISHED, airGapAfter = 4, options = {}) {
+    return stockLensSurfaces(catalogItem, {
+      ...options,
+      orientation,
+      airGapAfterMm: airGapAfter,
+    });
   }
 
   function insertStockElement(element, options = {}) {
@@ -2163,7 +2203,7 @@ function warnMissingGlass(name) {
           firstIndex: index,
           lastIndex: index,
           catalog: s.stockCatalog ? normalizeStockElement(s.stockCatalog) : null,
-          orientation: s.stockOrientation || "curved-first",
+          orientation: normalizeStockOrientation(s.stockOrientation),
           surfaces: [],
           airGapAfterMm: null,
         });
@@ -2644,10 +2684,13 @@ function warnMissingGlass(name) {
     const catalog = first?.stockCatalog;
     if (!catalog) return toast("Missing stock catalog snapshot.");
     const rear = range.indices.map((i) => lens.surfaces[i]).find((s) => s.stockElementRearSurface);
-    const nextOrientation = first.stockOrientation === "flipped" ? "curved-first" : "flipped";
+    const currentOrientation = normalizeStockOrientation(first.stockOrientation);
+    const nextOrientation = currentOrientation === STOCK_ORIENTATION_FLIPPED
+      ? STOCK_ORIENTATION_PUBLISHED
+      : STOCK_ORIENTATION_FLIPPED;
     const ray = stockRaytraceability(catalog);
     if (!ray.ok) return toast(ray.reason);
-    const chunk = stockLensSurfaces(catalog, { orientation: nextOrientation, airGapAfterMm: Number(rear?.t || 4), groupId: first.stockElementGroupId });
+    const chunk = generateStockElementSurfaces(catalog, nextOrientation, Number(rear?.t || 4), { groupId: first.stockElementGroupId });
     lens.surfaces.splice(range.start, range.end - range.start + 1, ...chunk);
     selectedIndex = range.start;
     lens = sanitizeLens(lens);
@@ -2655,7 +2698,7 @@ function warnMissingGlass(name) {
     applySensorToIMS();
     scheduleRenderAll();
     scheduleRenderPreview();
-    toast(`Flipped ${catalog.supplier} ${catalog.code}`);
+    toast(`${catalog.supplier} ${catalog.code}: ${stockOrientationLabel(nextOrientation)}`);
   }
 
   function elementRemovalRangeAt(index) {
@@ -2768,6 +2811,8 @@ function warnMissingGlass(name) {
       price_usd: g.catalog?.price_usd ?? null,
       delivery: g.catalog?.delivery || "",
       availability: g.catalog?.availability || "unknown",
+      orientation: stockOrientationLabel(g.orientation),
+      orientation_value: normalizeStockOrientation(g.orientation),
       source_url: g.catalog?.source_url || "",
       air_gap_after_mm: g.airGapAfterMm,
       raytrace_confidence: g.catalog?.raytrace_confidence || "unknown",
@@ -2822,13 +2867,14 @@ function warnMissingGlass(name) {
           <td>${Number.isFinite(Number(item.price_usd)) ? `$${Number(item.price_usd).toFixed(2)}` : "—"}</td>
           <td>${escapeAttr(item.delivery)}</td>
           <td>${escapeAttr(item.availability)}</td>
+          <td>${escapeAttr(item.orientation)}</td>
           <td>${item.source_url ? `<a href="${escapeAttr(item.source_url)}" target="_blank" rel="noopener">source</a>` : "—"}</td>
         </tr>
       `).join("");
       ui.prototypeBomBody.innerHTML = `
         <table class="stockBomTable">
-          <thead><tr><th>#</th><th>Supplier</th><th>Code</th><th>Type</th><th>Material</th><th>Ø</th><th>FL</th><th>Coating</th><th>Price</th><th>Delivery</th><th>Avail.</th><th>Source</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="12">No stock elements in this lens yet.</td></tr>`}</tbody>
+          <thead><tr><th>#</th><th>Supplier</th><th>Code</th><th>Type</th><th>Material</th><th>Ø</th><th>FL</th><th>Coating</th><th>Price</th><th>Delivery</th><th>Avail.</th><th>Orientation</th><th>Source</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="13">No stock elements in this lens yet.</td></tr>`}</tbody>
         </table>
         <div class="stockBomBlock"><strong>Air gaps / spacers</strong><br>${bom.spacers.length ? bom.spacers.map((s) => `after element ${s.after_element}: ${mmText(s.air_gap_mm, 3)}`).join("<br>") : "No stock spacers yet."}</div>
         <div class="stockBomBlock"><strong>Warnings</strong><br>${bom.warnings.length ? bom.warnings.map(escapeAttr).join("<br>") : "No stock prototype warnings."}</div>
@@ -2842,7 +2888,7 @@ function warnMissingGlass(name) {
 
   function exportPrototypeBomCsv() {
     const bom = buildPrototypeBom();
-    const header = ["index","supplier","code","type","material","diameter_mm","focal_length_mm","coating","price_usd","delivery","availability","source_url","air_gap_after_mm"];
+    const header = ["index","supplier","code","type","material","diameter_mm","focal_length_mm","coating","price_usd","delivery","availability","orientation","source_url","air_gap_after_mm"];
     const rows = bom.items.map((item) => header.map((key) => `"${String(item[key] ?? "").replace(/"/g, '""')}"`).join(","));
     downloadTextFile("prototype-bom.csv", [header.join(","), ...rows].join("\n"), "text/csv");
   }
@@ -3326,12 +3372,15 @@ function warnMissingGlass(name) {
      const stockLocked = isStockLockedSurface(s);
      const stockRearAir = isStockRearAirSurface(s);
      const stockFirst = stockLocked && stockGroupRangeAt(idx)?.start === idx;
+     const stockCatalog = stockLocked && s.stockCatalog ? normalizeStockElement(s.stockCatalog) : null;
+     const stockName = stockCatalog ? `${stockCatalog.supplier} ${stockCatalog.code}` : "Stock element";
+     const stockOrientation = normalizeStockOrientation(s.stockOrientation);
      const customElementRange = (!stockLocked && !protectedSurface && !s.stop && !isAirSurfaceMedium(s)) ? findCustomElementRange(idx) : null;
      const customElementFirst = !!customElementRange && customElementRange.start === idx;
      const customCopy = !!s.customCopyOfStock;
      const rowWarn = !!lens?.stockPrototype?.enabled && !protectedSurface && !s.stop && !isAirSurfaceMedium(s) && !stockLocked;
      const stockActions = stockLocked
-       ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button><button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
+       ? `<span class="stockMiniBadge">LOCKED STOCK ELEMENT</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<span class="stockMiniHint">${escapeAttr(stockName)}</span><span class="stockMiniHint">${escapeAttr(stockOrientationLabel(stockOrientation))}</span><button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip element</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Convert to Custom Copy</button><button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
        : "";
      const customActions = (!stockLocked && !protectedSurface && !s.stop && !isAirSurfaceMedium(s))
        ? `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find Closest Stock Match</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}${customElementFirst ? `<button class="miniBtn miniBtnDanger stockRowAction" type="button" data-action="remove-element" data-i="${idx}">Remove element</button>` : ""}`
