@@ -2269,6 +2269,10 @@ function warnMissingGlass(name) {
     return normalizeStockSearchText(query).split(" ").filter(Boolean);
   }
 
+  function stockSearchWords(value) {
+    return new Set(normalizeStockSearchText(value).split(" ").filter(Boolean));
+  }
+
   function stockSearchableText(element) {
     const e = normalizeStockElement(element);
     return [
@@ -2286,15 +2290,45 @@ function warnMissingGlass(name) {
     ].filter((value) => value != null && String(value).trim() !== "").join(" ");
   }
 
-  function stockSearchMatchesQuery(element, query) {
+  function stockSearchTokenMatches(token, searchableWords, normalized, compact) {
+    if (searchableWords.has(token)) return true;
+    const compactToken = compactStockSearchText(token);
+    if (/^\d+$/.test(token)) {
+      return token.length >= 5 && compact.includes(compactToken);
+    }
+    return token.length >= 2 && (normalized.includes(token) || compact.includes(compactToken));
+  }
+
+  function stockSearchRank(element, query) {
     const tokens = stockSearchTokens(query);
-    if (!tokens.length) return true;
+    if (!tokens.length) return 0;
+    const e = normalizeStockElement(element);
+    const queryNorm = normalizeStockSearchText(query);
+    const queryCompact = compactStockSearchText(query);
+    const identityFields = [
+      e.id,
+      e.code,
+      `${e.supplier || ""} ${e.code || ""}`,
+      `${e.store || ""} ${e.code || ""}`,
+    ];
+    const identityCompacts = identityFields.map(compactStockSearchText).filter(Boolean);
+    const identityNorms = identityFields.map(normalizeStockSearchText).filter(Boolean);
+    if (identityCompacts.some((value) => value === queryCompact)) return 0;
+    if (identityNorms.some((value) => value === queryNorm)) return 1;
+    if (identityCompacts.some((value) => value.includes(queryCompact))) return 5;
     const searchable = stockSearchableText(element);
     const normalized = normalizeStockSearchText(searchable);
     const compact = compactStockSearchText(searchable);
-    return tokens.every((token) =>
-      normalized.includes(token) || compact.includes(compactStockSearchText(token))
-    );
+    const words = stockSearchWords(searchable);
+    if (!tokens.every((token) => stockSearchTokenMatches(token, words, normalized, compact))) return null;
+    const codeWords = stockSearchWords(e.code);
+    const idWords = stockSearchWords(e.id);
+    const exactCodeTokenHits = tokens.filter((token) => codeWords.has(token) || idWords.has(token)).length;
+    return 50 - exactCodeTokenHits;
+  }
+
+  function stockSearchMatchesQuery(element, query) {
+    return stockSearchRank(element, query) != null;
   }
 
   function stockFilteredElements() {
@@ -2311,7 +2345,7 @@ function warnMissingGlass(name) {
     const fMax = parseStockNumber(ui.stockEflMax?.value);
     const maxPrice = parseStockNumber(ui.stockMaxPrice?.value);
     const stockOnly = !!ui.stockOnlyToggle?.checked;
-    return (stockLibraryState.elements || []).filter((e) => {
+    const filtered = (stockLibraryState.elements || []).filter((e) => {
       if (q && !stockSearchMatchesQuery(e, q)) return false;
       if (supplier && e.supplier !== supplier) return false;
       if (type && e.type !== type) return false;
@@ -2329,6 +2363,13 @@ function warnMissingGlass(name) {
       if (Number.isFinite(fMax) && Number.isFinite(f) && f > fMax) return false;
       if (Number.isFinite(maxPrice) && Number.isFinite(p) && p > maxPrice) return false;
       return true;
+    });
+    if (!q) return filtered;
+    return filtered.sort((a, b) => {
+      const rankA = stockSearchRank(a, q) ?? 9999;
+      const rankB = stockSearchRank(b, q) ?? 9999;
+      if (rankA !== rankB) return rankA - rankB;
+      return `${a.supplier} ${a.code}`.localeCompare(`${b.supplier} ${b.code}`);
     });
   }
 
@@ -2368,7 +2409,7 @@ function warnMissingGlass(name) {
 
   function stockCardHtml(element, options = {}) {
     const e = normalizeStockElement(element);
-    const match = Number(options.matchScore);
+    const match = options.matchScore == null ? NaN : Number(options.matchScore);
     const warnings = stockValidationWarnings(e);
     const ray = stockRaytraceability(e);
     const price = Number.isFinite(Number(e.price_usd)) ? `$${Number(e.price_usd).toFixed(2)}` : "—";
