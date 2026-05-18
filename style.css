@@ -268,6 +268,23 @@ body{
 .tbl tbody tr.selected{ background:rgba(42,110,242,.10); }
 .tbl tbody tr.stockLockedRow{ background:rgba(66,209,143,.045); }
 .tbl tbody tr.stockPrototypeWarnRow{ background:rgba(217,91,91,.055); }
+.tbl tbody tr.lensGroupRow{
+  background:
+    linear-gradient(90deg, var(--lensGroupStripe) 0 6px, transparent 6px),
+    var(--lensGroupBg);
+}
+.tbl tbody tr.lensGroupRow.selected{
+  background:
+    linear-gradient(90deg, var(--lensGroupStripe) 0 6px, transparent 6px),
+    linear-gradient(0deg, rgba(42,110,242,.17), rgba(42,110,242,.17)),
+    var(--lensGroupBg);
+}
+.tbl tbody tr.lensGroupStart td{
+  border-top:1px solid var(--lensGroupBorder);
+}
+.tbl tbody tr.lensGroupEnd td{
+  border-bottom:1px solid var(--lensGroupBorder);
+}
 
 .cellInput, .cellSelect{
   width:100%;
@@ -278,6 +295,13 @@ body{
   color:var(--text);
   outline:none;
   font-size:12px;
+}
+.tbl tbody tr.lensGroupRow .cellInput,
+.tbl tbody tr.lensGroupRow .cellSelect{
+  border-color:var(--lensGroupBorder);
+  background:
+    linear-gradient(0deg, rgba(0,0,0,.20), rgba(0,0,0,.20)),
+    var(--lensGroupBg);
 }
 .cellChk{ text-align:center; }
 .cellChk input{ transform:scale(1.1); }

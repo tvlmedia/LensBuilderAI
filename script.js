@@ -3313,6 +3313,56 @@ function warnMissingGlass(name) {
     lens.surfaces.forEach((s, i) => { if (i !== changedIndex) s.stop = false; });
   }
 
+  const LENS_GROUP_COLORS = [
+    { bg: "rgba(42, 110, 242, .075)", stripe: "rgba(82, 145, 255, .78)", border: "rgba(82, 145, 255, .34)" },
+    { bg: "rgba(66, 209, 143, .075)", stripe: "rgba(66, 209, 143, .78)", border: "rgba(66, 209, 143, .34)" },
+    { bg: "rgba(244, 184, 77, .080)", stripe: "rgba(244, 184, 77, .82)", border: "rgba(244, 184, 77, .36)" },
+    { bg: "rgba(197, 127, 255, .078)", stripe: "rgba(197, 127, 255, .78)", border: "rgba(197, 127, 255, .34)" },
+    { bg: "rgba(88, 190, 214, .075)", stripe: "rgba(88, 190, 214, .78)", border: "rgba(88, 190, 214, .34)" },
+    { bg: "rgba(241, 117, 134, .073)", stripe: "rgba(241, 117, 134, .76)", border: "rgba(241, 117, 134, .32)" },
+    { bg: "rgba(153, 204, 96, .075)", stripe: "rgba(153, 204, 96, .76)", border: "rgba(153, 204, 96, .32)" },
+    { bg: "rgba(255, 142, 89, .073)", stripe: "rgba(255, 142, 89, .78)", border: "rgba(255, 142, 89, .34)" },
+  ];
+
+  function buildLensGroupVisualMap() {
+    const rows = new Map();
+    const seen = new Set();
+    let groupIndex = 0;
+    const surfaces = lens?.surfaces || [];
+    const assignRange = (key, kind, start, end, label, indices) => {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const color = LENS_GROUP_COLORS[groupIndex % LENS_GROUP_COLORS.length];
+      const groupNumber = groupIndex + 1;
+      const rowIndices = Array.isArray(indices)
+        ? indices
+        : Array.from({ length: Math.max(0, end - start + 1) }, (_, offset) => start + offset);
+      rowIndices.forEach((idx) => {
+        if (idx < 0 || idx >= surfaces.length || isProtectedIndex(idx)) return;
+        rows.set(idx, { key, kind, groupNumber, start, end, label, color });
+      });
+      groupIndex += 1;
+    };
+
+    surfaces.forEach((surface, index) => {
+      if (!surface || rows.has(index) || isProtectedIndex(index)) return;
+      if (isStockLockedSurface(surface)) {
+        const range = stockGroupRangeAt(index);
+        if (!range) return;
+        const catalog = surface.stockCatalog ? normalizeStockElement(surface.stockCatalog) : null;
+        const label = catalog ? `${catalog.supplier} ${catalog.code}` : `Stock element ${range.start}`;
+        assignRange(`stock:${surface.stockElementGroupId}`, "stock", range.start, range.end, label, range.indices);
+        return;
+      }
+      if (surface.stop || isAirSurfaceMedium(surface)) return;
+      const range = findCustomElementRange(index);
+      if (!range) return;
+      const label = `Element ${range.start}`;
+      assignRange(`custom:${range.start}:${range.end}`, "custom", range.start, range.end, label);
+    });
+    return rows;
+  }
+
   let _focusMemo = null;
   function rememberTableFocus() {
     const a = document.activeElement;
@@ -3344,6 +3394,7 @@ function warnMissingGlass(name) {
     pruneAutoTunerSurfaceLocks();
     generateSurfaceLabels(lens.surfaces);
     const glassOptionNames = getGlassOptionNames(lens.surfaces);
+    const lensGroupVisualMap = buildLensGroupVisualMap();
 
     rememberTableFocus();
     ui.tbody.innerHTML = "";
@@ -3351,6 +3402,16 @@ function warnMissingGlass(name) {
     lens.surfaces.forEach((s, idx) => {
       const tr = document.createElement("tr");
       tr.classList.toggle("selected", idx === selectedIndex);
+      const lensGroupVisual = lensGroupVisualMap.get(idx);
+      if (lensGroupVisual) {
+        tr.classList.add("lensGroupRow");
+        tr.classList.toggle("lensGroupStart", idx === lensGroupVisual.start);
+        tr.classList.toggle("lensGroupEnd", idx === lensGroupVisual.end);
+        tr.style.setProperty("--lensGroupBg", lensGroupVisual.color.bg);
+        tr.style.setProperty("--lensGroupStripe", lensGroupVisual.color.stripe);
+        tr.style.setProperty("--lensGroupBorder", lensGroupVisual.color.border);
+        tr.title = `Group ${lensGroupVisual.groupNumber}: ${lensGroupVisual.label}`;
+      }
 
       tr.addEventListener("click", (ev) => {
         if (["INPUT", "SELECT", "OPTION", "TEXTAREA"].includes(ev.target.tagName)) return;
