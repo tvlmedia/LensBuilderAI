@@ -247,7 +247,7 @@ body{
 
 .tbl{
   width:100%;
-  min-width:760px;
+  min-width:940px;
   border-collapse:separate;
   border-spacing:0;
   font-size:12px;
@@ -266,6 +266,8 @@ body{
   padding:6px 8px;
 }
 .tbl tbody tr.selected{ background:rgba(42,110,242,.10); }
+.tbl tbody tr.stockLockedRow{ background:rgba(66,209,143,.045); }
+.tbl tbody tr.stockPrototypeWarnRow{ background:rgba(217,91,91,.055); }
 
 .cellInput, .cellSelect{
   width:100%;
@@ -281,6 +283,39 @@ body{
 .cellChk input{ transform:scale(1.1); }
 .lockCell{ text-align:center; }
 .lockCell input{ transform:scale(1.04); }
+.stockActionCell{
+  min-width:148px;
+  color:var(--muted);
+}
+.stockMiniBadge,
+.stockMiniHint{
+  display:inline-block;
+  margin:2px 4px 2px 0;
+  padding:3px 6px;
+  border-radius:999px;
+  font-size:10px;
+  font-family:var(--mono);
+  border:1px solid rgba(66,209,143,.36);
+  color:rgba(200,255,225,.88);
+  background:rgba(66,209,143,.10);
+}
+.stockMiniHint{
+  border-color:rgba(255,255,255,.14);
+  color:rgba(255,255,255,.60);
+  background:rgba(255,255,255,.04);
+}
+.miniBtn{
+  appearance:none;
+  border:1px solid rgba(255,255,255,.16);
+  background:rgba(255,255,255,.04);
+  color:var(--text);
+  border-radius:999px;
+  padding:4px 7px;
+  margin:2px 4px 2px 0;
+  font-size:10px;
+  cursor:pointer;
+}
+.miniBtn:hover{ background:rgba(255,255,255,.08); }
 
 /* ===========================
    STATUS (left bottom)
@@ -817,6 +852,161 @@ canvas{
   width:100%;
   padding:8px 9px;
 }
+.fieldHint{
+  margin-top:6px;
+  color:rgba(255,255,255,.54);
+  font-size:12px;
+  line-height:1.35;
+}
+.stockInlinePicker{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.stockCustomHidden{
+  display:none !important;
+}
+.stockModalCard{
+  width:min(1500px, calc(100vw - 32px));
+  height:min(86vh, 920px);
+}
+.stockModalScroll{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:14px;
+}
+.stockPanel{
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:12px;
+  background:rgba(0,0,0,.12);
+  padding:12px;
+}
+.stockFilters{
+  display:grid;
+  grid-template-columns:2fr repeat(4, minmax(120px, 1fr));
+  gap:8px;
+  align-items:end;
+}
+.stockOnlyToggle{
+  margin:0;
+  min-height:34px;
+}
+.stockSummary{
+  margin:10px 0;
+  padding:9px 10px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:10px;
+  background:rgba(255,255,255,.035);
+  color:rgba(255,255,255,.72);
+  font-size:12px;
+  line-height:1.45;
+}
+.stockResults{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));
+  gap:10px;
+}
+.stockCard{
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  background:rgba(255,255,255,.035);
+  padding:10px;
+}
+.stockCardTop{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px;
+  margin-bottom:6px;
+}
+.stockBadge{
+  display:inline-flex;
+  align-items:center;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:999px;
+  padding:3px 7px;
+  font-family:var(--mono);
+  font-size:10px;
+  color:rgba(255,255,255,.70);
+  background:rgba(0,0,0,.12);
+}
+.stockMatch{
+  border-color:rgba(42,110,242,.45);
+  color:rgba(200,220,255,.90);
+  background:rgba(42,110,242,.12);
+}
+.stockCardMeta{
+  color:rgba(255,255,255,.72);
+  font-size:12px;
+  line-height:1.45;
+}
+.stockWarnings{
+  margin-top:7px;
+  color:#ffd18a;
+  font-size:12px;
+  line-height:1.4;
+}
+.stockCardActions,
+.stockImportActions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:10px;
+}
+.stockEmpty,
+.stockImportPreview{
+  color:rgba(255,255,255,.62);
+  font-size:12px;
+  line-height:1.45;
+}
+.stockImportGrid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-bottom:8px;
+}
+.stockImportGrid label{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  color:rgba(255,255,255,.62);
+  font-size:12px;
+}
+.stockImportText{
+  width:100%;
+  resize:vertical;
+  min-height:130px;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:10px;
+  background:#080d15;
+  color:var(--text);
+  padding:10px;
+  font-family:var(--mono);
+  font-size:12px;
+}
+.prototypeBomBody{
+  color:rgba(255,255,255,.76);
+  font-size:12px;
+}
+.stockBomTable{
+  width:100%;
+  border-collapse:collapse;
+  font-size:12px;
+}
+.stockBomTable th,
+.stockBomTable td{
+  border-bottom:1px solid rgba(255,255,255,.08);
+  padding:7px 6px;
+  text-align:left;
+}
+.stockBomBlock{
+  margin-top:12px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:10px;
+  background:rgba(255,255,255,.03);
+  padding:10px;
+  line-height:1.55;
+}
 .aiChat{
   min-width:0;
   min-height:0;
@@ -1332,6 +1522,9 @@ canvas{
   .pane{ height:420px; }
   .topbar{ height:auto; flex:0 0 auto; }
   .toolbar{ gap:8px; }
+  .stockFilters{ grid-template-columns:1fr 1fr; }
+  .stockResults{ grid-template-columns:1fr; }
+  .stockImportGrid{ grid-template-columns:1fr; }
 }
 input:disabled {
   opacity: 0.45;

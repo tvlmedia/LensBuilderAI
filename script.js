@@ -168,6 +168,9 @@
     btnLoadDemo: $("#btnLoadDemo"),
     btnAdd: $("#btnAdd"),
     btnAddElement: $("#btnAddElement"),
+    btnStockLibrary: $("#btnStockLibrary"),
+    btnPrototypeBom: $("#btnPrototypeBom"),
+    btnStockPrototypeMode: $("#btnStockPrototypeMode"),
     btnAddFieldFlattener: $("#btnAddFieldFlattener"),
     btnDuplicate: $("#btnDuplicate"),
     btnMoveUp: $("#btnMoveUp"),
@@ -358,6 +361,37 @@
     aiChatInput: $("#aiChatInput"),
     aiSend: $("#aiSend"),
     aiStatus: $("#aiStatus"),
+
+    stockLibraryModal: $("#stockLibraryModal"),
+    stockClose: $("#stockClose"),
+    stockSearch: $("#stockSearch"),
+    stockSupplierFilter: $("#stockSupplierFilter"),
+    stockTypeFilter: $("#stockTypeFilter"),
+    stockMaterialFilter: $("#stockMaterialFilter"),
+    stockDiameterMin: $("#stockDiameterMin"),
+    stockDiameterMax: $("#stockDiameterMax"),
+    stockEflMin: $("#stockEflMin"),
+    stockEflMax: $("#stockEflMax"),
+    stockMaxPrice: $("#stockMaxPrice"),
+    stockAvailabilityFilter: $("#stockAvailabilityFilter"),
+    stockConfidenceFilter: $("#stockConfidenceFilter"),
+    stockOnlyToggle: $("#stockOnlyToggle"),
+    stockLibrarySummary: $("#stockLibrarySummary"),
+    stockResults: $("#stockResults"),
+    stockImportSupplier: $("#stockImportSupplier"),
+    stockImportType: $("#stockImportType"),
+    stockImportText: $("#stockImportText"),
+    stockParseImport: $("#stockParseImport"),
+    stockAddParsed: $("#stockAddParsed"),
+    stockExportLibrary: $("#stockExportLibrary"),
+    stockImportPreview: $("#stockImportPreview"),
+    prototypeBomModal: $("#prototypeBomModal"),
+    bomClose: $("#bomClose"),
+    prototypeBomSummary: $("#prototypeBomSummary"),
+    prototypeBomBody: $("#prototypeBomBody"),
+    bomExportJson: $("#bomExportJson"),
+    bomExportCsv: $("#bomExportCsv"),
+    bomExportLens: $("#bomExportLens"),
 
     verifyPanel: $("#verifyPanel"),
     verifyControls: $("#verifyControls"),
@@ -843,6 +877,7 @@ function surfaceN(surface, wavePresetOrNm = "d") {
    // -------------------- GLASS ALIASES (keep existing preset names working) --------------------
 const GLASS_ALIASES = {
   // element modal defaults
+  "N-BK7": "N-BK7HT",
   BK7: "N-BK7HT",
   F2: "N-F2",
 
@@ -1370,6 +1405,9 @@ function warnMissingGlass(name) {
     referenceIntent: (obj?.referenceIntent && typeof obj.referenceIntent === "object")
       ? clone(obj.referenceIntent)
       : null,
+    stockPrototype: (obj?.stockPrototype && typeof obj.stockPrototype === "object")
+      ? clone(obj.stockPrototype)
+      : { enabled: obj?.stockPrototypeMode === true },
     zemax: sanitizeZemaxMeta(obj?.zemax),
     zoom: sanitizeZoomModel(obj?.zoom),
     focus: {
@@ -1421,6 +1459,21 @@ function warnMissingGlass(name) {
       glass_nd: glassNd,
       glass_vd: glassVd,
       stop: Boolean(s?.stop ?? false),
+      stockElementGroupId: (s?.stockElementGroupId != null && String(s.stockElementGroupId).trim() !== "")
+        ? String(s.stockElementGroupId)
+        : null,
+      stockElementSurfaceIndex: Number.isFinite(Number(s?.stockElementSurfaceIndex)) ? Number(s.stockElementSurfaceIndex) : null,
+      stockElementSurfaceRole: (s?.stockElementSurfaceRole != null && String(s.stockElementSurfaceRole).trim() !== "")
+        ? String(s.stockElementSurfaceRole)
+        : null,
+      stockElementLocked: s?.stockElementLocked === true,
+      stockElementRearSurface: s?.stockElementRearSurface === true,
+      stockCatalog: (s?.stockCatalog && typeof s.stockCatalog === "object") ? clone(s.stockCatalog) : null,
+      stockOrientation: (s?.stockOrientation != null && String(s.stockOrientation).trim() !== "")
+        ? String(s.stockOrientation)
+        : null,
+      stockAirGapAfterMm: Number.isFinite(Number(s?.stockAirGapAfterMm)) ? Number(s.stockAirGapAfterMm) : null,
+      customCopyOfStock: (s?.customCopyOfStock && typeof s.customCopyOfStock === "object") ? clone(s.customCopyOfStock) : null,
       zmx: {
         surf: Number.isFinite(Number(s?.zmx?.surf)) ? Number(s.zmx.surf) : null,
         curv: Number.isFinite(Number(s?.zmx?.curv)) ? Number(s.zmx.curv) : null,
@@ -1511,6 +1564,1082 @@ function warnMissingGlass(name) {
     const storage = getSafeLocalStorage();
     if (!storage) return;
     try { storage.removeItem(RUNTIME_BUSY_STORAGE_KEY); } catch (_) {}
+  }
+
+  // -------------------- deterministic stock optical element library --------------------
+  const STOCK_LIBRARY_STORAGE_KEY = "tvl_lensbuilder:stock_element_library:v1";
+  const STOCK_TYPES = new Set([
+    "plano-convex",
+    "plano-concave",
+    "biconvex",
+    "biconcave",
+    "positive-meniscus",
+    "negative-meniscus",
+    "achromatic-doublet",
+    "window/filter",
+    "unknown/other",
+  ]);
+  const STOCK_AVAILABILITY = new Set(["stock", "limited_stock", "inquire", "custom", "unknown"]);
+  const STOCK_CONFIDENCE = new Set(["high", "medium", "low", "unavailable"]);
+  const STOCK_GLASS_ND = {
+    "N-BK7": 1.5168,
+    "N-BK7HT": 1.5168,
+    BK7: 1.5168,
+    K9: 1.5168,
+    "FUSED SILICA": 1.4585,
+    "UVFS": 1.4585,
+    "N-SF5": 1.6727,
+    SF5: 1.6727,
+  };
+  const STOCK_LIBRARY_FALLBACK = [
+    {
+      id: "shalom-1101-078",
+      supplier: "Shalom EO",
+      code: "1101-078",
+      category: "singlet",
+      type: "plano-convex",
+      material: "N-BK7",
+      glass_catalog_name: "N-BK7",
+      diameter_mm: 25,
+      semi_diameter_mm: 12.5,
+      center_thickness_mm: 5.3,
+      edge_thickness_mm: 2.1,
+      efl_mm: 50,
+      radius_1_mm: 25.84,
+      radius_2_mm: null,
+      radius_2_type: "plano",
+      radius_from_efl_mm: 25.84,
+      radius_from_sag_mm: 26.01,
+      selected_radius_mm: 25.84,
+      radius_estimation_error_mm: 0.17,
+      coating: "Uncoated",
+      price_usd: 12,
+      delivery: "1 Week",
+      availability: "stock",
+      raytrace_confidence: "high",
+      prescription_status: "estimated_from_catalog",
+      notes: "Radius estimated from EFL and checked against CT/ET sag.",
+    },
+    {
+      id: "shalom-1101-151",
+      supplier: "Shalom EO",
+      code: "1101-151",
+      category: "singlet",
+      type: "plano-convex",
+      material: "N-BK7",
+      glass_catalog_name: "N-BK7",
+      diameter_mm: 25,
+      semi_diameter_mm: 12.5,
+      center_thickness_mm: 11.7,
+      edge_thickness_mm: 2,
+      efl_mm: 25.4,
+      radius_1_mm: 13.13,
+      radius_2_mm: null,
+      radius_2_type: "plano",
+      radius_from_efl_mm: 13.13,
+      radius_from_sag_mm: 12.92,
+      selected_radius_mm: 13.13,
+      radius_estimation_error_mm: 0.21,
+      coating: "350-650nm AR Coating",
+      price_usd: 18.5,
+      delivery: "Inquire",
+      availability: "inquire",
+      raytrace_confidence: "high",
+      prescription_status: "estimated_from_catalog",
+      notes: "Starter row from Shalom-style PCX catalog data.",
+    },
+    {
+      id: "shalom-1103-001",
+      supplier: "Shalom EO",
+      code: "1103-001",
+      category: "singlet",
+      type: "plano-concave",
+      material: "N-BK7",
+      glass_catalog_name: "N-BK7",
+      diameter_mm: 12.7,
+      semi_diameter_mm: 6.35,
+      center_thickness_mm: 1.8,
+      edge_thickness_mm: 3.5,
+      efl_mm: -25,
+      radius_1_mm: -12.92,
+      radius_2_mm: null,
+      radius_2_type: "plano",
+      radius_from_efl_mm: 12.92,
+      radius_from_sag_mm: 12.72,
+      selected_radius_mm: 12.92,
+      radius_estimation_error_mm: 0.20,
+      coating: "Uncoated",
+      price_usd: 12,
+      delivery: "2-3 Days",
+      availability: "stock",
+      raytrace_confidence: "high",
+      prescription_status: "estimated_from_catalog",
+      notes: "Radius estimated from EFL and checked against CT/ET sag.",
+    },
+    {
+      id: "shalom-1103-009",
+      supplier: "Shalom EO",
+      code: "1103-009",
+      category: "singlet",
+      type: "plano-concave",
+      material: "N-BK7",
+      glass_catalog_name: "N-BK7",
+      diameter_mm: 12.7,
+      semi_diameter_mm: 6.35,
+      center_thickness_mm: 2.7,
+      edge_thickness_mm: 3.5,
+      efl_mm: -50,
+      radius_1_mm: -25.84,
+      radius_2_mm: null,
+      radius_2_type: "plano",
+      radius_from_efl_mm: 25.84,
+      radius_from_sag_mm: 25.60,
+      selected_radius_mm: 25.84,
+      radius_estimation_error_mm: 0.24,
+      coating: "Uncoated",
+      price_usd: 12,
+      delivery: "2-3 Days",
+      availability: "stock",
+      raytrace_confidence: "high",
+      prescription_status: "estimated_from_catalog",
+      notes: "Radius estimated from EFL and checked against CT/ET sag.",
+    },
+  ];
+
+  const stockLibraryState = {
+    loaded: false,
+    elements: STOCK_LIBRARY_FALLBACK.map((e) => normalizeStockElement(e)),
+    parsedImport: [],
+    matchTarget: null,
+  };
+
+  function stockSlug(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "item";
+  }
+
+  function parseStockNumber(value) {
+    if (value == null) return null;
+    const text = String(value).replace(",", ".").replace(/[^\d.+\-eE]/g, "");
+    if (!/[0-9]/.test(text)) return null;
+    const n = Number(text);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function stockNdForMaterial(material) {
+    const key = String(material || "").trim().toUpperCase();
+    return STOCK_GLASS_ND[key] || 1.5168;
+  }
+
+  function stockAvailabilityFromDelivery(delivery) {
+    const text = String(delivery || "").trim().toLowerCase();
+    if (!text) return "unknown";
+    if (text.includes("inquire")) return "inquire";
+    if (text.includes("custom")) return "custom";
+    if (text.includes("limited")) return "limited_stock";
+    if (/(day|week|stock)/.test(text)) return "stock";
+    return "unknown";
+  }
+
+  function normalizeStockType(type) {
+    const t = String(type || "unknown/other").trim().toLowerCase();
+    if (t.includes("plano") && (t.includes("convex") || t === "pcx")) return "plano-convex";
+    if (t.includes("plano") && (t.includes("concave") || t === "pcv")) return "plano-concave";
+    if (t.includes("bi") && t.includes("convex")) return "biconvex";
+    if (t.includes("bi") && t.includes("concave")) return "biconcave";
+    if (t.includes("positive") && t.includes("meniscus")) return "positive-meniscus";
+    if (t.includes("negative") && t.includes("meniscus")) return "negative-meniscus";
+    if (t.includes("achrom")) return "achromatic-doublet";
+    if (t.includes("window") || t.includes("filter")) return "window/filter";
+    return STOCK_TYPES.has(t) ? t : "unknown/other";
+  }
+
+  function estimateStockRadius(element) {
+    const type = normalizeStockType(element.type);
+    const diameter = Number(element.diameter_mm);
+    const ct = Number(element.center_thickness_mm);
+    const et = Number(element.edge_thickness_mm);
+    const efl = Number(element.efl_mm);
+    const material = element.glass_catalog_name || element.material;
+    const n = stockNdForMaterial(material);
+    let radiusFromEfl = Number(element.radius_from_efl_mm);
+    let radiusFromSag = Number(element.radius_from_sag_mm);
+
+    if (!Number.isFinite(radiusFromEfl) && Number.isFinite(efl) && efl !== 0 && (type === "plano-convex" || type === "plano-concave")) {
+      radiusFromEfl = Math.abs(efl) * (n - 1);
+    }
+    if (!Number.isFinite(radiusFromSag) && Number.isFinite(diameter) && diameter > 0 && Number.isFinite(ct) && Number.isFinite(et)) {
+      const sag = type === "plano-concave" ? (et - ct) : (ct - et);
+      const a = diameter / 2;
+      if (sag > 1e-6) radiusFromSag = (a * a + sag * sag) / (2 * sag);
+    }
+
+    let selected = Number(element.selected_radius_mm);
+    if (!Number.isFinite(selected)) selected = Number.isFinite(radiusFromEfl)
+      ? radiusFromEfl
+      : (Number.isFinite(radiusFromSag) ? radiusFromSag : Math.abs(Number(element.radius_1_mm || element.radius_2_mm || 0)));
+    const err = Number.isFinite(radiusFromEfl) && Number.isFinite(radiusFromSag)
+      ? Math.abs(radiusFromEfl - radiusFromSag)
+      : null;
+    const relErr = err != null && Number.isFinite(selected) && selected > 0 ? err / selected : 0;
+    let confidence = String(element.raytrace_confidence || "high").toLowerCase();
+    if (err != null && relErr > 0.15) confidence = "low";
+    else if (err != null && relErr > 0.06 && confidence === "high") confidence = "medium";
+    return {
+      radius_from_efl_mm: Number.isFinite(radiusFromEfl) ? radiusFromEfl : null,
+      radius_from_sag_mm: Number.isFinite(radiusFromSag) ? radiusFromSag : null,
+      selected_radius_mm: Number.isFinite(selected) && selected > 0 ? selected : null,
+      radius_estimation_error_mm: err,
+      raytrace_confidence: STOCK_CONFIDENCE.has(confidence) ? confidence : "medium",
+    };
+  }
+
+  function normalizeStockElement(raw) {
+    const supplier = String(raw?.supplier || "Unknown supplier").trim();
+    const code = String(raw?.code || raw?.part_number || raw?.id || "unknown").trim();
+    const type = normalizeStockType(raw?.type || raw?.element_type || raw?.category);
+    const material = String(raw?.material || raw?.glass_catalog_name || raw?.glass || "N-BK7").trim();
+    const diameter = parseStockNumber(raw?.diameter_mm ?? raw?.diameter ?? raw?.Dia ?? raw?.D);
+    const ct = parseStockNumber(raw?.center_thickness_mm ?? raw?.ct ?? raw?.CT ?? raw?.["Center Thickness"]);
+    const et = parseStockNumber(raw?.edge_thickness_mm ?? raw?.et ?? raw?.ET ?? raw?.["Edge Thickness"]);
+    const efl = parseStockNumber(raw?.efl_mm ?? raw?.focal_length_mm ?? raw?.focal_length ?? raw?.FL ?? raw?.EFL ?? raw?.["Focal length"]);
+    const delivery = String(raw?.delivery || raw?.Delivery || "").trim();
+    const availabilityRaw = String(raw?.availability || "").trim().toLowerCase();
+    const availability = STOCK_AVAILABILITY.has(availabilityRaw) ? availabilityRaw : stockAvailabilityFromDelivery(delivery);
+    const coating = String(raw?.coating || raw?.Coating || "Uncoated").trim() || "Uncoated";
+    const radiusEstimate = estimateStockRadius({
+      ...raw,
+      type,
+      material,
+      glass_catalog_name: raw?.glass_catalog_name || material,
+      diameter_mm: diameter,
+      center_thickness_mm: ct,
+      edge_thickness_mm: et,
+      efl_mm: efl,
+    });
+    const id = String(raw?.id || `${stockSlug(supplier)}-${stockSlug(code)}`).trim();
+    const price = parseStockNumber(raw?.price_usd ?? raw?.price ?? raw?.["Unit Price"] ?? raw?.Price);
+    const out = {
+      id,
+      supplier,
+      code,
+      source_url: String(raw?.source_url || raw?.url || ""),
+      category: String(raw?.category || (type === "achromatic-doublet" ? "doublet" : "singlet")),
+      type,
+      material,
+      glass_catalog_name: String(raw?.glass_catalog_name || material),
+      diameter_mm: diameter,
+      semi_diameter_mm: Number.isFinite(Number(raw?.semi_diameter_mm)) ? Number(raw.semi_diameter_mm) : (Number.isFinite(diameter) ? diameter / 2 : null),
+      clear_aperture_mm: parseStockNumber(raw?.clear_aperture_mm ?? raw?.clear_aperture),
+      center_thickness_mm: ct,
+      edge_thickness_mm: et,
+      efl_mm: efl,
+      bfl_mm: parseStockNumber(raw?.bfl_mm ?? raw?.BFL),
+      radius_1_mm: parseStockNumber(raw?.radius_1_mm ?? raw?.R1),
+      radius_2_mm: parseStockNumber(raw?.radius_2_mm ?? raw?.R2),
+      radius_2_type: raw?.radius_2_type || (type.includes("plano") ? "plano" : null),
+      ...radiusEstimate,
+      coating,
+      wavelength_range_nm: raw?.wavelength_range_nm ?? null,
+      surface_quality: raw?.surface_quality ?? null,
+      irregularity: String(raw?.irregularity || raw?.Irregularity || ""),
+      price_usd: Number.isFinite(price) ? price : null,
+      delivery,
+      availability,
+      prescription_status: String(raw?.prescription_status || "estimated_from_catalog"),
+      notes: String(raw?.notes || ""),
+    };
+    if (out.type === "plano-convex" && out.selected_radius_mm) {
+      out.radius_1_mm = Number.isFinite(Number(out.radius_1_mm)) ? out.radius_1_mm : out.selected_radius_mm;
+      out.radius_2_mm = Number.isFinite(Number(out.radius_2_mm)) ? out.radius_2_mm : null;
+      out.radius_2_type = "plano";
+    } else if (out.type === "plano-concave" && out.selected_radius_mm) {
+      out.radius_1_mm = Number.isFinite(Number(out.radius_1_mm)) ? out.radius_1_mm : -out.selected_radius_mm;
+      out.radius_2_mm = Number.isFinite(Number(out.radius_2_mm)) ? out.radius_2_mm : null;
+      out.radius_2_type = "plano";
+    }
+    out.raytrace_confidence = STOCK_CONFIDENCE.has(String(out.raytrace_confidence).toLowerCase())
+      ? String(out.raytrace_confidence).toLowerCase()
+      : "medium";
+    if (raw?.raw) out.raw = clone(raw.raw);
+    return out;
+  }
+
+  function stockCatalogSnapshot(element) {
+    return normalizeStockElement(element);
+  }
+
+  function getStockLibraryCustomEntries() {
+    const storage = getSafeLocalStorage();
+    if (!storage) return [];
+    try {
+      const parsed = JSON.parse(storage.getItem(STOCK_LIBRARY_STORAGE_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed.map(normalizeStockElement) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveStockLibraryCustomEntries(entries) {
+    const storage = getSafeLocalStorage();
+    if (!storage) return;
+    try { storage.setItem(STOCK_LIBRARY_STORAGE_KEY, JSON.stringify(entries.map(normalizeStockElement))); } catch (_) {}
+  }
+
+  function mergeStockElements(...lists) {
+    const byId = new Map();
+    for (const list of lists) {
+      for (const item of list || []) {
+        const normalized = normalizeStockElement(item);
+        byId.set(normalized.id, normalized);
+      }
+    }
+    return [...byId.values()].sort((a, b) => `${a.supplier} ${a.code}`.localeCompare(`${b.supplier} ${b.code}`));
+  }
+
+  async function loadStockElementLibrary() {
+    if (stockLibraryState.loaded) return stockLibraryState.elements;
+    let fileElements = [];
+    try {
+      const res = await fetch("./data/element-library.json", { cache: "no-store" });
+      if (res.ok) {
+        const json = await res.json();
+        fileElements = Array.isArray(json?.elements) ? json.elements : [];
+      }
+    } catch (_) {}
+    stockLibraryState.elements = mergeStockElements(STOCK_LIBRARY_FALLBACK, fileElements, getStockLibraryCustomEntries());
+    stockLibraryState.loaded = true;
+    renderStockLibraryFilters();
+    return stockLibraryState.elements;
+  }
+
+  function stockElementTitle(element) {
+    return `${element.supplier} ${element.code}`;
+  }
+
+  function stockElementLine(element) {
+    const efl = Number.isFinite(Number(element.efl_mm)) ? `FL${Number(element.efl_mm).toFixed(1)}` : "FL—";
+    const r = Number.isFinite(Number(element.selected_radius_mm)) ? `R${Number(element.selected_radius_mm).toFixed(2)}` : "R—";
+    const price = Number.isFinite(Number(element.price_usd)) ? `$${Number(element.price_usd).toFixed(2)}` : "$—";
+    return `${element.type} ${element.material} Ø${mmText(element.diameter_mm, 1)} ${efl} CT${mmText(element.center_thickness_mm, 2)} ${r} ${element.coating || ""} ${price} ${element.delivery || ""}`;
+  }
+
+  function stockGroupId() {
+    return `stock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function isStockLockedSurface(surface) {
+    return !!surface?.stockElementLocked && !!surface?.stockElementGroupId;
+  }
+
+  function isStockRearAirSurface(surface) {
+    return isStockLockedSurface(surface) && surface.stockElementRearSurface === true;
+  }
+
+  function isStockSurfaceFieldLocked(surface, key) {
+    if (!isStockLockedSurface(surface)) return false;
+    if (key === "t" && isStockRearAirSurface(surface)) return false;
+    return key === "R" || key === "t" || key === "ap" || key === "glass" || key === "stop" || key === "surfaceLabel" || key === "type";
+  }
+
+  function stockApertureForElement(element) {
+    const clear = Number(element.clear_aperture_mm);
+    const semi = Number(element.semi_diameter_mm);
+    const diameter = Number(element.diameter_mm);
+    if (Number.isFinite(clear) && clear > 0) return clear / 2;
+    if (Number.isFinite(semi) && semi > 0) return semi;
+    if (Number.isFinite(diameter) && diameter > 0) return diameter / 2;
+    return 10;
+  }
+
+  function stockGlassName(element) {
+    return normalizeGlassInput(element.glass_catalog_name || element.material || "N-BK7HT");
+  }
+
+  function stockLensSurfaces(elementRaw, options = {}) {
+    const element = normalizeStockElement(elementRaw);
+    const groupId = options.groupId || stockGroupId();
+    const orientation = options.orientation === "flipped" ? "flipped" : "curved-first";
+    const rearAir = Math.max(0, Number(options.airGapAfterMm ?? options.rearAir ?? 4) || 0);
+    const ap = Math.max(0.1, stockApertureForElement(element));
+    const ct = Math.max(0.01, Number(element.center_thickness_mm) || 1);
+    const R = Math.max(0.0001, Math.abs(Number(element.selected_radius_mm || element.radius_1_mm || 0)) || 1000);
+    const glass = stockGlassName(element);
+    const catalog = stockCatalogSnapshot(element);
+    const labelBase = `${element.supplier} ${element.code}`.trim();
+    let surfaces = [];
+
+    if (element.type === "plano-convex") {
+      surfaces = orientation === "flipped"
+        ? [
+            { type: "", R: 0, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
+            { type: "", R: -R, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} CURVED`, surfaceLabelAuto: false },
+          ]
+        : [
+            { type: "", R: R, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} CURVED`, surfaceLabelAuto: false },
+            { type: "", R: 0, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
+          ];
+    } else if (element.type === "plano-concave") {
+      surfaces = orientation === "flipped"
+        ? [
+            { type: "", R: 0, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
+            { type: "", R: R, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} CURVED`, surfaceLabelAuto: false },
+          ]
+        : [
+            { type: "", R: -R, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} CURVED`, surfaceLabelAuto: false },
+            { type: "", R: 0, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} PLANO`, surfaceLabelAuto: false },
+          ];
+    } else if (element.type === "window/filter") {
+      surfaces = [
+        { type: "", R: 0, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} FRONT`, surfaceLabelAuto: false },
+        { type: "", R: 0, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} REAR`, surfaceLabelAuto: false },
+      ];
+    } else {
+      const r1 = Number.isFinite(Number(element.radius_1_mm)) ? Number(element.radius_1_mm) : R;
+      const r2 = Number.isFinite(Number(element.radius_2_mm)) ? Number(element.radius_2_mm) : -r1;
+      surfaces = orientation === "flipped"
+        ? [
+            { type: "", R: -r2, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} REAR`, surfaceLabelAuto: false },
+            { type: "", R: -r1, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} FRONT`, surfaceLabelAuto: false },
+          ]
+        : [
+            { type: "", R: r1, t: ct, ap, ap_optical: ap, glass, stop: false, surfaceLabel: `${labelBase} FRONT`, surfaceLabelAuto: false },
+            { type: "", R: r2, t: rearAir, ap, ap_optical: ap, glass: "AIR", stop: false, surfaceLabel: `${labelBase} REAR`, surfaceLabelAuto: false },
+          ];
+    }
+
+    return surfaces.map((surface, index) => ({
+      ...surface,
+      stockElementGroupId: groupId,
+      stockElementSurfaceIndex: index,
+      stockElementSurfaceRole: index === 0 ? "front" : (index === surfaces.length - 1 ? "rear" : "internal"),
+      stockElementLocked: true,
+      stockElementRearSurface: index === surfaces.length - 1,
+      stockCatalog: catalog,
+      stockOrientation: orientation,
+      stockAirGapAfterMm: index === surfaces.length - 1 ? rearAir : null,
+    }));
+  }
+
+  function insertStockElement(element, options = {}) {
+    const rearAir = Math.max(0, Number(options.airGapAfterMm ?? elUI?.rear?.value ?? 4) || 0);
+    const chunk = stockLensSurfaces(element, { orientation: options.orientation, airGapAfterMm: rearAir });
+    let insertAt = Number.isFinite(Number(options.insertAt)) ? Number(options.insertAt) : safeInsertAtAfterSelected();
+    const imsIdx = getIMSIndex();
+    if (imsIdx >= 0) insertAt = Math.min(Math.max(1, insertAt), imsIdx);
+    lens.surfaces.splice(insertAt, 0, ...chunk);
+    selectedIndex = insertAt;
+    if (!lens.stockPrototype || typeof lens.stockPrototype !== "object") lens.stockPrototype = {};
+    lens.stockPrototype.lastInsertedCatalogId = element.id;
+    lens = sanitizeLens(lens);
+    buildTable();
+    applySensorToIMS();
+    updateStockPrototypeUi();
+    validateStockPrototypeMode();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    updateStockPrototypeUi();
+    toast(`Inserted locked stock element: ${stockElementTitle(element)}`);
+    return chunk;
+  }
+
+  function stockGroupRangeById(groupId) {
+    const surfaces = lens?.surfaces || [];
+    const indices = surfaces.map((s, i) => s.stockElementGroupId === groupId ? i : -1).filter((i) => i >= 0);
+    if (!indices.length) return null;
+    return { start: Math.min(...indices), end: Math.max(...indices), indices };
+  }
+
+  function stockGroupRangeAt(index) {
+    const s = lens?.surfaces?.[index];
+    return s?.stockElementGroupId ? stockGroupRangeById(s.stockElementGroupId) : null;
+  }
+
+  function setStockPrototypeMode(enabled) {
+    if (!lens.stockPrototype || typeof lens.stockPrototype !== "object") lens.stockPrototype = {};
+    lens.stockPrototype.enabled = !!enabled;
+    updateStockPrototypeUi();
+    buildTable();
+    validateStockPrototypeMode();
+  }
+
+  function updateStockPrototypeUi() {
+    const enabled = !!lens?.stockPrototype?.enabled;
+    if (ui.btnStockPrototypeMode) {
+      ui.btnStockPrototypeMode.textContent = enabled ? "Stock Mode: ON" : "Stock Mode: OFF";
+      ui.btnStockPrototypeMode.classList.toggle("btnPrimary", enabled);
+      ui.btnStockPrototypeMode.setAttribute("aria-pressed", enabled ? "true" : "false");
+    }
+    if (elUI?.stockModeToggle) elUI.stockModeToggle.textContent = enabled ? "Stock Prototype Mode ON" : "Enable Stock Prototype Mode";
+  }
+
+  function collectStockGroups() {
+    const groups = new Map();
+    (lens?.surfaces || []).forEach((s, index) => {
+      if (!isStockLockedSurface(s)) return;
+      const groupId = s.stockElementGroupId;
+      if (!groups.has(groupId)) {
+        groups.set(groupId, {
+          groupId,
+          firstIndex: index,
+          lastIndex: index,
+          catalog: s.stockCatalog ? normalizeStockElement(s.stockCatalog) : null,
+          orientation: s.stockOrientation || "curved-first",
+          surfaces: [],
+          airGapAfterMm: null,
+        });
+      }
+      const g = groups.get(groupId);
+      g.firstIndex = Math.min(g.firstIndex, index);
+      g.lastIndex = Math.max(g.lastIndex, index);
+      g.surfaces.push({ index, surface: s });
+      if (s.stockElementRearSurface) g.airGapAfterMm = Number(s.t || 0);
+    });
+    return [...groups.values()].sort((a, b) => a.firstIndex - b.firstIndex);
+  }
+
+  function findCustomElementRange(index) {
+    const surfaces = lens?.surfaces || [];
+    if (!surfaces[index] || isProtectedIndex(index) || isStockLockedSurface(surfaces[index])) return null;
+    let start = index;
+    for (let i = index; i >= 1; i--) {
+      const cur = surfaces[i];
+      const prev = surfaces[i - 1];
+      if (isProtectedIndex(i) || isStockLockedSurface(cur)) break;
+      start = i;
+      if (isAirSurfaceMedium(prev) && !isAirSurfaceMedium(cur)) break;
+    }
+    let end = index;
+    for (let i = start; i < surfaces.length - 1; i++) {
+      end = i;
+      if (isAirSurfaceMedium(surfaces[i])) break;
+      if (i > start && isAirSurfaceMedium(surfaces[i])) break;
+      if (i + 1 < surfaces.length && !isAirSurfaceMedium(surfaces[i]) && isAirSurfaceMedium(surfaces[i + 1])) {
+        end = i + 1;
+        break;
+      }
+    }
+    if (start <= 0 || end >= surfaces.length - 1 || end < start) return null;
+    return { start, end, surfaces: surfaces.slice(start, end + 1) };
+  }
+
+  function inferCustomElementDescriptor(range) {
+    const chunk = range?.surfaces || [];
+    const glassSurface = chunk.find((s) => !isAirSurfaceMedium(s)) || chunk[0];
+    const rearSurface = chunk[chunk.length - 1] || glassSurface;
+    const r1 = Number(glassSurface?.R);
+    const r2 = Number(rearSurface?.R);
+    const type = (() => {
+      if (Math.abs(r1 || 0) > 1e-9 && Math.abs(r2 || 0) <= 1e-9) return r1 > 0 ? "plano-convex" : "plano-concave";
+      if (Math.abs(r1 || 0) <= 1e-9 && Math.abs(r2 || 0) > 1e-9) return r2 < 0 ? "plano-convex" : "plano-concave";
+      if (r1 > 0 && r2 < 0) return "biconvex";
+      if (r1 < 0 && r2 > 0) return "biconcave";
+      return "unknown/other";
+    })();
+    return {
+      type,
+      material: glassSurface?.glass || "AIR",
+      diameter_mm: Number(glassSurface?.ap) * 2,
+      center_thickness_mm: Number(glassSurface?.t),
+      radius_mm: Math.max(Math.abs(r1 || 0), Math.abs(r2 || 0)) || null,
+      efl_mm: null,
+      air_gap_after_mm: Number(rearSurface?.t || 0),
+    };
+  }
+
+  function scoreStockMatch(custom, element) {
+    const e = normalizeStockElement(element);
+    let score = 0;
+    let max = 0;
+    const add = (weight, value) => { max += weight; score += weight * Math.max(0, Math.min(1, value)); };
+    add(28, custom.type === e.type ? 1 : (custom.type === "unknown/other" ? 0.45 : 0.05));
+    add(18, normalizeGlassInput(custom.material) === normalizeGlassInput(e.glass_catalog_name || e.material) ? 1 : 0.35);
+    const cr = Number(custom.radius_mm);
+    const er = Number(e.selected_radius_mm);
+    add(18, Number.isFinite(cr) && Number.isFinite(er) ? 1 - Math.min(1, Math.abs(cr - er) / Math.max(1, Math.abs(cr))) : 0.35);
+    const cd = Number(custom.diameter_mm);
+    const ed = Number(e.diameter_mm);
+    add(14, Number.isFinite(cd) && Number.isFinite(ed) ? 1 - Math.min(1, Math.abs(cd - ed) / Math.max(1, Math.abs(cd))) : 0.35);
+    const cct = Number(custom.center_thickness_mm);
+    const ect = Number(e.center_thickness_mm);
+    add(8, Number.isFinite(cct) && Number.isFinite(ect) ? 1 - Math.min(1, Math.abs(cct - ect) / Math.max(1, Math.abs(cct))) : 0.4);
+    add(5, e.availability === "stock" ? 1 : (e.availability === "limited_stock" ? 0.7 : 0.25));
+    add(5, e.raytrace_confidence === "high" ? 1 : (e.raytrace_confidence === "medium" ? 0.65 : 0.2));
+    add(4, Number.isFinite(Number(e.price_usd)) ? 1 / (1 + Number(e.price_usd) / 50) : 0.5);
+    return Math.round((score / Math.max(1, max)) * 1000) / 10;
+  }
+
+  function stockFilteredElements() {
+    const q = String(ui.stockSearch?.value || "").trim().toLowerCase();
+    const supplier = String(ui.stockSupplierFilter?.value || "");
+    const type = String(ui.stockTypeFilter?.value || "");
+    const material = String(ui.stockMaterialFilter?.value || "");
+    const availability = String(ui.stockAvailabilityFilter?.value || "");
+    const confidence = String(ui.stockConfidenceFilter?.value || "");
+    const dMin = parseStockNumber(ui.stockDiameterMin?.value);
+    const dMax = parseStockNumber(ui.stockDiameterMax?.value);
+    const fMin = parseStockNumber(ui.stockEflMin?.value);
+    const fMax = parseStockNumber(ui.stockEflMax?.value);
+    const maxPrice = parseStockNumber(ui.stockMaxPrice?.value);
+    const stockOnly = !!ui.stockOnlyToggle?.checked;
+    return (stockLibraryState.elements || []).filter((e) => {
+      const hay = `${e.supplier} ${e.code} ${e.type} ${e.material} ${e.glass_catalog_name} ${e.coating} ${e.delivery} ${e.availability}`.toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      if (supplier && e.supplier !== supplier) return false;
+      if (type && e.type !== type) return false;
+      if (material && e.material !== material && e.glass_catalog_name !== material) return false;
+      if (availability && e.availability !== availability) return false;
+      if (confidence && e.raytrace_confidence !== confidence) return false;
+      if (stockOnly && e.availability !== "stock" && e.availability !== "limited_stock") return false;
+      const d = Number(e.diameter_mm);
+      const f = Number(e.efl_mm);
+      const p = Number(e.price_usd);
+      if (Number.isFinite(dMin) && Number.isFinite(d) && d < dMin) return false;
+      if (Number.isFinite(dMax) && Number.isFinite(d) && d > dMax) return false;
+      if (Number.isFinite(fMin) && Number.isFinite(f) && f < fMin) return false;
+      if (Number.isFinite(fMax) && Number.isFinite(f) && f > fMax) return false;
+      if (Number.isFinite(maxPrice) && Number.isFinite(p) && p > maxPrice) return false;
+      return true;
+    });
+  }
+
+  function renderStockLibraryFilters() {
+    const elements = stockLibraryState.elements || [];
+    const fill = (select, values, allText) => {
+      if (!select) return;
+      const current = select.value;
+      select.innerHTML = `<option value="">${allText}</option>` +
+        [...new Set(values.filter(Boolean).map(String))].sort().map((value) =>
+          `<option value="${escapeAttr(value)}">${escapeAttr(value)}</option>`
+        ).join("");
+      if ([...select.options].some((o) => o.value === current)) select.value = current;
+    };
+    fill(ui.stockSupplierFilter, elements.map((e) => e.supplier), "All suppliers");
+    fill(ui.stockTypeFilter, elements.map((e) => e.type), "All types");
+    fill(ui.stockMaterialFilter, elements.map((e) => e.glass_catalog_name || e.material), "All materials");
+  }
+
+  function stockValidationWarnings(element) {
+    const e = normalizeStockElement(element);
+    const warnings = [];
+    if (e.availability === "inquire") warnings.push("May not be directly stock.");
+    if (e.raytrace_confidence === "low") warnings.push("Approximate catalog data only.");
+    if (String(e.prescription_status || "").includes("estimated")) warnings.push("Radius estimated from catalog EFL/geometry.");
+    const err = Number(e.radius_estimation_error_mm);
+    const r = Number(e.selected_radius_mm);
+    if (Number.isFinite(err) && Number.isFinite(r) && r > 0 && err / r > 0.06) warnings.push("Catalog geometry mismatch — verify before ordering.");
+    return warnings;
+  }
+
+  function stockCardHtml(element, options = {}) {
+    const e = normalizeStockElement(element);
+    const match = Number(options.matchScore);
+    const warnings = stockValidationWarnings(e);
+    const price = Number.isFinite(Number(e.price_usd)) ? `$${Number(e.price_usd).toFixed(2)}` : "—";
+    const title = stockElementTitle(e);
+    const radius = Number.isFinite(Number(e.selected_radius_mm)) ? Number(e.selected_radius_mm).toFixed(2) : "—";
+    const matchBadge = Number.isFinite(match) ? `<span class="stockBadge stockMatch">${match.toFixed(1)}% match</span>` : "";
+    return `
+      <div class="stockCard" data-stock-id="${escapeAttr(e.id)}">
+        <div class="stockCardTop">
+          <strong>${escapeAttr(title)}</strong>
+          <span class="stockBadge">${escapeAttr(e.availability)}</span>
+          <span class="stockBadge">${escapeAttr(e.raytrace_confidence)}</span>
+          ${matchBadge}
+        </div>
+        <div class="stockCardMeta">
+          ${escapeAttr(e.type)} • ${escapeAttr(e.material)} • Ø${escapeAttr(mmText(e.diameter_mm, 1))} • CT ${escapeAttr(mmText(e.center_thickness_mm, 2))} • ET ${escapeAttr(mmText(e.edge_thickness_mm, 2))} • EFL ${escapeAttr(mmText(e.efl_mm, 1))} • R ${escapeAttr(radius)} • ${escapeAttr(e.coating || "—")} • ${price} • ${escapeAttr(e.delivery || "—")}
+        </div>
+        ${warnings.length ? `<div class="stockWarnings">${warnings.map(escapeAttr).join(" • ")}</div>` : ""}
+        <div class="stockCardActions">
+          <button class="btn btnPrimary stockAction" type="button" data-action="insert" data-id="${escapeAttr(e.id)}">Insert locked stock</button>
+          <button class="btn stockAction" type="button" data-action="preview" data-id="${escapeAttr(e.id)}">Preview</button>
+          ${options.matchMode ? `<button class="btn stockAction" type="button" data-action="replace" data-id="${escapeAttr(e.id)}">Replace With Stock</button>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderStockLibraryResults() {
+    if (!ui.stockResults) return;
+    const elements = stockFilteredElements();
+    const matchMode = !!stockLibraryState.matchTarget;
+    const scored = matchMode
+      ? elements.map((e) => ({ e, score: scoreStockMatch(stockLibraryState.matchTarget.descriptor, e) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10)
+      : elements.map((e) => ({ e, score: null })).slice(0, 100);
+    if (ui.stockLibrarySummary) {
+      ui.stockLibrarySummary.textContent = matchMode
+        ? `Closest stock matches for selected custom element. Showing ${scored.length} of ${elements.length} filtered rows.`
+        : `${elements.length} matching stock elements. Stock elements insert as locked physical glass; only rear air gap/spacer remains editable.`;
+    }
+    ui.stockResults.innerHTML = scored.length
+      ? scored.map((item) => stockCardHtml(item.e, { matchScore: item.score, matchMode })).join("")
+      : `<div class="stockEmpty">No stock elements match the current filters.</div>`;
+    ui.stockResults.querySelectorAll(".stockAction").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const id = e.currentTarget.dataset.id;
+        const action = e.currentTarget.dataset.action;
+        const element = stockLibraryState.elements.find((item) => item.id === id);
+        if (!element) return;
+        if (action === "insert") insertStockElement(element);
+        if (action === "preview") previewStockElement(element);
+        if (action === "replace") replaceCustomElementWithStock(element);
+      });
+    });
+  }
+
+  function previewStockElement(element) {
+    const e = normalizeStockElement(element);
+    const surfaces = stockLensSurfaces(e, { airGapAfterMm: 4 });
+    const lines = surfaces.map((s, i) => `S${i + 1}: R=${Number(s.R).toFixed(3)} t=${Number(s.t).toFixed(3)} ap=${Number(s.ap).toFixed(3)} glass=${s.glass}`);
+    if (ui.stockLibrarySummary) {
+      ui.stockLibrarySummary.textContent = `${stockElementTitle(e)} generated prescription preview: ${lines.join(" | ")}`;
+    }
+  }
+
+  function openStockLibraryModal(options = {}) {
+    loadStockElementLibrary().then(() => {
+      stockLibraryState.matchTarget = options.matchTarget || null;
+      if (ui.stockLibraryModal) {
+        ui.stockLibraryModal.classList.remove("hidden");
+        ui.stockLibraryModal.setAttribute("aria-hidden", "false");
+      }
+      renderStockLibraryFilters();
+      renderStockLibraryResults();
+    });
+  }
+
+  function closeStockLibraryModal() {
+    if (!ui.stockLibraryModal) return;
+    stockLibraryState.matchTarget = null;
+    ui.stockLibraryModal.classList.add("hidden");
+    ui.stockLibraryModal.setAttribute("aria-hidden", "true");
+  }
+
+  function parseDelimitedRows(text) {
+    const rows = String(text || "").trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!rows.length) return [];
+    const delimiter = rows[0].includes("\t") ? "\t" : ",";
+    const split = (line) => line.split(delimiter).map((cell) => cell.trim().replace(/^"|"$/g, ""));
+    const headers = split(rows[0]).map((h) => h.toLowerCase().replace(/[^a-z0-9]+/g, ""));
+    return rows.slice(1).map((line) => {
+      const cells = split(line);
+      const raw = {};
+      headers.forEach((h, i) => { raw[h] = cells[i] ?? ""; });
+      return raw;
+    });
+  }
+
+  function pickRaw(raw, names) {
+    for (const name of names) {
+      const key = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (raw[key] != null && String(raw[key]).trim() !== "") return raw[key];
+    }
+    return "";
+  }
+
+  function parseStockImportRows() {
+    const supplier = String(ui.stockImportSupplier?.value || "Unknown supplier").trim();
+    const type = normalizeStockType(ui.stockImportType?.value || "unknown/other");
+    const rows = parseDelimitedRows(ui.stockImportText?.value || "");
+    const parsed = rows.map((raw) => normalizeStockElement({
+      supplier,
+      type,
+      code: pickRaw(raw, ["code", "part", "part number", "item"]),
+      material: pickRaw(raw, ["material", "glass"]),
+      diameter_mm: pickRaw(raw, ["diameter", "dia", "d"]),
+      center_thickness_mm: pickRaw(raw, ["ct", "center thickness", "centerthickness"]),
+      edge_thickness_mm: pickRaw(raw, ["et", "edge thickness", "edgethickness"]),
+      efl_mm: pickRaw(raw, ["focal length", "focal", "efl", "fl"]),
+      irregularity: pickRaw(raw, ["irregularity"]),
+      coating: pickRaw(raw, ["coating"]),
+      price_usd: pickRaw(raw, ["unit price", "price", "usd"]),
+      delivery: pickRaw(raw, ["delivery", "lead time"]),
+      raw,
+    })).filter((e) => e.code && e.code !== "unknown");
+    stockLibraryState.parsedImport = parsed;
+    if (ui.stockAddParsed) ui.stockAddParsed.disabled = !parsed.length;
+    if (ui.stockImportPreview) {
+      ui.stockImportPreview.innerHTML = parsed.length
+        ? parsed.slice(0, 20).map((e) => `<div>${escapeAttr(stockElementTitle(e))} — ${escapeAttr(stockElementLine(e))}</div>`).join("")
+        : "No valid rows parsed. Check headers like Code, Material, Diameter, CT, ET, Focal length, Coating, Unit Price, Delivery.";
+    }
+    return parsed;
+  }
+
+  function addParsedStockRowsToLibrary() {
+    const parsed = stockLibraryState.parsedImport || [];
+    if (!parsed.length) return;
+    const custom = mergeStockElements(getStockLibraryCustomEntries(), parsed);
+    saveStockLibraryCustomEntries(custom);
+    stockLibraryState.elements = mergeStockElements(STOCK_LIBRARY_FALLBACK, stockLibraryState.elements, custom);
+    renderStockLibraryFilters();
+    renderStockLibraryResults();
+    toast(`Added ${parsed.length} parsed stock rows to local library`);
+  }
+
+  function downloadTextFile(filename, text, type = "text/plain") {
+    const blob = new Blob([String(text)], { type });
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+  }
+
+  function exportStockLibraryJson() {
+    const payload = {
+      schema: "tvl-stock-optical-element-library-v1",
+      updated: new Date().toISOString(),
+      elements: (stockLibraryState.elements || []).map(normalizeStockElement),
+    };
+    downloadTextFile("element-library.json", JSON.stringify(payload, null, 2), "application/json");
+  }
+
+  function replaceCustomElementWithStock(element) {
+    const target = stockLibraryState.matchTarget;
+    if (!target?.range) return toast("Select a custom element and run Find Closest Stock Match first.");
+    const range = findCustomElementRange(target.range.start) || target.range;
+    const rearAir = Number(target.descriptor?.air_gap_after_mm ?? range.surfaces?.[range.surfaces.length - 1]?.t ?? 4);
+    const chunk = stockLensSurfaces(element, { airGapAfterMm: rearAir });
+    lens.surfaces.splice(range.start, range.end - range.start + 1, ...chunk);
+    selectedIndex = range.start;
+    lens = sanitizeLens(lens);
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    closeStockLibraryModal();
+    toast(`Replaced custom element with locked stock: ${stockElementTitle(element)}`);
+  }
+
+  function findClosestStockForSurface(index) {
+    const range = findCustomElementRange(index);
+    if (!range) return toast("Select a custom non-stock optical element surface first.");
+    const descriptor = inferCustomElementDescriptor(range);
+    openStockLibraryModal({ matchTarget: { range, descriptor } });
+  }
+
+  function convertStockGroupToCustomCopy(index) {
+    const range = stockGroupRangeAt(index);
+    if (!range) return;
+    const catalog = lens.surfaces[range.start]?.stockCatalog;
+    const note = `Custom copy based on ${catalog?.supplier || "stock"} ${catalog?.code || ""} — not stock/orderable anymore.`;
+    for (const i of range.indices) {
+      const s = lens.surfaces[i];
+      s.customCopyOfStock = catalog ? stockCatalogSnapshot(catalog) : { note };
+      s.stockElementGroupId = null;
+      s.stockElementSurfaceIndex = null;
+      s.stockElementSurfaceRole = null;
+      s.stockElementLocked = false;
+      s.stockElementRearSurface = false;
+      s.stockCatalog = null;
+      s.stockOrientation = null;
+      s.stockAirGapAfterMm = null;
+    }
+    if (!Array.isArray(lens.notes)) lens.notes = [];
+    if (!lens.notes.includes(note)) lens.notes.push(note);
+    lens = sanitizeLens(lens);
+    buildTable();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    toast("Converted stock element to editable custom copy");
+  }
+
+  function flipStockGroup(index) {
+    const range = stockGroupRangeAt(index);
+    if (!range) return;
+    const first = lens.surfaces[range.start];
+    const catalog = first?.stockCatalog;
+    if (!catalog) return toast("Missing stock catalog snapshot.");
+    const rear = range.indices.map((i) => lens.surfaces[i]).find((s) => s.stockElementRearSurface);
+    const nextOrientation = first.stockOrientation === "flipped" ? "curved-first" : "flipped";
+    const chunk = stockLensSurfaces(catalog, { orientation: nextOrientation, airGapAfterMm: Number(rear?.t || 4), groupId: first.stockElementGroupId });
+    lens.surfaces.splice(range.start, range.end - range.start + 1, ...chunk);
+    selectedIndex = range.start;
+    lens = sanitizeLens(lens);
+    buildTable();
+    applySensorToIMS();
+    scheduleRenderAll();
+    scheduleRenderPreview();
+    toast(`Flipped ${catalog.supplier} ${catalog.code}`);
+  }
+
+  function stockPrototypeWarnings() {
+    const warnings = [];
+    const groups = collectStockGroups();
+    const stockIds = new Set(groups.map((g) => g.groupId));
+    const customCount = (lens?.surfaces || []).filter((s, i) =>
+      !isProtectedIndex(i) && !isAirSurfaceMedium(s) && !s.stop && !isStockLockedSurface(s)
+    ).length;
+    if (customCount > 0) warnings.push("This design is not fully orderable from stock glass.");
+    const stopAp = Math.max(0, ...((lens?.surfaces || []).filter((s) => s.stop).map((s) => Number(s.ap)).filter(Number.isFinite)));
+    for (const group of groups) {
+      const c = group.catalog;
+      if (!c) continue;
+      if (c.availability === "inquire") warnings.push(`${c.supplier} ${c.code}: May not be directly stock.`);
+      if (c.raytrace_confidence === "low") warnings.push(`${c.supplier} ${c.code}: Approximate catalog data only.`);
+      if (Number.isFinite(stopAp) && stopAp > 0 && Number(c.semi_diameter_mm) < stopAp * 1.05) warnings.push(`${c.supplier} ${c.code}: Likely vignetting/clipping.`);
+    }
+    if (!stockIds.size && customCount > 0) warnings.push("Stock Prototype Mode expects catalog elements; current design is still theoretical/custom.");
+    return [...new Set(warnings)];
+  }
+
+  function validateStockPrototypeMode() {
+    if (!lens?.stockPrototype?.enabled) return;
+    const warnings = stockPrototypeWarnings();
+    if (warnings.length) setStatusWarning(warnings[0], { force: true });
+  }
+
+  function buildPrototypeBom() {
+    const groups = collectStockGroups();
+    const customElements = (lens?.surfaces || []).filter((s, i) =>
+      !isProtectedIndex(i) && !isAirSurfaceMedium(s) && !s.stop && !isStockLockedSurface(s)
+    );
+    const items = groups.map((g, index) => ({
+      index: index + 1,
+      surfaceIndex: g.firstIndex,
+      supplier: g.catalog?.supplier || "",
+      code: g.catalog?.code || "",
+      type: g.catalog?.type || "",
+      material: g.catalog?.material || "",
+      diameter_mm: g.catalog?.diameter_mm ?? null,
+      focal_length_mm: g.catalog?.efl_mm ?? null,
+      coating: g.catalog?.coating || "",
+      price_usd: g.catalog?.price_usd ?? null,
+      delivery: g.catalog?.delivery || "",
+      availability: g.catalog?.availability || "unknown",
+      source_url: g.catalog?.source_url || "",
+      air_gap_after_mm: g.airGapAfterMm,
+      raytrace_confidence: g.catalog?.raytrace_confidence || "unknown",
+    }));
+    const spacers = groups.map((g, index) => ({
+      after_element: index + 1,
+      air_gap_mm: g.airGapAfterMm,
+    }));
+    const total = items.reduce((sum, item) => sum + (Number.isFinite(Number(item.price_usd)) ? Number(item.price_usd) : 0), 0);
+    return {
+      lensName: lens?.name || "Untitled lens",
+      generatedAt: new Date().toISOString(),
+      stockElementCount: items.length,
+      customElementCount: customElements.length,
+      totalEstimatedGlassCostUsd: total,
+      items,
+      spacers,
+      warnings: stockPrototypeWarnings(),
+    };
+  }
+
+  function openPrototypeBomModal() {
+    const bom = buildPrototypeBom();
+    if (ui.prototypeBomModal) {
+      ui.prototypeBomModal.classList.remove("hidden");
+      ui.prototypeBomModal.setAttribute("aria-hidden", "false");
+    }
+    renderPrototypeBom(bom);
+  }
+
+  function closePrototypeBomModal() {
+    if (!ui.prototypeBomModal) return;
+    ui.prototypeBomModal.classList.add("hidden");
+    ui.prototypeBomModal.setAttribute("aria-hidden", "true");
+  }
+
+  function renderPrototypeBom(bom = buildPrototypeBom()) {
+    if (ui.prototypeBomSummary) {
+      ui.prototypeBomSummary.textContent = `${bom.stockElementCount} stock elements • ${bom.customElementCount} custom elements • estimated glass cost $${bom.totalEstimatedGlassCostUsd.toFixed(2)}`;
+    }
+    if (ui.prototypeBomBody) {
+      const rows = bom.items.map((item) => `
+        <tr>
+          <td>${item.index}</td>
+          <td>${escapeAttr(item.supplier)}</td>
+          <td>${escapeAttr(item.code)}</td>
+          <td>${escapeAttr(item.type)}</td>
+          <td>${escapeAttr(item.material)}</td>
+          <td>${escapeAttr(mmText(item.diameter_mm, 1))}</td>
+          <td>${escapeAttr(mmText(item.focal_length_mm, 1))}</td>
+          <td>${escapeAttr(item.coating)}</td>
+          <td>${Number.isFinite(Number(item.price_usd)) ? `$${Number(item.price_usd).toFixed(2)}` : "—"}</td>
+          <td>${escapeAttr(item.delivery)}</td>
+          <td>${escapeAttr(item.availability)}</td>
+        </tr>
+      `).join("");
+      ui.prototypeBomBody.innerHTML = `
+        <table class="stockBomTable">
+          <thead><tr><th>#</th><th>Supplier</th><th>Code</th><th>Type</th><th>Material</th><th>Ø</th><th>FL</th><th>Coating</th><th>Price</th><th>Delivery</th><th>Avail.</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="11">No stock elements in this lens yet.</td></tr>`}</tbody>
+        </table>
+        <div class="stockBomBlock"><strong>Air gaps / spacers</strong><br>${bom.spacers.length ? bom.spacers.map((s) => `after element ${s.after_element}: ${mmText(s.air_gap_mm, 3)}`).join("<br>") : "No stock spacers yet."}</div>
+        <div class="stockBomBlock"><strong>Warnings</strong><br>${bom.warnings.length ? bom.warnings.map(escapeAttr).join("<br>") : "No stock prototype warnings."}</div>
+      `;
+    }
+  }
+
+  function exportPrototypeBomJson() {
+    downloadTextFile("prototype-bom.json", JSON.stringify(buildPrototypeBom(), null, 2), "application/json");
+  }
+
+  function exportPrototypeBomCsv() {
+    const bom = buildPrototypeBom();
+    const header = ["index","supplier","code","type","material","diameter_mm","focal_length_mm","coating","price_usd","delivery","availability","source_url","air_gap_after_mm"];
+    const rows = bom.items.map((item) => header.map((key) => `"${String(item[key] ?? "").replace(/"/g, '""')}"`).join(","));
+    downloadTextFile("prototype-bom.csv", [header.join(","), ...rows].join("\n"), "text/csv");
+  }
+
+  function exportStockPrototypeLensJson() {
+    const out = clone(lens);
+    out.stockPrototype = { ...(out.stockPrototype || {}), bom: buildPrototypeBom() };
+    downloadTextFile(`${String(out.name || "stock-prototype-lens").replace(/[^\w\-]+/g, "_")}.json`, JSON.stringify(out, null, 2), "application/json");
+  }
+
+  function wireStockLibraryUI() {
+    if (ui.btnStockLibrary) ui.btnStockLibrary.addEventListener("click", () => openStockLibraryModal());
+    if (ui.btnPrototypeBom) ui.btnPrototypeBom.addEventListener("click", openPrototypeBomModal);
+    if (ui.btnStockPrototypeMode) ui.btnStockPrototypeMode.addEventListener("click", () => setStockPrototypeMode(!lens?.stockPrototype?.enabled));
+    if (ui.stockClose) ui.stockClose.addEventListener("click", closeStockLibraryModal);
+    if (ui.stockLibraryModal) ui.stockLibraryModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.stockLibraryModal) closeStockLibraryModal();
+    });
+    [
+      ui.stockSearch,
+      ui.stockSupplierFilter,
+      ui.stockTypeFilter,
+      ui.stockMaterialFilter,
+      ui.stockDiameterMin,
+      ui.stockDiameterMax,
+      ui.stockEflMin,
+      ui.stockEflMax,
+      ui.stockMaxPrice,
+      ui.stockAvailabilityFilter,
+      ui.stockConfidenceFilter,
+      ui.stockOnlyToggle,
+    ].forEach((el) => {
+      if (!el) return;
+      el.addEventListener("input", renderStockLibraryResults);
+      el.addEventListener("change", renderStockLibraryResults);
+    });
+    if (ui.stockParseImport) ui.stockParseImport.addEventListener("click", parseStockImportRows);
+    if (ui.stockAddParsed) ui.stockAddParsed.addEventListener("click", addParsedStockRowsToLibrary);
+    if (ui.stockExportLibrary) ui.stockExportLibrary.addEventListener("click", exportStockLibraryJson);
+    if (ui.bomClose) ui.bomClose.addEventListener("click", closePrototypeBomModal);
+    if (ui.prototypeBomModal) ui.prototypeBomModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.prototypeBomModal) closePrototypeBomModal();
+    });
+    if (ui.bomExportJson) ui.bomExportJson.addEventListener("click", exportPrototypeBomJson);
+    if (ui.bomExportCsv) ui.bomExportCsv.addEventListener("click", exportPrototypeBomCsv);
+    if (ui.bomExportLens) ui.bomExportLens.addEventListener("click", exportStockPrototypeLensJson);
+    loadStockElementLibrary().then(() => {
+      renderStockLibraryFilters();
+      updateStockPrototypeUi();
+    });
   }
 
   function readRuntimeBusyMarker() {
@@ -1940,20 +3069,27 @@ function warnMissingGlass(name) {
      const locks = getAutoTunerSurfaceLock(idx);
      const isIMS = String(s.type || "").toUpperCase() === "IMS";
      const protectedSurface = isOBJ || isIMS;
+     const stockLocked = isStockLockedSurface(s);
+     const stockRearAir = isStockRearAirSurface(s);
+     const stockFirst = stockLocked && stockGroupRangeAt(idx)?.start === idx;
+     const customCopy = !!s.customCopyOfStock;
+     const rowWarn = !!lens?.stockPrototype?.enabled && !protectedSurface && !s.stop && !isAirSurfaceMedium(s) && !stockLocked;
+     tr.classList.toggle("stockLockedRow", stockLocked);
+     tr.classList.toggle("stockPrototypeWarnRow", rowWarn);
 
 tr.innerHTML = `
   <td style="width:34px; font-family:var(--mono)">${idx}</td>
-  <td style="width:72px"><input class="cellInput" data-k="surfaceLabel" data-i="${idx}" value="${escapeAttr(getSurfaceDisplayLabel(s, idx))}"></td>
-  <td style="width:92px"><input class="cellInput" data-k="R" data-i="${idx}" type="number" step="0.01" value="${s.R}"></td>
+  <td style="width:72px"><input class="cellInput" data-k="surfaceLabel" data-i="${idx}" value="${escapeAttr(getSurfaceDisplayLabel(s, idx))}" ${stockLocked ? "disabled" : ""}></td>
+  <td style="width:92px"><input class="cellInput" data-k="R" data-i="${idx}" type="number" step="0.01" value="${s.R}" ${stockLocked ? "disabled" : ""}></td>
 
   <td style="width:92px">
     <input class="cellInput" data-k="t" data-i="${idx}" type="number" step="0.01"
-      value="${isOBJ ? 0 : s.t}" ${isOBJ ? "disabled" : ""}>
+      value="${isOBJ ? 0 : s.t}" ${isOBJ || (stockLocked && !stockRearAir) ? "disabled" : ""}>
   </td>
 
-  <td style="width:92px"><input class="cellInput" data-k="ap" data-i="${idx}" type="number" step="0.01" value="${s.ap}"></td>
+  <td style="width:92px"><input class="cellInput" data-k="ap" data-i="${idx}" type="number" step="0.01" value="${s.ap}" ${stockLocked ? "disabled" : ""}></td>
         <td style="width:110px">
-          <select class="cellSelect" data-k="glass" data-i="${idx}">
+          <select class="cellSelect" data-k="glass" data-i="${idx}" ${stockLocked ? "disabled" : ""}>
             ${glassOptionNames.map((name) =>
               `<option value="${name}" ${name === glassValue ? "selected" : ""}>${
                 (name === glassValue && hasCustomGlass) ? customGlassLabel : name
@@ -1962,19 +3098,22 @@ tr.innerHTML = `
           </select>
         </td>
         <td class="cellChk" style="width:58px">
-          <input type="checkbox" data-k="stop" data-i="${idx}" ${s.stop ? "checked" : ""}>
+          <input type="checkbox" data-k="stop" data-i="${idx}" ${s.stop ? "checked" : ""} ${stockLocked ? "disabled" : ""}>
         </td>
         <td class="lockCell">
-          <input type="checkbox" data-lock-k="R" data-i="${idx}" ${locks.R || protectedSurface ? "checked" : ""} ${protectedSurface ? "disabled" : ""} title="Lock R">
+          <input type="checkbox" data-lock-k="R" data-i="${idx}" ${locks.R || protectedSurface || stockLocked ? "checked" : ""} ${protectedSurface || stockLocked ? "disabled" : ""} title="Lock R">
         </td>
         <td class="lockCell">
-          <input type="checkbox" data-lock-k="t" data-i="${idx}" ${locks.t || protectedSurface ? "checked" : ""} ${protectedSurface ? "disabled" : ""} title="Lock t">
+          <input type="checkbox" data-lock-k="t" data-i="${idx}" ${locks.t || protectedSurface || (stockLocked && !stockRearAir) ? "checked" : ""} ${protectedSurface || (stockLocked && !stockRearAir) ? "disabled" : ""} title="Lock t">
         </td>
         <td class="lockCell">
-          <input type="checkbox" data-lock-k="ap" data-i="${idx}" ${locks.ap || isOBJ ? "checked" : ""} ${isOBJ ? "disabled" : ""} title="Lock aperture">
+          <input type="checkbox" data-lock-k="ap" data-i="${idx}" ${locks.ap || isOBJ || stockLocked ? "checked" : ""} ${isOBJ || stockLocked ? "disabled" : ""} title="Lock aperture">
         </td>
         <td class="lockCell">
-          <input type="checkbox" data-lock-k="glass" data-i="${idx}" ${locks.glass || protectedSurface ? "checked" : ""} ${protectedSurface ? "disabled" : ""} title="Lock glass">
+          <input type="checkbox" data-lock-k="glass" data-i="${idx}" ${locks.glass || protectedSurface || stockLocked ? "checked" : ""} ${protectedSurface || stockLocked ? "disabled" : ""} title="Lock glass">
+        </td>
+        <td class="stockActionCell">
+          ${stockLocked ? `<span class="stockMiniBadge">LOCKED STOCK</span>${stockRearAir ? `<span class="stockMiniHint">Air gap editable</span>` : ""}${stockFirst ? `<button class="miniBtn stockRowAction" type="button" data-action="flip" data-i="${idx}">Flip</button><button class="miniBtn stockRowAction" type="button" data-action="custom-copy" data-i="${idx}">Custom copy</button>` : ""}` : (protectedSurface || s.stop || isAirSurfaceMedium(s) ? "" : `<button class="miniBtn stockRowAction" type="button" data-action="find" data-i="${idx}">Find stock</button>${customCopy ? `<span class="stockMiniHint">custom copy</span>` : ""}`)}
         </td>
       `;
       ui.tbody.appendChild(tr);
@@ -1998,6 +3137,18 @@ tr.innerHTML = `
         setAutoTunerSurfaceLock(input.dataset.i, input.dataset.lockK, input.checked);
       });
     });
+    ui.tbody.querySelectorAll(".stockRowAction").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const i = Number(e.currentTarget.dataset.i);
+        const action = e.currentTarget.dataset.action;
+        selectedIndex = Number.isFinite(i) ? i : selectedIndex;
+        if (action === "find") findClosestStockForSurface(selectedIndex);
+        if (action === "custom-copy") convertStockGroupToCustomCopy(selectedIndex);
+        if (action === "flip") flipStockGroup(selectedIndex);
+      });
+    });
 
     restoreTableFocus();
   }
@@ -2011,6 +3162,11 @@ tr.innerHTML = `
   selectedIndex = i;
   const s = lens.surfaces[i];
   if (!s) return;
+  if (isStockSurfaceFieldLocked(s, k)) {
+    setStatusWarning("Locked stock element: only Air Gap / Spacer After is editable.");
+    buildTable();
+    return;
+  }
 
   const t0 = String(s.type || "").toUpperCase();
 
@@ -2037,7 +3193,10 @@ tr.innerHTML = `
     if (ap <= 0) setStatusWarning(`Raytrace stopped: invalid surface ${i} ap <= 0`);
     s.ap = ap;
     s.ap_optical = ap;
-  } else if (k === "R" || k === "t") s[k] = num(el.value, s[k] ?? 0);
+  } else if (k === "R" || k === "t") {
+    s[k] = num(el.value, s[k] ?? 0);
+    if (k === "t" && isStockRearAirSurface(s)) s.stockAirGapAfterMm = s[k];
+  }
   else s[k] = num(el.value, s[k] ?? 0);
 
   applySensorToIMS();
@@ -2054,6 +3213,11 @@ function onCellCommit(e) {
   selectedIndex = i;
   const s = lens.surfaces[i];
   if (!s) return;
+  if (isStockSurfaceFieldLocked(s, k)) {
+    setStatusWarning("Locked stock element: convert to custom copy before editing physical catalog fields.");
+    buildTable();
+    return;
+  }
 
   const t0 = String(s.type || "").toUpperCase();
 
@@ -2109,6 +3273,7 @@ function onCellCommit(e) {
     s.ap_optical = ap;
   } else if (k === "R" || k === "t") {
     s[k] = num(el.value, s[k] ?? 0);
+    if (k === "t" && isStockRearAirSurface(s)) s.stockAirGapAfterMm = s[k];
   } else {
     s[k] = String(el.value ?? "");
   }
@@ -6597,6 +7762,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   // -------------------- +ELEMENT MODAL --------------------
   const EL_UI_IDS = {
     modal: "#elementModal",
+    source: "#elSource",
+    stockPicker: "#elStockPicker",
+    openStockLibrary: "#elOpenStockLibrary",
+    stockModeToggle: "#elStockModeToggle",
     type: "#elType",
     mode: "#elMode",
     f: "#elF",
@@ -6614,6 +7783,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   const elUI = {
     modal: $(EL_UI_IDS.modal),
+    source: $(EL_UI_IDS.source),
+    stockPicker: $(EL_UI_IDS.stockPicker),
+    openStockLibrary: $(EL_UI_IDS.openStockLibrary),
+    stockModeToggle: $(EL_UI_IDS.stockModeToggle),
     type: $(EL_UI_IDS.type),
     mode: $(EL_UI_IDS.mode),
     f: $(EL_UI_IDS.f),
@@ -6657,6 +7830,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   function updateElementModalNote() {
     if (!elUI.note) return;
+    const source = String(elUI.source?.value || "custom");
+    if (source === "stock") {
+      elUI.note.value = "Stock Element Library mode:\n- inserts locked purchasable catalog glass\n- radii/thickness/material/diameter/coating are read-only\n- tune Air Gap / Spacer After, order, and flip only\n- no OpenAI/API required";
+      return;
+    }
     const t = String(elUI.type?.value || "");
     const frontAir = Number(elUI.front?.value || 0);
     const gap = Number(elUI.gap?.value || 0);
@@ -6667,6 +7845,18 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (t === "achromat") msg += `Air-spaced achromat: 4 surfaces, internal gap = ${gap.toFixed(2)}mm\n`;
     msg += `Tip: displayed T/F# uses entrance pupil (not only physical stop radius)\n`;
     elUI.note.value = msg;
+  }
+
+  function updateElementSourceUI() {
+    const source = String(elUI.source?.value || "custom");
+    const stock = source === "stock";
+    if (elUI.stockPicker) elUI.stockPicker.classList.toggle("hidden", !stock);
+    [elUI.type, elUI.mode, elUI.form, elUI.f, elUI.ap, elUI.ct, elUI.gap, elUI.rear, elUI.g1, elUI.g2].forEach((node) => {
+      const wrap = node?.closest?.(".field");
+      if (wrap) wrap.classList.toggle("stockCustomHidden", stock);
+    });
+    if (elUI.insert) elUI.insert.textContent = stock ? "Open Stock Element Library" : "Insert element";
+    updateElementModalNote();
   }
 
   function openElementModal() {
@@ -6689,13 +7879,16 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (elUI.rear) elUI.rear.value = Number(elUI.rear.value || 4);
     if (elUI.front) elUI.front.value = Number(elUI.front.value || 0);
 
-    [elUI.type, elUI.gap, elUI.front].forEach((x) => {
+    [elUI.type, elUI.gap, elUI.front, elUI.source].forEach((x) => {
       if (!x || x.dataset._noteBound) return;
       x.addEventListener("input", updateElementModalNote);
-      x.addEventListener("change", updateElementModalNote);
+      x.addEventListener("change", () => {
+        if (x === elUI.source) updateElementSourceUI();
+        else updateElementModalNote();
+      });
       x.dataset._noteBound = "1";
     });
-    updateElementModalNote();
+    updateElementSourceUI();
 
     elUI.modal.classList.remove("hidden");
     elUI.modal.style.pointerEvents = "auto";
@@ -6810,6 +8003,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   }
 
   function insertElementFromModal() {
+    if (String(elUI.source?.value || "custom") === "stock") {
+      openStockLibraryModal();
+      return "stock-library";
+    }
     const v = readElementModalValues();
 
     const f = v.f;
@@ -6880,8 +8077,16 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     elUI.cancel.addEventListener("click", (e) => { e.preventDefault(); closeElementModal(); });
     elUI.insert.addEventListener("click", (e) => {
       e.preventDefault();
-      insertElementFromModal();
-      closeElementModal();
+      const result = insertElementFromModal();
+      if (result !== "stock-library") closeElementModal();
+    });
+    if (elUI.openStockLibrary) elUI.openStockLibrary.addEventListener("click", (e) => {
+      e.preventDefault();
+      openStockLibraryModal();
+    });
+    if (elUI.stockModeToggle) elUI.stockModeToggle.addEventListener("click", (e) => {
+      e.preventDefault();
+      setStockPrototypeMode(!lens?.stockPrototype?.enabled);
     });
 
     elUI.modal.addEventListener("mousedown", (e) => { if (e.target === elUI.modal) closeElementModal(); });
@@ -14290,6 +15495,7 @@ function wireUI() {
   on("#btnDebugOverlay", "click", toggleDebugOverlay);
   wireAutoTunerUI();
   wireLensAiUI();
+  wireStockLibraryUI();
 
   on("#btnSave", "click", saveLensToFile);
 
