@@ -5012,6 +5012,25 @@ function warnMissingGlass(name) {
     _focusMemo = null;
   }
 
+  function isSurfaceTableCellEditing() {
+    const a = document.activeElement;
+    return !!(a && a.classList && a.classList.contains("cellInput") && ui.tbody?.contains(a));
+  }
+
+  function updateSurfaceCellInputFromModel(index, key) {
+    if (!ui.tbody || !Number.isFinite(Number(index)) || !key) return;
+    const el = ui.tbody.querySelector(`input.cellInput[data-i="${Number(index)}"][data-k="${key}"]`);
+    const s = lens?.surfaces?.[Number(index)];
+    if (!el || !s || document.activeElement === el) return;
+    if (key === "ap") el.value = String(s.ap ?? "");
+    else if (key === "R" || key === "t") el.value = String(s[key] ?? "");
+  }
+
+  function updateStopApertureCellFromModel() {
+    const stopIdx = findStopSurfaceIndex(lens?.surfaces || []);
+    if (stopIdx >= 0) updateSurfaceCellInputFromModel(stopIdx, "ap");
+  }
+
   // -------------------- table build + events --------------------
   function buildTable() {
     clampSelected();
@@ -5210,7 +5229,7 @@ function shouldCellEditTriggerTStopLock(k, surface) {
   else s[k] = num(el.value, s[k] ?? 0);
 
   applySensorToIMS();
-  if (shouldCellEditTriggerTStopLock(k, s)) scheduleTStopLockCorrection(`surface ${i} ${k} edit`);
+  if (shouldCellEditTriggerTStopLock(k, s)) scheduleTStopLockCorrection(`surface ${i} ${k} edit`, { rebuild: false });
   else if (isManualStopApertureEdit(k, s)) scheduleTStopLockCorrection(`surface ${i} manual STOP aperture edit`, { skipForManualStopAperture: true });
   scheduleRenderAll();
   scheduleRenderPreview();
@@ -12215,7 +12234,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       } else if (ui.footerWarn) {
         ui.footerWarn.textContent = `Cannot reach locked T-stop with current lens geometry. ${result?.reason || ""}`.trim();
       }
-      if (options.rebuild !== false) buildTable();
+      const shouldRebuild = options.rebuild !== false && !isSurfaceTableCellEditing();
+      if (shouldRebuild) buildTable();
+      else updateStopApertureCellFromModel();
       if (options.render !== false) {
         renderAll();
         scheduleRenderPreview();
@@ -12237,7 +12258,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const delay = Number.isFinite(Number(options.delayMs)) ? Math.max(0, Number(options.delayMs)) : 220;
     _tStopLockTimer = setTimeout(() => {
       _tStopLockTimer = 0;
-      applyTStopLockCorrection(reason);
+      const applyOptions = { ...options };
+      delete applyOptions.delayMs;
+      delete applyOptions.skipForManualStopAperture;
+      applyTStopLockCorrection(reason, applyOptions);
     }, delay);
   }
 
