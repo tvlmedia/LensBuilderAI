@@ -29,6 +29,8 @@
     kelvin: 2300,
     brightness: 1.0,
   };
+  const GHOST_DISPLAY_ENERGY_SCALE = 65000;
+  const BASE_PREVIEW_EXPOSURE = 6.0;
 
   const els = {
     lensBuilderView: $("#appMain"),
@@ -64,6 +66,7 @@
     noisePatternKey: "",
     userTStopTouched: false,
     lastRisk: { score: 0, label: "Low", veil: 0 },
+    lastDisplayBoost: { exposure: BASE_PREVIEW_EXPOSURE, boosted: false, maxOpacity: 0, targetOpacity: 0 },
   };
 
   function valueOf(el, fallback) {
@@ -333,14 +336,79 @@
     const energy = clamp01(Math.log1p(Math.max(0, Number(trace?.strayEnergy) || 0) * 70000) / 4.2);
     const loss = clamp01(Number(trace?.failedRayFraction) || 0);
     const edgeFactor = clamp01((edgePressure - 0.66) / 0.78);
-    const offFrameBias = edgePressure > 1.02 ? 0.24 : 0;
+    const offFrameBias = edgePressure > 1.02 ? 0.34 : 0;
     return clamp(
       response.veilFactor *
-      (0.018 + riskNorm * 0.030 + energy * 0.050 + loss * 0.022) *
-      (0.48 + offAxis * 0.28 + edgeFactor * 0.50 + offFrameBias),
+      (0.024 + riskNorm * 0.044 + energy * 0.070 + loss * 0.026) *
+      (0.52 + offAxis * 0.32 + edgeFactor * 0.68 + offFrameBias),
       0,
-      0.18
+      0.24
     );
+  }
+
+  function toneMapGhostEnergy(rawIntensity, previewExposure) {
+    const x = Math.max(0, Number(rawIntensity) || 0) * GHOST_DISPLAY_ENERGY_SCALE * Math.max(0.1, previewExposure);
+    return clamp01(1 - Math.exp(-x));
+  }
+
+  function baseGhostOpacity(ghost, index, calibration, response, riskNorm, edgeFactor) {
+    const mapped = toneMapGhostEnergy(ghost?.intensity, calibration.exposure);
+    const valid = clamp01(Number(ghost?.validFraction) || 0);
+    const rankFalloff = 1 / Math.pow(index + 1, 0.38);
+    const apertureVisibility = Math.pow(response.flareOpenFactor, 0.72);
+    return clamp(
+      mapped *
+      rankFalloff *
+      (0.36 + valid * 0.84) *
+      (0.82 + riskNorm * 0.34 + edgeFactor * 0.30) *
+      apertureVisibility,
+      0,
+      0.46
+    );
+  }
+
+  function computeGhostDisplayCalibration(ghosts, response, risk, edgePressure) {
+    const riskNorm = clamp01((Number(risk?.score) || 0) / 100);
+    const edgeFactor = clamp01((edgePressure - 0.58) / 0.72);
+    const validGhosts = ghosts.filter((ghost) =>
+      (Number(ghost?.validFraction) || 0) >= 0.12 &&
+      (Number(ghost?.pairStrength) || 0) > 1e-10 &&
+      (Number(ghost?.intensity) || 0) > 0
+    );
+    let exposure = BASE_PREVIEW_EXPOSURE *
+      (0.85 + riskNorm * 0.55 + edgeFactor * 0.34) *
+      (0.74 + response.flareOpenFactor * 0.42);
+    let maxOpacity = 0;
+    validGhosts.forEach((ghost, index) => {
+      maxOpacity = Math.max(maxOpacity, baseGhostOpacity(ghost, index, { exposure }, response, riskNorm, edgeFactor));
+    });
+
+    let targetOpacity = (0.10 + riskNorm * 0.17 + edgeFactor * 0.055) *
+      clamp(0.20 + response.flareOpenFactor * 0.80, 0.12, 1);
+    if (response.selectedT >= 8) targetOpacity *= 0.48;
+    if (response.selectedT >= 16) targetOpacity *= 0.34;
+    targetOpacity = clamp(targetOpacity, 0.035, riskNorm >= 0.60 && response.selectedT < 4.5 ? 0.32 : 0.20);
+
+    let boosted = false;
+    if (validGhosts.length && maxOpacity > 0 && maxOpacity < targetOpacity && response.flareOpenFactor > 0.16) {
+      const boost = clamp(targetOpacity / Math.max(0.001, maxOpacity), 1, response.selectedT >= 8 ? 2.4 : 5.4);
+      exposure *= boost;
+      boosted = boost > 1.05;
+      maxOpacity = 0;
+      validGhosts.forEach((ghost, index) => {
+        maxOpacity = Math.max(maxOpacity, baseGhostOpacity(ghost, index, { exposure }, response, riskNorm, edgeFactor));
+      });
+    }
+
+    return {
+      exposure,
+      boosted,
+      maxOpacity,
+      targetOpacity,
+      riskNorm,
+      edgeFactor,
+      validGhostCount: validGhosts.length,
+    };
   }
 
   function getLampOverscanBounds(rect) {
@@ -388,7 +456,7 @@
     ctx.clearRect(0, 0, g.w, g.h);
     drawBackground(c, g, veilingLevel);
     drawVeiling(c, g, lampColor, veilingLevel, offAxis, edgePressure, response);
-    drawTechnicalGhosts(c, g, mixRgb(lampColor, warmGold, 0.56), trace, response, risk);
+    drawTechnicalGhosts(c, g, mixRgb(lampColor, warmGold, 0.56), trace, response, risk, edgePressure);
     drawLamp(c, g, lampColor, strength, response);
     drawDither(g, veilingLevel);
     if (c.showOverlay) drawOverlay(c, g, risk, veilingLevel, trace);
@@ -459,15 +527,15 @@
     const anchorX = clamp(g.lampX, -g.w * 0.22, g.w * 1.22);
     const anchorY = clamp(g.lampY, -g.h * 0.22, g.h * 1.22);
     const veil = ctx.createRadialGradient(anchorX, anchorY, 0, g.cx, g.cy, radius);
-    veil.addColorStop(0, rgba(amber, clamp(0.095 * level, 0, 0.16)));
-    veil.addColorStop(0.42, rgba(amber, clamp(0.040 * level, 0, 0.075)));
+    veil.addColorStop(0, rgba(amber, clamp(0.145 * level, 0, 0.18)));
+    veil.addColorStop(0.42, rgba(amber, clamp(0.060 * level, 0, 0.090)));
     veil.addColorStop(1, "rgba(0,0,0,0)");
     ctx.save();
     ctx.globalCompositeOperation = "screen";
     ctx.fillStyle = veil;
     ctx.fillRect(0, 0, g.w, g.h);
 
-    const lift = clamp(0.018 * level + 0.012 * clamp01(edgePressure - 0.65), 0, 0.055);
+    const lift = clamp(0.026 * level + 0.016 * clamp01(edgePressure - 0.65), 0, 0.065);
     ctx.fillStyle = rgba(mixRgb(color, { r: 255, g: 215, b: 146 }, 0.55), lift);
     ctx.fillRect(0, 0, g.w, g.h);
 
@@ -480,7 +548,7 @@
       const beamW = Math.min(g.w, g.h) * lerp(0.10, 0.28, clamp01(offAxis / 1.5));
       ctx.globalCompositeOperation = "lighter";
       ctx.filter = `blur(${(beamW * 0.32).toFixed(1)}px)`;
-      ctx.fillStyle = rgba(amber, clamp(level * response.veilFactor * 0.030, 0, 0.060));
+      ctx.fillStyle = rgba(amber, clamp(level * response.veilFactor * 0.046, 0, 0.074));
       ctx.beginPath();
       ctx.moveTo(g.lampX + nx * beamW, g.lampY + ny * beamW);
       ctx.lineTo(g.cx + nx * beamW * 0.35, g.cy + ny * beamW * 0.35);
@@ -494,9 +562,12 @@
     ctx.restore();
   }
 
-  function drawTechnicalGhosts(c, g, baseColor, trace, response, risk) {
+  function drawTechnicalGhosts(c, g, baseColor, trace, response, risk, edgePressure) {
     const ghosts = Array.isArray(trace?.ghosts) ? trace.ghosts : [];
-    if (!ghosts.length) return;
+    if (!ghosts.length) {
+      state.lastDisplayBoost = { exposure: BASE_PREVIEW_EXPOSURE, boosted: false, maxOpacity: 0, targetOpacity: 0 };
+      return;
+    }
     const vx = g.lampX - g.cx;
     const vy = g.lampY - g.cy;
     const len = Math.max(1, Math.hypot(vx, vy));
@@ -504,10 +575,13 @@
     const sensorW = Math.max(1, Number(trace?.sensorWidthMm) || Number(state.lensInfo?.sensorWidthMm) || 36);
     const sensorH = Math.max(1, Number(trace?.sensorHeightMm) || Number(state.lensInfo?.sensorHeightMm) || 24);
     const sensorHalfDiag = Math.max(8, Math.hypot(sensorW, sensorH) * 0.5);
-    const riskNorm = clamp01((Number(risk?.score) || 0) / 100);
     const viewScale = g.scale / sensorHalfDiag;
     const warmWhite = { r: 255, g: 246, b: 218 };
     const angle = Math.atan2(axis.y, axis.x);
+    const calibration = computeGhostDisplayCalibration(ghosts, response, risk, edgePressure);
+    const riskNorm = calibration.riskNorm;
+    const edgeFactor = calibration.edgeFactor;
+    state.lastDisplayBoost = calibration;
 
     ctx.save();
     ctx.globalCompositeOperation = "screen";
@@ -522,21 +596,21 @@
       const y = g.cy + axis.y * centroid * viewScale;
       if (x < -g.w * 0.28 || x > g.w * 1.28 || y < -g.h * 0.28 || y > g.h * 1.28) return;
 
-      const tone = Math.log1p(Math.max(0, Number(ghost.intensity) || 0) * 90000);
-      const rankFalloff = 1 / Math.sqrt(index + 1);
       const valid = clamp01(Number(ghost.validFraction) || 0);
-      const alpha = clamp(
-        (0.018 + tone * 0.045) *
-        rankFalloff *
-        (0.72 + riskNorm * 0.38) *
-        (0.42 + valid * 0.85) *
-        response.flareOpenFactor,
-        0,
-        0.26
-      );
-      if (alpha <= 0.003) return;
+      let alpha = baseGhostOpacity(ghost, index, calibration, response, riskNorm, edgeFactor);
+      const validGhost = valid >= 0.12 && (Number(ghost.pairStrength) || 0) > 1e-10;
+      if (validGhost && alpha > 0.004) {
+        const stopMin = Math.pow(response.flareOpenFactor, 1.55);
+        const minStrong = (0.13 + riskNorm * 0.14 + edgeFactor * 0.055) * stopMin;
+        const minMedium = (0.055 + riskNorm * 0.075 + edgeFactor * 0.028) * stopMin;
+        const minWeak = (0.022 + riskNorm * 0.034 + edgeFactor * 0.012) * stopMin;
+        const minAlpha = index < 2 ? minStrong : index < 5 ? minMedium : minWeak;
+        alpha = Math.max(alpha, minAlpha);
+      }
+      alpha = clamp(alpha, 0, 0.38);
+      if (alpha <= 0.006) return;
 
-      const pxRadius = clamp(spread * viewScale * (1.4 + response.ghostSizeFactor * 0.85), 2.2 * state.dpr, Math.min(g.w, g.h) * 0.16);
+      const pxRadius = clamp(spread * viewScale * (1.5 + response.ghostSizeFactor * 0.95), 2.4 * state.dpr, Math.min(g.w, g.h) * 0.17);
       const tint = mixRgb(baseColor, index % 3 === 0 ? warmWhite : { r: 255, g: 207, b: 124 }, index % 3 === 0 ? 0.28 : 0.18);
       const aspect = clamp(0.68 + valid * 0.34, 0.62, 1.05);
       drawTechnicalGhostSpot(x, y, pxRadius, angle, aspect, tint, alpha, response);
@@ -551,10 +625,11 @@
     ctx.rotate(angle);
     ctx.scale(1.0, aspect);
     ctx.filter = `blur(${Math.max(0, blur).toFixed(1)}px)`;
-    const grad = ctx.createRadialGradient(0, 0, radius * 0.03, 0, 0, radius);
-    grad.addColorStop(0, rgba({ r: 255, g: 249, b: 226 }, alpha * 0.34));
-    grad.addColorStop(0.34, rgba(color, alpha * 0.38));
-    grad.addColorStop(0.72, rgba(color, alpha * 0.18));
+    const grad = ctx.createRadialGradient(0, 0, radius * 0.02, 0, 0, radius);
+    grad.addColorStop(0, rgba({ r: 255, g: 251, b: 232 }, alpha * 0.20));
+    grad.addColorStop(0.28, rgba(color, alpha * 0.36));
+    grad.addColorStop(0.66, rgba(color, alpha * 0.26));
+    grad.addColorStop(0.82, rgba({ r: 255, g: 229, b: 164 }, alpha * 0.34));
     grad.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -564,8 +639,8 @@
 
     const coreRadius = Math.max(1.1 * state.dpr, radius * 0.12 * response.flareOpenFactor);
     const core = ctx.createRadialGradient(0, 0, 0, 0, 0, coreRadius * 3.2);
-    core.addColorStop(0, rgba({ r: 255, g: 252, b: 232 }, alpha * 0.55));
-    core.addColorStop(0.42, rgba(color, alpha * 0.18));
+    core.addColorStop(0, rgba({ r: 255, g: 253, b: 236 }, alpha * 0.72));
+    core.addColorStop(0.42, rgba(color, alpha * 0.24));
     core.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = core;
     ctx.beginPath();
@@ -643,6 +718,7 @@
       `Lamp position: ${lampPositionStatus(g)}`,
       `Traced ghost pairs: ${trace?.tracedPairCount || 0}`,
       `Visible ghosts: ${trace?.visibleGhostCount || 0}`,
+      `Display boost: ${Number(state.lastDisplayBoost?.exposure || BASE_PREVIEW_EXPOSURE).toFixed(1)}x${state.lastDisplayBoost?.boosted ? " (boosted)" : ""}`,
       `Flare risk: ${risk.label} (${risk.score}/100)`,
       `Model: ${trace?.modelType || "double-reflection ghost raytrace"}`,
       "Approximate preview, not full stray-light simulation.",
@@ -695,7 +771,7 @@
       ].join("");
     }
     if (!els.riskSummary) return;
-    els.riskSummary.textContent = `Estimated flare risk: ${risk.label} (${risk.score}/100) • ${state.lastTrace?.visibleGhostCount || 0} visible traced ghosts`;
+    els.riskSummary.textContent = `Estimated flare risk: ${risk.label} (${risk.score}/100) • ${state.lastTrace?.visibleGhostCount || 0} visible traced ghosts • display boost ${Number(state.lastDisplayBoost?.exposure || BASE_PREVIEW_EXPOSURE).toFixed(1)}x`;
   }
 
   function setLampFromEvent(event) {
