@@ -224,7 +224,15 @@
             </div>
 
             <div class="ctrl">
-              <label for="prevObjDist">Object distance (mm)</label>
+              <label for="objectDistanceMode">Object distance</label>
+              <select id="objectDistanceMode">
+                <option value="infinity" selected>Infinity</option>
+                <option value="finite">Finite distance</option>
+              </select>
+            </div>
+
+            <div class="ctrl">
+              <label for="prevObjDist">Finite distance (mm)</label>
               <input id="prevObjDist" type="number" step="1" value="2000" />
             </div>
 

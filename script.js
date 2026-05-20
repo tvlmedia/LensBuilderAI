@@ -134,6 +134,7 @@
     useZemaxFields: $("#useZemaxFields"),
     rayCount: $("#rayCount"),
     wavePreset: $("#wavePreset"),
+    objectDistanceMode: $("#objectDistanceMode"),
     focusMode: $("#focusMode"),
     focusMechanism: $("#focusMechanism"),
     lensFocus: $("#lensFocus"),
@@ -1382,6 +1383,41 @@ function warnMissingGlass(name) {
     return raw;
   }
 
+  function normalizeObjectDistanceMode(value) {
+    return String(value || "").trim().toLowerCase() === "finite" ? "finite" : "infinity";
+  }
+
+  function normalizeFiniteObjectDistanceMm(value) {
+    if (typeof value === "string" && value.trim().toLowerCase() === "infinity") return null;
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0.1 ? n : null;
+  }
+
+  function sanitizeFieldStateImport(obj) {
+    const analysisField = (obj?.analysisContext?.field && typeof obj.analysisContext.field === "object")
+      ? obj.analysisContext.field
+      : null;
+    const rawField = (obj?.field && typeof obj.field === "object")
+      ? obj.field
+      : (analysisField || {});
+    const rawMode = rawField.objectDistanceMode
+      ?? rawField.distanceMode
+      ?? obj?.objectDistanceMode;
+    const rawDistance = rawField.objectDistanceMm
+      ?? rawField.objectDistance
+      ?? obj?.objectDistanceMm
+      ?? obj?.objectDistance;
+    const distanceMm = normalizeFiniteObjectDistanceMm(rawDistance);
+    const rawDistanceText = String(rawDistance ?? "").trim().toLowerCase();
+    const mode = rawDistanceText === "infinity"
+      ? "infinity"
+      : (distanceMm != null ? "finite" : normalizeObjectDistanceMode(rawMode));
+    return {
+      objectDistanceMode: mode,
+      objectDistanceMm: mode === "finite" ? (distanceMm ?? 2000) : null,
+    };
+  }
+
   function sanitizeLens(obj) {
   const rawAutofocusMode = String(obj?.import_options?.autofocus_mode || "").trim().toLowerCase();
   const autofocusMode = (
@@ -1471,6 +1507,7 @@ function warnMissingGlass(name) {
       shiftMm: focusShiftMm,
       autoRefocusOnDistanceChange,
     },
+    field: sanitizeFieldStateImport(obj),
   };
   if (analysisOptions) safe.analysisOptions = analysisOptions;
   if (!safe.zemaxName && safe.zemax?.name) safe.zemaxName = String(safe.zemax.name);
@@ -4553,6 +4590,7 @@ function warnMissingGlass(name) {
 
   function buildPersistableLensPayload() {
     if (!lens || typeof lens !== "object") return null;
+    syncObjectDistanceStateToLens();
     const snapshot = clone(lens);
     // Keep storage footprint predictable; this source text can be large.
     if (snapshot && typeof snapshot === "object" && "originalZmxText" in snapshot) {
@@ -4836,6 +4874,7 @@ function warnMissingGlass(name) {
     if (ui.autoRefocusOnDistanceChange) {
       ui.autoRefocusOnDistanceChange.checked = lens?.focus?.autoRefocusOnDistanceChange !== false;
     }
+    syncObjectDistanceUiFromLens();
     updateTStopLockChrome();
     if (_safeModeActive) {
       if (ui.focusMode) ui.focusMode.value = "manual";
@@ -7004,6 +7043,53 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     lens.import_options.autofocus_mode = getPreviewAutofocusMode();
   }
 
+  function getObjectDistanceMode() {
+    return normalizeObjectDistanceMode(ui.objectDistanceMode?.value || lens?.field?.objectDistanceMode || "infinity");
+  }
+
+  function getFiniteObjectDistanceInputMm() {
+    const fallback = normalizeFiniteObjectDistanceMm(lens?.field?.objectDistanceMm) ?? 2000;
+    const raw = ui.prevObjDist?.value;
+    const value = normalizeFiniteObjectDistanceMm(raw);
+    return value ?? fallback;
+  }
+
+  function getObjectDistanceStateFromUi() {
+    const mode = getObjectDistanceMode();
+    const finiteDistanceMm = getFiniteObjectDistanceInputMm();
+    return {
+      objectDistanceMode: mode,
+      objectDistanceMm: mode === "finite" ? finiteDistanceMm : null,
+      objectDistance: mode === "finite" ? finiteDistanceMm : "infinity",
+    };
+  }
+
+  function syncObjectDistanceStateToLens() {
+    if (!lens || typeof lens !== "object") return;
+    lens.field = getObjectDistanceStateFromUi();
+  }
+
+  function updateObjectDistanceUiChrome() {
+    const mode = getObjectDistanceMode();
+    if (ui.prevObjDist) {
+      ui.prevObjDist.disabled = mode !== "finite";
+      ui.prevObjDist.title = mode === "finite"
+        ? "Finite object distance in millimeters."
+        : "Disabled in Infinity mode. Incoming rays are collimated.";
+    }
+  }
+
+  function syncObjectDistanceUiFromLens() {
+    const field = sanitizeFieldStateImport(lens || {});
+    if (ui.objectDistanceMode) ui.objectDistanceMode.value = field.objectDistanceMode;
+    if (ui.prevObjDist) {
+      const finiteValue = normalizeFiniteObjectDistanceMm(field.objectDistanceMm) ?? normalizeFiniteObjectDistanceMm(ui.prevObjDist.value) ?? 2000;
+      ui.prevObjDist.value = String(finiteValue);
+    }
+    updateObjectDistanceUiChrome();
+    syncObjectDistanceStateToLens();
+  }
+
   function setFocusShiftMm(nextShiftMm, { updateStatus = true } = {}) {
     const raw = Number(nextShiftMm);
     if (!Number.isFinite(raw)) {
@@ -7214,9 +7300,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   }
 
   function getFocusChartDistanceMm() {
-    const d = Number(ui.prevObjDist?.value || 2000);
-    if (!Number.isFinite(d) || d <= 0.1) return null;
-    return d;
+    const state = getObjectDistanceStateFromUi();
+    return state.objectDistanceMode === "finite"
+      ? normalizeFiniteObjectDistanceMm(state.objectDistanceMm)
+      : null;
   }
 
   function thinLensImageDistanceMm(focalLengthMm, objectDistanceMm) {
@@ -10747,7 +10834,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   const lutPupilSqrt = (q === "hq" ? 16 : (q === "draft" ? 10 : 14));
 
   const wavePreset = ui.wavePreset?.value || "d";
-  const focusChartDistanceMm = getFocusChartDistanceMm() ?? 2000;
+  const focusChartDistanceMm = getFocusChartDistanceMm();
+  const previewSceneDistanceMm = focusChartDistanceMm ?? 2000;
   const focusCtx = getFocusContext({
     objectDistanceMm: focusChartDistanceMm,
     wavePreset,
@@ -10766,7 +10854,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   let xStop = Number(stopSurf?.vx || 0);
   let stopAp = Math.max(1e-6, getSurfaceOpticalAp(stopSurf));
 
-  let xObjPlane = (lens.surfaces[0]?.vx ?? 0) - focusChartDistanceMm;
+  let xObjPlane = (lens.surfaces[0]?.vx ?? 0) - previewSceneDistanceMm;
 
   const previewParaxFocused = estimateEflBflParaxial(lens.surfaces, wavePreset);
   let previewParax = previewParaxFocused;
@@ -10831,7 +10919,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     spp,
     lutPupilSqrt,
     wavePreset,
+    objectDistanceMode: getObjectDistanceMode(),
     focusChartDistanceMm,
+    previewSceneDistanceMm,
     focusMode: focusCtx.focusMode,
     focusMechanism: focusCtx.focusMechanism,
     focusShiftMm: Number(focusCtx.focusShiftMm).toFixed(6),
@@ -12635,8 +12725,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const parax = estimateEflBflParaxial(surfaces, wavePreset);
     const efl = finiteOrNull(parax?.efl);
     const angles = getAutoTunerFieldAngles(sensorDiag, efl);
-    const objectDistanceMm = Number.isFinite(Number(opts.objectDistanceMm))
-      ? Number(opts.objectDistanceMm)
+    const objectDistanceMm = Object.prototype.hasOwnProperty.call(opts, "objectDistanceMm")
+      ? normalizeFiniteObjectDistanceMm(opts.objectDistanceMm)
       : getFocusChartDistanceMm();
     const rayCount = Math.max(7, Math.min(17, Number(opts.rayCount) || 11));
     const focusMechanism = normalizeFocusMechanism(opts.focusMechanism || opts.focusContext?.focusMechanism || "move-ims");
@@ -12699,6 +12789,14 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return Number.isFinite(n) ? `${(n * 100).toFixed(digits)}%` : "—";
   }
 
+  function formatObjectDistanceForDisplay(source = null) {
+    const mode = source?.objectDistanceMode || (source?.objectDistance === "infinity" ? "infinity" : getObjectDistanceMode());
+    const dist = normalizeFiniteObjectDistanceMm(source?.objectDistanceMm ?? source?.objectDistance);
+    return normalizeObjectDistanceMode(mode) === "finite" && dist != null
+      ? `${dist.toFixed(dist >= 100 ? 0 : 2)}mm`
+      : "infinity";
+  }
+
   function summarizeCornerFocusDiagnostic(metrics, autoMetrics = null) {
     const notes = [];
     const delta = Number(metrics?.fieldCurvatureDeltaMm);
@@ -12730,7 +12828,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   function buildCornerFocusReport(lensState = lens) {
     const wavePreset = ui.wavePreset?.value || "d";
-    const objectDistanceMm = getFocusChartDistanceMm();
+    const objectDistance = getObjectDistanceStateFromUi();
+    const objectDistanceMm = objectDistance.objectDistanceMm;
     const focusContext = getFocusContext({ objectDistanceMm, wavePreset, allowAutoRefocus: false });
     const focusScan = getFocusScanOptions();
     const fieldFocus = evaluateFieldFocusMetricsAtIMS(lensState, {
@@ -12750,6 +12849,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     ];
     return {
       wavePreset,
+      objectDistanceMode: objectDistance.objectDistanceMode,
+      objectDistance: objectDistance.objectDistance,
       objectDistanceMm,
       focusContext,
       focusScan,
@@ -12794,6 +12895,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     if (ui.cfNotes) {
       const scan = ff.scan || report?.focusScan || getFocusScanOptions();
       const detail = [
+        `Object distance: ${formatObjectDistanceForDisplay(report)}`,
         `Focus scan range: ${signedMmText(scan.minShiftMm, 0)} to ${signedMmText(scan.maxShiftMm, 0)}`,
         `Coarse step: ${mmText(scan.coarseStepMm, 3)}; fine step: ${mmText(scan.fineStepMm, 3)}`,
         `Focus mode: ${ff.focusMode || report?.focusContext?.focusMode || "—"}; mechanism: ${ff.focusMechanism || report?.focusContext?.focusMechanism || "—"}`,
@@ -12828,6 +12930,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const lines = [
       "Corner Focus Test",
       `Wave: ${report?.wavePreset || "—"}`,
+      `Object distance: ${formatObjectDistanceForDisplay(report)}`,
       `Focus scan range: ${signedMmText(scan.minShiftMm, 0)} to ${signedMmText(scan.maxShiftMm, 0)}`,
       `Coarse step: ${mmText(scan.coarseStepMm, 3)}`,
       `Fine step: ${mmText(scan.fineStepMm, 3)}`,
@@ -12982,8 +13085,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const plX = sensorX - PL_FFD;
     const rearClearance = Number.isFinite(rearVx) && Number.isFinite(plX) ? plX - rearVx : null;
     const compactLength = getAutoTunerCompactLength(surfaces);
-    const objectDistanceMm = Number.isFinite(Number(opts.objectDistanceMm))
-      ? Number(opts.objectDistanceMm)
+    const objectDistanceMm = Object.prototype.hasOwnProperty.call(opts, "objectDistanceMm")
+      ? normalizeFiniteObjectDistanceMm(opts.objectDistanceMm)
       : getFocusChartDistanceMm();
     const fieldAngles = getAutoTunerFieldAngles(sensorDiag, efl);
     const cornerFieldDeg = fieldAngles.corner;
@@ -17761,11 +17864,13 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   }
 
   function getCurrentFieldAnalysisContext() {
-    const objectDistanceMm = getFocusChartDistanceMm();
+    const distance = getObjectDistanceStateFromUi();
     return {
       currentFieldAngleDeg: finiteOrNull(ui.fieldAngle?.value),
       fieldMode: ui.useZemaxFields?.checked ? "zemax_fields" : "manual_field_angle",
-      objectDistance: Number.isFinite(Number(objectDistanceMm)) ? Number(objectDistanceMm) : "infinity",
+      objectDistanceMode: distance.objectDistanceMode,
+      objectDistance: distance.objectDistance,
+      objectDistanceMm: distance.objectDistanceMm,
     };
   }
 
@@ -17832,6 +17937,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         coarseStepMm: finiteOrNull(scan.coarseStepMm),
         fineStepMm: finiteOrNull(scan.fineStepMm),
       },
+      objectDistanceMode: report?.objectDistanceMode || (report?.objectDistance === "infinity" ? "infinity" : "finite"),
+      objectDistance: report?.objectDistance ?? (Number.isFinite(Number(report?.objectDistanceMm)) ? Number(report.objectDistanceMm) : "infinity"),
+      objectDistanceMm: finiteOrNull(report?.objectDistanceMm),
       imageCircleMm: finiteOrNull(metrics?.imageCircleMm),
       coverage: {
         coversSensor: metrics?.cov === true,
@@ -17867,8 +17975,13 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const exportedAt = new Date().toISOString();
     const out = clone(lens);
     const wavePreset = ui.wavePreset?.value || "d";
+    const objectDistance = getObjectDistanceStateFromUi();
     if (!out.analysisOptions || typeof out.analysisOptions !== "object") out.analysisOptions = {};
     out.analysisOptions.tStopLock = readTStopLockOptions(out);
+    out.field = {
+      objectDistanceMode: objectDistance.objectDistanceMode,
+      objectDistanceMm: objectDistance.objectDistanceMm,
+    };
     out.focus = {
       ...(out.focus || {}),
       ...getCurrentFocusAnalysisContext(),
@@ -17876,7 +17989,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
     const metrics = getAutoTunerMetrics(out, {
       wavePreset,
-      objectDistanceMm: getFocusChartDistanceMm(),
+      objectDistanceMm: objectDistance.objectDistanceMm,
       includeFieldFocus: false,
     });
     const aperture = getCurrentApertureAnalysisContext(out, wavePreset);
@@ -17937,6 +18050,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   async function copyLensOnlyJsonToClipboard() {
     try {
+      syncObjectDistanceStateToLens();
       const text = JSON.stringify(clone(lens), null, 2);
       await copyTextToClipboard(text);
       toast("Copied lens-only JSON");
@@ -18008,13 +18122,24 @@ function wireUI() {
   [
     "fieldAngle","rayCount","wavePreset",
     "focusMode","focusMechanism","lensFocus","focusShiftSlider","autoRefocusOnDistanceChange",
-    "renderScale","prevObjDist","prevObjH","prevObjW","prevRes",
+    "renderScale","objectDistanceMode","prevObjDist","prevObjH","prevObjW","prevRes",
     "previewAutoFit","previewOrientation","previewRenderMode","pupilSamples"
   ].forEach((id) => {
     const el = ui[id];
     if (!el) return;
-    el.addEventListener("input", () => { scheduleRenderAll(); scheduleRenderPreview(); });
-    el.addEventListener("change", () => { scheduleRenderAll(); scheduleRenderPreview(); });
+    const handler = () => {
+      if (id === "objectDistanceMode" || id === "prevObjDist") {
+        if (id === "objectDistanceMode" && ui.objectDistanceMode?.value === "finite" && !normalizeFiniteObjectDistanceMm(ui.prevObjDist?.value)) {
+          if (ui.prevObjDist) ui.prevObjDist.value = "2000";
+        }
+        syncObjectDistanceStateToLens();
+        updateObjectDistanceUiChrome();
+      }
+      scheduleRenderAll();
+      scheduleRenderPreview();
+    };
+    el.addEventListener("input", handler);
+    el.addEventListener("change", handler);
   });
 
   if (ui.lensFocus) {
@@ -18381,6 +18506,7 @@ function boot() {
   bindPreviewViewControls();
   setFocusShiftMm(getFocusShiftMm(), { updateStatus: false });
   syncFocusControlsUI();
+  syncObjectDistanceUiFromLens();
   const previousBusy = readRuntimeBusyMarker();
   if (previousBusy) {
     clearRuntimeBusy();
