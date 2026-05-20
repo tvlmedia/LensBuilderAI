@@ -163,6 +163,9 @@
 
     btnScaleToFocal: $("#btnScaleToFocal"),
     btnSetTStop: $("#btnSetTStop"),
+    tStopLockEnabled: $("#tStopLockEnabled"),
+    tStopLockTarget: $("#tStopLockTarget"),
+    btnTStopLockCurrent: $("#btnTStopLockCurrent"),
     btnNew: $("#btnNew"),
     btnLoadOmit: $("#btnLoadOmit"),
     btnLoadDemo: $("#btnLoadDemo"),
@@ -1361,6 +1364,23 @@ function warnMissingGlass(name) {
       .replace(/>/g, "&gt;");
   }
 
+  function sanitizeAnalysisOptions(obj) {
+    if (!obj?.analysisOptions || typeof obj.analysisOptions !== "object") return null;
+    const raw = (obj?.analysisOptions && typeof obj.analysisOptions === "object")
+      ? clone(obj.analysisOptions)
+      : {};
+    const rawLock = (raw?.tStopLock && typeof raw.tStopLock === "object")
+      ? raw.tStopLock
+      : {};
+    const targetRaw = Number(rawLock.targetTStop ?? rawLock.targetT ?? rawLock.tStop ?? 2.3);
+    const targetTStop = Number.isFinite(targetRaw) && targetRaw > 0 ? targetRaw : 2.3;
+    raw.tStopLock = {
+      enabled: rawLock.enabled === true,
+      targetTStop,
+    };
+    return raw;
+  }
+
   function sanitizeLens(obj) {
   const rawAutofocusMode = String(obj?.import_options?.autofocus_mode || "").trim().toLowerCase();
   const autofocusMode = (
@@ -1404,6 +1424,8 @@ function warnMissingGlass(name) {
     obj?.focus?.autoRefocusOnDistanceChange ??
     true
   ) !== false;
+
+  const analysisOptions = sanitizeAnalysisOptions(obj);
 
   const safe = {
     name: String(obj?.name ?? "No name"),
@@ -1449,6 +1471,7 @@ function warnMissingGlass(name) {
       autoRefocusOnDistanceChange,
     },
   };
+  if (analysisOptions) safe.analysisOptions = analysisOptions;
   if (!safe.zemaxName && safe.zemax?.name) safe.zemaxName = String(safe.zemax.name);
   if (!safe.zemaxVersion && safe.zemax?.version) safe.zemaxVersion = String(safe.zemax.version);
 
@@ -2273,6 +2296,7 @@ function warnMissingGlass(name) {
     applySensorToIMS();
     updateStockPrototypeUi();
     validateStockPrototypeMode();
+    scheduleTStopLockCorrection("stock element inserted", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
     updateStockPrototypeUi();
@@ -2876,6 +2900,7 @@ function warnMissingGlass(name) {
     lens = sanitizeLens(lens);
     buildTable();
     applySensorToIMS();
+    scheduleTStopLockCorrection("custom element replaced with stock", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
     closeStockLibraryModal();
@@ -2943,6 +2968,7 @@ function warnMissingGlass(name) {
     applySensorToIMS();
     updateStockPrototypeUi();
     validateStockPrototypeMode();
+    scheduleTStopLockCorrection("stock element changed", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
     const oldTitle = oldCatalog ? stockElementTitle(oldCatalog) : "stock element";
@@ -3003,6 +3029,7 @@ function warnMissingGlass(name) {
     lens = sanitizeLens(lens);
     buildTable();
     applySensorToIMS();
+    scheduleTStopLockCorrection("stock element flipped", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
     toast(`${catalog.supplier} ${catalog.code}: ${stockOrientationLabel(nextOrientation)}`);
@@ -3067,6 +3094,7 @@ function warnMissingGlass(name) {
     applySensorToIMS();
     updateStockPrototypeUi();
     validateStockPrototypeMode();
+    scheduleTStopLockCorrection("element removed", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
     toast(`Removed ${range.label}`);
@@ -4732,6 +4760,7 @@ function warnMissingGlass(name) {
     clampAllApertures(lens.surfaces);
     computeVertices(lens.surfaces, 0, 0);
     updateZoomConfigUI();
+    scheduleTStopLockCorrection("zoom configuration changed", { delayMs: 120 });
 
     if (!options.silent) {
       try {
@@ -4806,6 +4835,7 @@ function warnMissingGlass(name) {
     if (ui.autoRefocusOnDistanceChange) {
       ui.autoRefocusOnDistanceChange.checked = lens?.focus?.autoRefocusOnDistanceChange !== false;
     }
+    updateTStopLockChrome();
     if (_safeModeActive) {
       if (ui.focusMode) ui.focusMode.value = "manual";
       if (ui.autoRefocusOnDistanceChange) ui.autoRefocusOnDistanceChange.checked = false;
@@ -4834,6 +4864,7 @@ function warnMissingGlass(name) {
     }
     buildTable();
     applySensorToIMS();
+    if (isTStopLockActive()) scheduleTStopLockCorrection("lens loaded", { delayMs: 80 });
     scheduleRenderAll();
     if (preview.ready) scheduleRenderPreview();
     persistLensSession();
@@ -5063,6 +5094,16 @@ tr.innerHTML = `
     restoreTableFocus();
   }
 
+ function isManualStopApertureEdit(k, surface) {
+  return k === "ap" && !!surface?.stop;
+}
+
+function shouldCellEditTriggerTStopLock(k, surface) {
+  if (!k || !surface) return false;
+  if (isManualStopApertureEdit(k, surface)) return false;
+  return k === "R" || k === "t" || k === "glass" || k === "ap" || k === "stop" || k === "type" || k === "surfaceLabel";
+}
+
  function onCellInput(e) {
   const el = e.target;
   const i = Number(el.dataset.i);
@@ -5110,6 +5151,8 @@ tr.innerHTML = `
   else s[k] = num(el.value, s[k] ?? 0);
 
   applySensorToIMS();
+  if (shouldCellEditTriggerTStopLock(k, s)) scheduleTStopLockCorrection(`surface ${i} ${k} edit`);
+  else if (isManualStopApertureEdit(k, s)) scheduleTStopLockCorrection(`surface ${i} manual STOP aperture edit`, { skipForManualStopAperture: true });
   scheduleRenderAll();
   scheduleRenderPreview();
 }
@@ -5205,6 +5248,8 @@ function onCellCommit(e) {
   applySensorToIMS();
   clampAllApertures(lens.surfaces);
   generateSurfaceLabels(lens.surfaces);
+  if (shouldCellEditTriggerTStopLock(k, s)) scheduleTStopLockCorrection(`surface ${i} ${k} commit`);
+  else if (isManualStopApertureEdit(k, s)) scheduleTStopLockCorrection(`surface ${i} manual STOP aperture commit`, { skipForManualStopAperture: true });
   buildTable();
   scheduleRenderAll();
   scheduleRenderPreview();
@@ -8902,6 +8947,19 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const importedConfigFno = Number(lens?.zemax?.configAperture);
       if (Number.isFinite(importedConfigFno) && importedConfigFno > 0) T = importedConfigFno;
     }
+    const tLock = readTStopLockOptions(lens);
+    const tLockTarget = Number(tLock.targetTStop);
+    const tLockStopIdx = findStopSurfaceIndex(lens.surfaces || []);
+    const tLockStopAp = tLockStopIdx >= 0 ? getSurfaceOpticalAp(lens.surfaces[tLockStopIdx]) : null;
+    const tLockActiveText = tLock.enabled && Number.isFinite(tLockTarget)
+      ? ` • T-lock active: T${tLockTarget.toFixed(2)}`
+      : "";
+    const tLockDiffWarn = !!(
+      tLock.enabled &&
+      Number.isFinite(Number(T)) &&
+      Number.isFinite(tLockTarget) &&
+      Math.abs(Number(T) - tLockTarget) > 0.03
+    );
 
     const fov = computeFovDeg(efl, sensorW, sensorH);
     const fovTxt = !fov
@@ -8953,10 +9011,17 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     } else if (!_safeModeActive && tirCount > 0 && ui.footerWarn) {
       ui.footerWarn.textContent = `TIR on ${tirCount} rays (check glass / curvature).`;
     }
+    if (!_safeModeActive && tLockDiffWarn && ui.footerWarn) {
+      ui.footerWarn.textContent = "WARNING: actual T-stop differs from locked target. Re-run T-lock or check stop aperture limits.";
+    }
 
     if (ui.status) {
       ui.status.textContent =
-        `Selected: ${selectedIndex} • Traced ${traces.length} rays • field ${fieldAngle.toFixed(2)}° • vignetted ${vCount} • IMS hits ${reachedIMSCount} • ${covTxt}`;
+        `Selected: ${selectedIndex} • Traced ${traces.length} rays • field ${fieldAngle.toFixed(2)}° • vignetted ${vCount} • IMS hits ${reachedIMSCount} • ${covTxt}${tLockActiveText}`;
+    }
+    if (tLock.enabled && _lastTStopLockResult?.ok && Number.isFinite(Number(tLockStopAp)) && ui.footerWarn && !tLockDiffWarn) {
+      const elapsed = Date.now() - Number(_lastTStopLockResult.createdAt || 0);
+      if (elapsed < 2500) ui.footerWarn.textContent = `T-lock active: T${tLockTarget.toFixed(2)}. STOP aperture adjusted to ${Number(tLockStopAp).toFixed(4)}mm.`;
     }
     if (ui.metaInfo) ui.metaInfo.textContent = `sensor ${sensorW.toFixed(2)}×${sensorH.toFixed(2)}mm`;
     updateZemaxVerifyPanel({ sensorX: displaySensorX });
@@ -9564,6 +9629,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     selectedIndex = atIndex;
     buildTable();
     applySensorToIMS();
+    scheduleTStopLockCorrection("surface inserted", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
   }
@@ -9642,6 +9708,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       lens = sanitizeLens(lens);
       buildTable();
       applySensorToIMS();
+      scheduleTStopLockCorrection("field flattener inserted", { delayMs: 120 });
       renderAll();
       scheduleRenderPreview();
       toast("Added weak rear field flattener");
@@ -9673,6 +9740,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     selectedIndex = j;
     buildTable();
     applySensorToIMS();
+    scheduleTStopLockCorrection("surface order changed", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
   }
@@ -9689,6 +9757,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     clampAllApertures(lens.surfaces);
     buildTable();
     applySensorToIMS();
+    scheduleTStopLockCorrection("surface removed", { delayMs: 120 });
     scheduleRenderAll();
     scheduleRenderPreview();
   }
@@ -11578,31 +11647,117 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     buildTable();
     renderAll();
     scheduleRenderPreview();
+    scheduleTStopLockCorrection("Scale to focal length", { delayMs: 80 });
 
     if (ui.footerWarn) ui.footerWarn.textContent = `Scale→FL: EFL ${cur.toFixed(2)} → target ${target.toFixed(2)} (k=${k.toFixed(4)}).`;
   }
 
-  function setTargetTStop() {
-    const wavePreset = ui.wavePreset?.value || "d";
-    const focusModeBefore = normalizeFocusMode(ui.focusMode?.value || lens?.focus?.mode || "auto");
-    const focusShiftBefore = getFocusShiftMm();
-    const { efl } = estimateEflBflParaxial(lens.surfaces, wavePreset);
+  let _tStopLockTimer = 0;
+  let _tStopLockApplying = false;
+  let _lastTStopLockResult = null;
+
+  function readTStopLockOptions(lensState = lens) {
+    const existing = lensState?.analysisOptions?.tStopLock && typeof lensState.analysisOptions.tStopLock === "object"
+      ? lensState.analysisOptions.tStopLock
+      : {};
+    const targetRaw = Number(existing.targetTStop ?? existing.targetT ?? 2.3);
+    return {
+      enabled: existing.enabled === true,
+      targetTStop: Number.isFinite(targetRaw) && targetRaw > 0 ? targetRaw : 2.3,
+    };
+  }
+
+  function ensureTStopLockOptions(lensState = lens) {
+    if (!lensState || typeof lensState !== "object") return { enabled: false, targetTStop: 2.3 };
+    if (!lensState.analysisOptions || typeof lensState.analysisOptions !== "object") lensState.analysisOptions = {};
+    const lock = readTStopLockOptions(lensState);
+    lensState.analysisOptions.tStopLock = lock;
+    return lock;
+  }
+
+  function isTStopLockActive() {
+    return readTStopLockOptions(lens).enabled === true;
+  }
+
+  function updateTStopLockChrome() {
+    const lock = readTStopLockOptions(lens);
+    if (ui.tStopLockEnabled) ui.tStopLockEnabled.checked = !!lock.enabled;
+    if (ui.tStopLockTarget && Math.abs(Number(ui.tStopLockTarget.value) - lock.targetTStop) > 1e-9) {
+      ui.tStopLockTarget.value = String(Number(lock.targetTStop.toFixed(3)));
+    }
+    const wrap = ui.tStopLockEnabled?.closest?.(".tLockControl");
+    if (wrap) wrap.classList.toggle("isActive", !!lock.enabled);
+  }
+
+  function syncTStopLockStateFromUi() {
+    const lock = ensureTStopLockOptions(lens);
+    lock.enabled = !!ui.tStopLockEnabled?.checked;
+    const target = Number(ui.tStopLockTarget?.value);
+    if (Number.isFinite(target) && target > 0) lock.targetTStop = target;
+    updateTStopLockChrome();
+    persistLensSession();
+    return lock;
+  }
+
+  function setTStopLockState({ enabled = null, targetTStop = null } = {}) {
+    const lock = ensureTStopLockOptions(lens);
+    if (enabled != null) lock.enabled = !!enabled;
+    const target = Number(targetTStop);
+    if (Number.isFinite(target) && target > 0) lock.targetTStop = target;
+    updateTStopLockChrome();
+    persistLensSession();
+    return lock;
+  }
+
+  function estimateCurrentTStopInfo(lensState = lens, wavePreset = ui.wavePreset?.value || "d") {
+    const surfaces = lensState?.surfaces || [];
+    computeVertices(surfaces, 0, 0);
+    const { efl } = estimateEflBflParaxial(surfaces, wavePreset);
+    const stopIdx = findStopSurfaceIndex(surfaces);
+    const stop = stopIdx >= 0 ? surfaces[stopIdx] : null;
+    let tStop = Number.isFinite(Number(efl)) ? estimateTStopApprox(Number(efl), surfaces, wavePreset) : null;
+    if (!Number.isFinite(Number(tStop))) {
+      const importedConfigFno = Number(lensState?.zemax?.configAperture);
+      if (Number.isFinite(importedConfigFno) && importedConfigFno > 0) tStop = importedConfigFno;
+    }
+    const stopAp = stop ? getSurfaceOpticalAp(stop) : null;
+    return {
+      efl: Number.isFinite(Number(efl)) ? Number(efl) : null,
+      tStop: Number.isFinite(Number(tStop)) ? Number(tStop) : null,
+      stopIdx,
+      stopAp: Number.isFinite(Number(stopAp)) ? Number(stopAp) : null,
+    };
+  }
+
+  function setStopForTargetT(targetTStop, options = {}) {
+    const targetT = Number(targetTStop);
+    const lensState = options.lensState || lens;
+    const wavePreset = options.wavePreset || ui.wavePreset?.value || "d";
+    const tolerance = Number.isFinite(Number(options.tolerance)) ? Math.max(0.0001, Number(options.tolerance)) : 0.01;
+    const maxIterations = Number.isFinite(Number(options.maxIterations)) ? Math.max(1, Math.floor(Number(options.maxIterations))) : 30;
+    if (!lensState?.surfaces?.length || !Number.isFinite(targetT) || targetT <= 0) {
+      return { ok: false, reason: "Invalid target T-stop", targetTStop: targetT };
+    }
+
+    const focusModeBefore = normalizeFocusMode(ui.focusMode?.value || lensState?.focus?.mode || "auto");
+    const focusShiftBefore = lensState === lens ? getFocusShiftMm() : Number(lensState?.focus?.shiftMm || 0);
+    const focusModeValueBefore = ui.focusMode?.value;
+    const focusMechanismValueBefore = ui.focusMechanism?.value;
+    const lensFocusValueBefore = ui.lensFocus?.value;
+    const focusSliderValueBefore = ui.focusShiftSlider?.value;
+
+    computeVertices(lensState.surfaces, 0, 0);
+    const { efl } = estimateEflBflParaxial(lensState.surfaces, wavePreset);
     if (!Number.isFinite(efl) || efl <= 0) {
-      if (ui.footerWarn) ui.footerWarn.textContent = "Set T: EFL unknown (try Scale→FL or fix geometry).";
-      return;
+      return { ok: false, reason: "EFL unknown", targetTStop: targetT };
     }
 
-    const stopIdx = findStopSurfaceIndex(lens.surfaces);
+    const stopIdx = findStopSurfaceIndex(lensState.surfaces);
     if (stopIdx < 0) {
-      if (ui.footerWarn) ui.footerWarn.textContent = "Set T: no STOP surface marked.";
-      return;
+      return { ok: false, reason: "No STOP surface marked", targetTStop: targetT, efl };
     }
 
-    const currentT = estimateTStopApprox(efl, lens.surfaces, wavePreset);
-    const targetT = num(prompt("Target T-stop? (approx)", currentT ? currentT.toFixed(2) : "2.00"), currentT || 2.0);
-    if (!Number.isFinite(targetT) || targetT <= 0) return;
-
-    const stopSurf = lens.surfaces[stopIdx];
+    const stopSurf = lensState.surfaces[stopIdx];
     const loMin = AP_MIN;
     const hiMax = maxApForSurface(stopSurf);
     const prevAp = getSurfaceOpticalAp(stopSurf);
@@ -11615,7 +11770,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const evalAtAp = (ap) => {
       stopSurf.ap = ap;
       stopSurf.ap_optical = ap;
-      const t = estimateTStopApprox(efl, lens.surfaces, wavePreset);
+      const t = estimateTStopApprox(efl, lensState.surfaces, wavePreset);
       return Number.isFinite(t) ? t : null;
     };
 
@@ -11626,7 +11781,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const guessAp = Math.max(loMin, Math.min(efl / (2 * targetT), hiMax));
       bestAp = guessAp;
     } else {
-      for (let iter = 0; iter < 28; iter++) {
+      for (let iter = 0; iter < maxIterations; iter++) {
         const mid = 0.5 * (lo + hi);
         const tMid = evalAtAp(mid);
         if (tMid == null) { hi = mid; continue; }
@@ -11644,22 +11799,129 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
 
     const stopAp = Math.max(loMin, Math.min(bestAp, hiMax));
-    lens.surfaces[stopIdx].ap = stopAp;
-    lens.surfaces[stopIdx].ap_optical = stopAp;
-    clampSurfaceAp(lens.surfaces[stopIdx]);
+    lensState.surfaces[stopIdx].ap = stopAp;
+    lensState.surfaces[stopIdx].ap_optical = stopAp;
+    clampSurfaceAp(lensState.surfaces[stopIdx]);
+    const achievedT = estimateTStopApprox(efl, lensState.surfaces, wavePreset);
 
-    if (focusModeBefore === "manual") {
+    if (lensState === lens && focusModeBefore === "manual") {
       setFocusShiftMm(focusShiftBefore, { updateStatus: false });
-      if (ui.focusMode) ui.focusMode.value = "manual";
-      if (lens.focus) lens.focus.mode = "manual";
+      if (ui.focusMode) ui.focusMode.value = focusModeValueBefore || "manual";
+      if (ui.focusMechanism && focusMechanismValueBefore != null) ui.focusMechanism.value = focusMechanismValueBefore;
+      if (ui.lensFocus && lensFocusValueBefore != null) ui.lensFocus.value = lensFocusValueBefore;
+      if (ui.focusShiftSlider && focusSliderValueBefore != null) ui.focusShiftSlider.value = focusSliderValueBefore;
+      if (lens.focus) {
+        lens.focus.mode = "manual";
+        lens.focus.shiftMm = focusShiftBefore;
+      }
     }
     restoreNominalLensVertices();
+
+    const actualError = Number.isFinite(Number(achievedT)) ? Math.abs(Number(achievedT) - targetT) : Infinity;
+    return {
+      ok: Number.isFinite(Number(achievedT)) && actualError <= tolerance,
+      reason: Number.isFinite(Number(achievedT)) ? null : "T-stop could not be measured",
+      targetTStop: targetT,
+      actualTStop: Number.isFinite(Number(achievedT)) ? Number(achievedT) : null,
+      stopAp: getSurfaceOpticalAp(lensState.surfaces[stopIdx]),
+      efl,
+      stopIdx,
+      error: actualError,
+      tolerance,
+    };
+  }
+
+  function applyTStopLockCorrection(reason = "lens edit", options = {}) {
+    if (_tStopLockApplying || !isTStopLockActive()) return null;
+    const lock = ensureTStopLockOptions(lens);
+    _tStopLockApplying = true;
+    try {
+      const result = setStopForTargetT(lock.targetTStop, {
+        tolerance: 0.01,
+        maxIterations: 30,
+        wavePreset: ui.wavePreset?.value || "d",
+      });
+      _lastTStopLockResult = { ...result, reasonLabel: reason, createdAt: Date.now() };
+      if (result?.ok) {
+        if (ui.footerWarn) {
+          ui.footerWarn.textContent = `T-lock active: T${lock.targetTStop.toFixed(2)}. STOP aperture adjusted to ${Number(result.stopAp).toFixed(4)}mm.`;
+        }
+      } else if (ui.footerWarn) {
+        ui.footerWarn.textContent = `Cannot reach locked T-stop with current lens geometry. ${result?.reason || ""}`.trim();
+      }
+      if (options.rebuild !== false) buildTable();
+      if (options.render !== false) {
+        renderAll();
+        scheduleRenderPreview();
+      }
+      persistLensSession();
+      return result;
+    } finally {
+      _tStopLockApplying = false;
+    }
+  }
+
+  function scheduleTStopLockCorrection(reason = "lens edit", options = {}) {
+    if (_tStopLockApplying || !isTStopLockActive()) return;
+    if (options.skipForManualStopAperture) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "T-lock active: manual STOP aperture edit left unchanged.";
+      return;
+    }
+    if (_tStopLockTimer) clearTimeout(_tStopLockTimer);
+    const delay = Number.isFinite(Number(options.delayMs)) ? Math.max(0, Number(options.delayMs)) : 220;
+    _tStopLockTimer = setTimeout(() => {
+      _tStopLockTimer = 0;
+      applyTStopLockCorrection(reason);
+    }, delay);
+  }
+
+  function tStopLockReportInfo(lensState = lens, wavePreset = ui.wavePreset?.value || "d") {
+    const lock = readTStopLockOptions(lensState);
+    const info = estimateCurrentTStopInfo(lensState, wavePreset);
+    const target = Number(lock.targetTStop);
+    const actual = Number(info.tStop);
+    const differs = !!(lock.enabled && Number.isFinite(actual) && Number.isFinite(target) && Math.abs(actual - target) > 0.03);
+    return {
+      enabled: !!lock.enabled,
+      targetTStop: Number.isFinite(target) ? target : null,
+      actualTStop: Number.isFinite(actual) ? actual : null,
+      stopAp: info.stopAp,
+      warning: differs ? "WARNING: actual T-stop differs from locked target. Re-run T-lock or check stop aperture limits." : null,
+    };
+  }
+
+  function setTargetTStop() {
+    const wavePreset = ui.wavePreset?.value || "d";
+    const current = estimateCurrentTStopInfo(lens, wavePreset);
+    if (!Number.isFinite(current.efl) || current.efl <= 0) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Set T: EFL unknown (try Scale→FL or fix geometry).";
+      return;
+    }
+    if (current.stopIdx < 0) {
+      if (ui.footerWarn) ui.footerWarn.textContent = "Set T: no STOP surface marked.";
+      return;
+    }
+
+    const targetT = num(prompt("Target T-stop? (approx)", current.tStop ? current.tStop.toFixed(2) : "2.00"), current.tStop || 2.0);
+    if (!Number.isFinite(targetT) || targetT <= 0) return;
+
+    const result = setStopForTargetT(targetT, { wavePreset, tolerance: 0.01, maxIterations: 30 });
+    if (!result?.stopIdx && result?.stopIdx !== 0) {
+      if (ui.footerWarn) ui.footerWarn.textContent = `Set T: ${result?.reason || "failed"}.`;
+      return;
+    }
+    if (isTStopLockActive()) setTStopLockState({ enabled: true, targetTStop: targetT });
+
     buildTable();
     renderAll();
     scheduleRenderPreview();
 
-    const manualNote = focusModeBefore === "manual" ? " Manual focus preserved; only STOP aperture changed." : "";
-    if (ui.footerWarn) ui.footerWarn.textContent = `Set T: stop ap → ${lens.surfaces[stopIdx].ap.toFixed(2)}mm (semi-diam) for T${targetT.toFixed(2)} @ EFL ${efl.toFixed(2)}mm.${manualNote}`;
+    const manualNote = normalizeFocusMode(ui.focusMode?.value || lens?.focus?.mode || "auto") === "manual"
+      ? " Manual focus preserved; only STOP aperture changed."
+      : "";
+    const achieved = Number.isFinite(Number(result.actualTStop)) ? ` actual T${Number(result.actualTStop).toFixed(2)}` : "";
+    const reachNote = result.ok ? "" : " Cannot reach target exactly with current geometry.";
+    if (ui.footerWarn) ui.footerWarn.textContent = `Set T: stop ap → ${Number(result.stopAp).toFixed(4)}mm (semi-diam) for T${targetT.toFixed(2)} @ EFL ${Number(result.efl).toFixed(2)}mm.${achieved}.${reachNote}${manualNote}`;
   }
 
   // -------------------- Auto Tuner --------------------
@@ -12478,9 +12740,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       focusScan,
     });
     const metrics = getAutoTunerMetrics(lensState, { wavePreset, objectDistanceMm, includeFieldFocus: false });
+    const tStopLock = tStopLockReportInfo(lensState, wavePreset);
     const notes = summarizeCornerFocusDiagnostic(fieldFocus, metrics);
     const warnings = [
       ...((fieldFocus?.warnings || []).filter(Boolean)),
+      ...([tStopLock?.warning].filter(Boolean)),
       ...notes,
     ];
     return {
@@ -12490,6 +12754,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       focusScan,
       fieldFocus,
       metrics,
+      tStopLock,
       notes,
       warnings,
       createdAt: new Date().toISOString(),
@@ -12499,6 +12764,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function renderCornerFocusReport(report) {
     const ff = report?.fieldFocus || {};
     const metrics = report?.metrics || {};
+    const tLock = report?.tStopLock || {};
     const row = (label, current, best) => `
       <tr>
         <td>${escapeAttr(label)}</td>
@@ -12530,6 +12796,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         `Focus scan range: ${signedMmText(scan.minShiftMm, 0)} to ${signedMmText(scan.maxShiftMm, 0)}`,
         `Coarse step: ${mmText(scan.coarseStepMm, 3)}; fine step: ${mmText(scan.fineStepMm, 3)}`,
         `Focus mode: ${ff.focusMode || report?.focusContext?.focusMode || "—"}; mechanism: ${ff.focusMechanism || report?.focusContext?.focusMechanism || "—"}`,
+        `T-stop lock: ${tLock.enabled ? "ON" : "OFF"}`,
+        ...(tLock.enabled ? [`Target T-stop: T${Number(tLock.targetTStop).toFixed(2)}`] : []),
+        `Actual T-stop: ${Number.isFinite(Number(tLock.actualTStop)) ? `T${Number(tLock.actualTStop).toFixed(2)}` : "—"}`,
+        ...(Number.isFinite(Number(tLock.stopAp)) ? [`STOP aperture: ${Number(tLock.stopAp).toFixed(4)}mm`] : []),
         "",
         `Center current shift: ${signedMmText(ff.currentFocusShiftMm, 3)}`,
         `Center best shift: ${signedMmText(ff.centerBestShiftMm, 3)}`,
@@ -12553,6 +12823,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const ff = report?.fieldFocus || {};
     const metrics = report?.metrics || {};
     const scan = ff.scan || report?.focusScan || getFocusScanOptions();
+    const tLock = report?.tStopLock || {};
     const lines = [
       "Corner Focus Test",
       `Wave: ${report?.wavePreset || "—"}`,
@@ -12560,6 +12831,10 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       `Coarse step: ${mmText(scan.coarseStepMm, 3)}`,
       `Fine step: ${mmText(scan.fineStepMm, 3)}`,
       `Image circle: ${mmText(metrics?.imageCircleMm, 1)}; COV: ${metrics?.cov ? "YES" : "NO"}`,
+      `T-stop lock: ${tLock.enabled ? "ON" : "OFF"}`,
+      ...(tLock.enabled ? [`Target T-stop: T${Number(tLock.targetTStop).toFixed(2)}`] : []),
+      `Actual T-stop: ${Number.isFinite(Number(tLock.actualTStop)) ? `T${Number(tLock.actualTStop).toFixed(2)}` : "—"}`,
+      ...(Number.isFinite(Number(tLock.stopAp)) ? [`STOP aperture: ${Number(tLock.stopAp).toFixed(4)}mm`] : []),
       "",
       `Center current shift: ${signedMmText(ff.currentFocusShiftMm, 3)}`,
       `Center best shift: ${signedMmText(ff.centerBestShiftMm, 3)}`,
@@ -17612,6 +17887,40 @@ function wireUI() {
 
   on("#btnScaleToFocal", "click", scaleToTargetFocal);
   on("#btnSetTStop", "click", setTargetTStop);
+  if (ui.tStopLockEnabled) {
+    ui.tStopLockEnabled.addEventListener("change", () => {
+      const lock = syncTStopLockStateFromUi();
+      if (lock.enabled) applyTStopLockCorrection("T-stop lock enabled", { rebuild: true, render: true });
+      else if (ui.footerWarn) ui.footerWarn.textContent = "T-lock disabled.";
+    });
+  }
+  if (ui.tStopLockTarget) {
+    const targetHandler = () => {
+      const lock = syncTStopLockStateFromUi();
+      if (lock.enabled) scheduleTStopLockCorrection("T-lock target changed", { delayMs: 120 });
+    };
+    ui.tStopLockTarget.addEventListener("input", targetHandler);
+    ui.tStopLockTarget.addEventListener("change", targetHandler);
+  }
+  if (ui.btnTStopLockCurrent) {
+    ui.btnTStopLockCurrent.addEventListener("click", () => {
+      const info = estimateCurrentTStopInfo(lens, ui.wavePreset?.value || "d");
+      if (!Number.isFinite(Number(info.tStop)) || info.tStop <= 0) {
+        if (ui.footerWarn) ui.footerWarn.textContent = "Lock current T: actual T-stop unavailable.";
+        return;
+      }
+      setTStopLockState({ enabled: true, targetTStop: Number(info.tStop) });
+      applyTStopLockCorrection("locked current T-stop", { rebuild: true, render: true });
+    });
+  }
+  document.querySelectorAll(".tLockPreset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = Number(btn.dataset.tlockPreset);
+      if (!Number.isFinite(target) || target <= 0) return;
+      setTStopLockState({ enabled: true, targetTStop: target });
+      applyTStopLockCorrection(`T-lock preset T${target}`, { rebuild: true, render: true });
+    });
+  });
   on("#btnAutoFocus", "click", autoFocus);
   on("#btnRenderEngine", "click", toggleRenderEngine);
   on("#btnDebugOverlay", "click", toggleDebugOverlay);

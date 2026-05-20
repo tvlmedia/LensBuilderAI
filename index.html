@@ -49,6 +49,22 @@
 
       <button id="btnScaleToFocal" class="btn" type="button">Scale → FL</button>
       <button id="btnSetTStop" class="btn" type="button">Set T</button>
+      <div class="tLockControl" role="group" aria-label="T-stop lock">
+        <label class="tLockCheck">
+          <input id="tStopLockEnabled" type="checkbox" />
+          <span>Lock T-stop</span>
+        </label>
+        <label class="tLockTarget">
+          <span>Target T</span>
+          <input id="tStopLockTarget" type="number" min="0.5" max="64" step="0.05" value="2.3" />
+        </label>
+        <button id="btnTStopLockCurrent" class="tLockMiniBtn" type="button">Lock current T</button>
+        <button class="tLockMiniBtn tLockPreset" type="button" data-tlock-preset="2">T2</button>
+        <button class="tLockMiniBtn tLockPreset" type="button" data-tlock-preset="2.3">T2.3</button>
+        <button class="tLockMiniBtn tLockPreset" type="button" data-tlock-preset="2.8">T2.8</button>
+        <button class="tLockMiniBtn tLockPreset" type="button" data-tlock-preset="4">T4</button>
+        <button class="tLockMiniBtn tLockPreset" type="button" data-tlock-preset="5.6">T5.6</button>
+      </div>
       <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
       <button id="btnCornerFocus" class="btn" type="button">Corner Focus Test</button>
       <button id="btnAutoTuner" class="btn" type="button">Auto Tuner</button>
