@@ -17790,6 +17790,14 @@ function wireUI() {
     });
   }
 
+  function isTextEditingTarget(target) {
+    const el = target instanceof Element ? target : null;
+    if (!el) return false;
+    const tag = String(el.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    return !!(el.closest && el.closest("[contenteditable='true'], [contenteditable='plaintext-only']"));
+  }
+
   // selection hotkeys
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isAutoTunerModalOpen()) {
@@ -17807,9 +17815,10 @@ function wireUI() {
       closeZmxPasteModal();
       return;
     }
-    if (e.key === "Delete" || e.key === "Backspace") {
-      if (document.activeElement && ["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) return;
-      removeSelected();
+    if (e.key === "Backspace" || e.key === "Delete") {
+      if (isTextEditingTarget(e.target)) return;
+      if (e.key === "Backspace") e.preventDefault();
+      return;
     }
     if (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); moveSelected(-1); }
     if (e.key === "ArrowDown" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); moveSelected(+1); }
