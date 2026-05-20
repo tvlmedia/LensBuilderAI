@@ -181,6 +181,7 @@
     btnMoveDown: $("#btnMoveDown"),
     btnRemove: $("#btnRemove"),
     btnCopyJson: $("#btnCopyJson"),
+    btnCopyLensOnlyJson: $("#btnCopyLensOnlyJson"),
     btnSave: $("#btnSave"),
     btnPasteJson: $("#btnPasteJson"),
     btnPasteZmx: $("#btnPasteZmx"),
@@ -17719,11 +17720,212 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return true;
   }
 
-  async function copyLensJsonToClipboard() {
+  function getCurrentSensorAnalysisContext() {
+    const { w, h } = getSensorWH();
+    const diag = Math.hypot(w, h);
+    const selected = String(ui.sensorPreset?.value || "").trim();
+    const preset = SENSOR_PRESETS[selected];
+    const presetMatches = !!(
+      preset &&
+      Math.abs(Number(preset.w) - w) < 0.01 &&
+      Math.abs(Number(preset.h) - h) < 0.01
+    );
+    const ratio = h > 0 ? w / h : null;
+    return {
+      presetName: presetMatches ? selected : "Custom",
+      widthMm: finiteOrNull(w),
+      heightMm: finiteOrNull(h),
+      diagonalMm: finiteOrNull(diag),
+      aspectRatio: Number.isFinite(ratio) ? `${ratio.toFixed(3)}:1` : null,
+      cropOrGateName: presetMatches ? selected : "Custom",
+    };
+  }
+
+  function getCurrentFocusAnalysisContext() {
+    const mode = normalizeFocusMode(ui.focusMode?.value || lens?.focus?.mode || "auto");
+    const mechanism = normalizeFocusMechanism(ui.focusMechanism?.value || lens?.focus?.mechanism || "move-lens");
+    return {
+      mode,
+      mechanism,
+      shiftMm: finiteOrNull(getFocusShiftMm()),
+      autoRefocusOnDistanceChange: !!ui.autoRefocusOnDistanceChange?.checked,
+    };
+  }
+
+  function getCurrentWavelengthAnalysisContext() {
+    const selectedName = String(ui.wavePreset?.value || "d");
+    return {
+      selectedName,
+      wavelengthNm: finiteOrNull(wavePresetToLambdaNm(selectedName)),
+    };
+  }
+
+  function getCurrentFieldAnalysisContext() {
+    const objectDistanceMm = getFocusChartDistanceMm();
+    return {
+      currentFieldAngleDeg: finiteOrNull(ui.fieldAngle?.value),
+      fieldMode: ui.useZemaxFields?.checked ? "zemax_fields" : "manual_field_angle",
+      objectDistance: Number.isFinite(Number(objectDistanceMm)) ? Number(objectDistanceMm) : "infinity",
+    };
+  }
+
+  function getCurrentApertureAnalysisContext(lensState = lens, wavePreset = ui.wavePreset?.value || "d") {
+    const tLock = readTStopLockOptions(lensState);
+    const info = estimateCurrentTStopInfo(lensState, wavePreset);
+    const stop = info.stopIdx >= 0 ? lensState?.surfaces?.[info.stopIdx] : null;
+    return {
+      tStopLockEnabled: !!tLock.enabled,
+      targetTStop: finiteOrNull(tLock.targetTStop),
+      actualTStop: finiteOrNull(info.tStop),
+      stopSurfaceIndex: Number.isFinite(Number(info.stopIdx)) && info.stopIdx >= 0 ? Number(info.stopIdx) : null,
+      stopApertureMm: stop ? finiteOrNull(stop.ap) : null,
+      stopApertureOpticalMm: stop ? finiteOrNull(stop.ap_optical ?? stop.ap) : null,
+    };
+  }
+
+  function countGlassElementsForSummary(surfaces) {
+    return (surfaces || []).filter((s) => {
+      const type = String(s?.type || "").toUpperCase();
+      if (type === "OBJ" || type === "IMS" || type === "STOP") return false;
+      return !isAirSurfaceMedium(s);
+    }).length;
+  }
+
+  function buildLensSummaryForExport(lensState, metrics, aperture) {
+    const surfaces = lensState?.surfaces || [];
+    return {
+      name: String(lensState?.name || "Untitled lens"),
+      effectiveFocalLengthMm: finiteOrNull(metrics?.efl),
+      backFocalLengthMm: finiteOrNull(metrics?.bfl),
+      workingTStop: finiteOrNull(aperture?.actualTStop ?? metrics?.T),
+      imageCircleMm: finiteOrNull(metrics?.imageCircleMm),
+      coverageOnCurrentSensor: metrics?.cov === true,
+      numberOfSurfaces: surfaces.length,
+      numberOfGlassElements: countGlassElementsForSummary(surfaces),
+      stopSurfaceIndex: aperture?.stopSurfaceIndex ?? null,
+    };
+  }
+
+  function serializeCornerFocusReportForExport(report, error = null) {
+    const ranAt = report?.createdAt || new Date().toISOString();
+    if (error) {
+      return {
+        ranAt,
+        error: String(error?.message || error),
+      };
+    }
+    const ff = report?.fieldFocus || {};
+    const metrics = report?.metrics || {};
+    const scan = ff.scan || report?.focusScan || getFocusScanOptions();
+    const sensor = getCurrentSensorAnalysisContext();
+    const tLock = report?.tStopLock || {};
+    const warnings = [
+      ...((ff.warnings || []).filter(Boolean)),
+      ...([tLock.warning].filter(Boolean)),
+    ].map(String);
+    return {
+      ranAt,
+      wave: report?.wavePreset || null,
+      focusScanRange: {
+        minShiftMm: finiteOrNull(scan.minShiftMm),
+        maxShiftMm: finiteOrNull(scan.maxShiftMm),
+        coarseStepMm: finiteOrNull(scan.coarseStepMm),
+        fineStepMm: finiteOrNull(scan.fineStepMm),
+      },
+      imageCircleMm: finiteOrNull(metrics?.imageCircleMm),
+      coverage: {
+        coversSensor: metrics?.cov === true,
+        requiredDiagonalMm: finiteOrNull(sensor.diagonalMm ?? metrics?.sensorDiag),
+        sensorWidthMm: finiteOrNull(sensor.widthMm ?? metrics?.sensorW),
+        sensorHeightMm: finiteOrNull(sensor.heightMm ?? metrics?.sensorH),
+      },
+      shifts: {
+        centerBestShiftMm: finiteOrNull(ff.centerBestShiftMm),
+        midBestShiftMm: finiteOrNull(ff.midBestShiftMm),
+        cornerBestShiftMm: finiteOrNull(ff.cornerBestShiftMm),
+        focusDeltaCenterToCornerMm: finiteOrNull(ff.fieldCurvatureDeltaMm),
+        focusDeltaMidToCornerMm: finiteOrNull(ff.midToCornerDeltaMm),
+      },
+      rms: {
+        centerCurrentMm: finiteOrNull(ff.centerCurrentRmsMm),
+        centerBestMm: finiteOrNull(ff.centerBestRmsMm),
+        midCurrentMm: finiteOrNull(ff.midCurrentRmsMm),
+        midBestMm: finiteOrNull(ff.midBestRmsMm),
+        cornerCurrentMm: finiteOrNull(ff.cornerCurrentRmsMm),
+        cornerBestMm: finiteOrNull(ff.cornerBestRmsMm),
+      },
+      warnings,
+      notes: (report?.notes || []).filter(Boolean).map(String),
+    };
+  }
+
+  function buildFullLensSnapshotJson() {
+    if (isTStopLockActive()) {
+      applyTStopLockCorrection("Copy JSON snapshot", { rebuild: false, render: false });
+    }
+
+    const exportedAt = new Date().toISOString();
+    const out = clone(lens);
+    const wavePreset = ui.wavePreset?.value || "d";
+    if (!out.analysisOptions || typeof out.analysisOptions !== "object") out.analysisOptions = {};
+    out.analysisOptions.tStopLock = readTStopLockOptions(out);
+    out.focus = {
+      ...(out.focus || {}),
+      ...getCurrentFocusAnalysisContext(),
+    };
+
+    const metrics = getAutoTunerMetrics(out, {
+      wavePreset,
+      objectDistanceMm: getFocusChartDistanceMm(),
+      includeFieldFocus: false,
+    });
+    const aperture = getCurrentApertureAnalysisContext(out, wavePreset);
+    let cornerFocusTest = null;
+
+    const state = captureCornerFocusState();
     try {
-      const text = JSON.stringify(clone(lens), null, 2);
+      const report = buildCornerFocusReport(out);
+      cornerFocusTest = serializeCornerFocusReportForExport(report);
+    } catch (e) {
+      cornerFocusTest = serializeCornerFocusReportForExport({ createdAt: new Date().toISOString() }, e);
+    } finally {
+      restoreCornerFocusState(state);
+    }
+
+    out.exportMetadata = {
+      exportedAt,
+      exportedBy: "LensBuilder Copy JSON",
+      exportSchemaVersion: "1.1",
+      appVersion: null,
+      includesAnalysisResults: true,
+    };
+    out.lensSummary = buildLensSummaryForExport(out, metrics, aperture);
+    out.analysisContext = {
+      sensor: getCurrentSensorAnalysisContext(),
+      focus: getCurrentFocusAnalysisContext(),
+      aperture,
+      wavelength: getCurrentWavelengthAnalysisContext(),
+      field: getCurrentFieldAnalysisContext(),
+    };
+    out.analysisResults = {
+      cornerFocusTest,
+    };
+    return out;
+  }
+
+  async function copyFullLensSnapshotJsonToClipboard() {
+    try {
+      const out = buildFullLensSnapshotJson();
+      const text = JSON.stringify(out, null, 2);
       await copyTextToClipboard(text);
-      toast("Copied lens JSON");
+      const cf = out?.analysisResults?.cornerFocusTest;
+      const failed = !!cf?.error;
+      if (ui.footerWarn) {
+        ui.footerWarn.textContent = failed
+          ? "Copied JSON, but Corner Focus Test failed."
+          : "Copied full lens snapshot JSON, including sensor settings and Corner Focus Test.";
+      }
+      toast(failed ? "Copied JSON, but Corner Focus Test failed" : "Copied full lens snapshot JSON");
       return true;
     } catch (e) {
       const msg = e?.message || String(e);
@@ -17733,27 +17935,45 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
   }
 
+  async function copyLensOnlyJsonToClipboard() {
+    try {
+      const text = JSON.stringify(clone(lens), null, 2);
+      await copyTextToClipboard(text);
+      toast("Copied lens-only JSON");
+      return true;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (ui.footerWarn) ui.footerWarn.textContent = `Copy Lens Only JSON failed: ${msg}`;
+      toast(`Copy Lens Only JSON failed: ${msg}`);
+      return false;
+    }
+  }
+
   // -------------------- save lens JSON --------------------
+  function saveJsonBlob(out, filenameBase, toastText = "Saved lens JSON") {
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    const safeName = String(filenameBase || "lens").replace(/[^\w\-]+/g, "_");
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 0);
+    toast(toastText);
+  }
+
   function saveLensToFile() {
     try {
-      const out = clone(lens);
+      const out = buildFullLensSnapshotJson();
       if (out?.originalZmxText) {
         const keep = window.confirm("Include original ZMX text in saved JSON? (larger file)");
         if (!keep) delete out.originalZmxText;
       }
-      const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      a.href = url;
-      const safeName = String(lens?.name || "lens").replace(/[^\w\-]+/g, "_");
-      a.download = `${safeName}.json`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-        a.remove();
-      }, 0);
-      toast("Saved lens JSON");
+      saveJsonBlob(out, lens?.name || "lens", "Saved full lens snapshot JSON");
     } catch (e) {
       if (ui.footerWarn) ui.footerWarn.textContent = `Save failed: ${e?.message || e}`;
     }
@@ -17864,7 +18084,8 @@ function wireUI() {
   on("#btnNew", "click", newClearLens);
   on("#btnLoadOmit", "click", () => loadLens(omit50ConceptV1()));
   on("#btnLoadDemo", "click", () => loadLens(demoLensSimple()));
-  on("#btnCopyJson", "click", copyLensJsonToClipboard);
+  on("#btnCopyJson", "click", copyFullLensSnapshotJsonToClipboard);
+  on("#btnCopyLensOnlyJson", "click", copyLensOnlyJsonToClipboard);
   on("#btnPasteJson", "click", openJsonPasteModal);
   on("#btnPasteZmx", "click", openZmxPasteModal);
   on("#btnCornerFocus", "click", openCornerFocusModal);
