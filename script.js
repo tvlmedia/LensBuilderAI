@@ -1554,6 +1554,78 @@ function warnMissingGlass(name) {
   let _safeModeActive = false;
   let _lastStatusWarning = "";
 
+  function getFlareLabLensInfo() {
+    const surfaces = Array.isArray(lens?.surfaces) ? lens.surfaces : [];
+    const hasLensData = surfaces.length >= 2;
+    if (!hasLensData) {
+      return {
+        surfaceCount: 10,
+        airGlassSurfaceCount: 8,
+        estimatedGroups: 4,
+        apertureIndex: 5,
+        currentTStop: 2.0,
+        imageCircle: 46.3,
+        hasLensData: false,
+      };
+    }
+    const physical = surfaces.filter((s) => {
+      const type = String(s?.type || "").toUpperCase();
+      return type !== "OBJ" && type !== "IMS";
+    });
+    let airGlassSurfaceCount = 0;
+    let estimatedGroups = 0;
+    let previousMedium = "AIR";
+    let insideGlassGroup = false;
+    const isAir = (value) => {
+      const name = typeof resolveGlassName === "function"
+        ? resolveGlassName(value)
+        : String(value || "AIR").trim().toUpperCase();
+      return name === "AIR" || name === "" || name === "VACUUM";
+    };
+    physical.forEach((surface) => {
+      const nextMedium = surface?.glass || "AIR";
+      const transition = isAir(previousMedium) !== isAir(nextMedium);
+      if (transition) airGlassSurfaceCount++;
+      if (!isAir(nextMedium) && !insideGlassGroup) {
+        estimatedGroups++;
+        insideGlassGroup = true;
+      }
+      if (isAir(nextMedium)) insideGlassGroup = false;
+      previousMedium = nextMedium;
+    });
+    const wavePreset = String(ui.wavePreset?.value || "d");
+    const parax = estimateEflBflParaxial(surfaces, wavePreset);
+    const efl = Number(parax?.efl);
+    const tStop = Number.isFinite(efl) ? estimateTStopApprox(efl, surfaces, wavePreset) : null;
+    const { w: sensorW, h: sensorH } = getSensorWH();
+    const fallbackImageCircle = Math.hypot(sensorW, sensorH);
+    return {
+      surfaceCount: physical.length,
+      airGlassSurfaceCount,
+      estimatedGroups: Math.max(1, estimatedGroups),
+      apertureIndex: findStopSurfaceIndex(surfaces),
+      currentTStop: Number.isFinite(Number(tStop)) ? Number(tStop) : 2.0,
+      imageCircle: Number.isFinite(Number(preview?.usableCircle?.diameterMm)) && preview.usableCircle.diameterMm > 0
+        ? Number(preview.usableCircle.diameterMm)
+        : fallbackImageCircle,
+      efl: Number.isFinite(efl) ? efl : null,
+      hasLensData: true,
+    };
+  }
+
+  function notifyFlareLabLensInfoUpdated() {
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(new CustomEvent("lensbuilder:flare-info", {
+        detail: getFlareLabLensInfo(),
+      }));
+    } catch (_) {}
+  }
+
+  if (typeof window !== "undefined") {
+    window.getLensBuilderFlareInfo = getFlareLabLensInfo;
+  }
+
   function getSafeLocalStorage() {
     try {
       if (typeof window === "undefined" || !window.localStorage) return null;
@@ -8955,6 +9027,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         ? `auto metric ${Number.isFinite(autoMetricMm) ? autoMetricMm.toFixed(4) : "—"}mm`
         : ""
     );
+    notifyFlareLabLensInfoUpdated();
   }
 
   // -------------------- view controls (RAYS canvas) --------------------

@@ -22,6 +22,11 @@
     </div>
 
     <div class="toolbar" role="toolbar" aria-label="Main toolbar" tabindex="0">
+      <button id="btnLensBuilderTab" class="btn btnPrimary" type="button" aria-pressed="true">Lens Builder</button>
+      <button id="btnFlareLabTab" class="btn" type="button" aria-pressed="false">Flare Lab</button>
+
+      <div class="sep" aria-hidden="true"></div>
+
       <button id="btnNew" class="btn" type="button">New / Clear</button>
       <button id="btnLoadOmit" class="btn" type="button">Load OMIT 50 preset</button>
       <button id="btnLoadDemo" class="btn" type="button">Load demo lens</button>
@@ -64,7 +69,7 @@
     </div>
   </header>
 
-  <main id="appMain" class="layout" role="main">
+  <main id="appMain" class="layout" role="main" data-app-view="lensbuilder">
     <!-- LEFT -->
     <aside class="panel left" aria-label="Controls and surface table">
       <section class="panelHeader">
@@ -404,6 +409,124 @@
             Tips: zet stop op “STOP” surface • IMS ap = sensor half-height • “Scale → FL” fixeert focal drift
           </div>
         </div>
+      </div>
+    </section>
+  </main>
+
+  <main id="flareLabView" class="flareLab hidden" role="main" aria-label="Flare Lab" data-app-view="flarelab">
+    <aside class="panel flareControlsPanel" aria-label="Flare Lab controls">
+      <section class="panelHeader">
+        <div class="h1">Flare Lab</div>
+        <div class="hint">Approximate local 2D flare preview. Drag the lamp in the canvas to explore flare character.</div>
+      </section>
+
+      <div class="flareControlsScroll">
+        <section class="flareSection">
+          <div class="flareSectionTitle">Light controls</div>
+          <label class="flareField" for="flareLampX">
+            <span>Lamp X position <output id="flareLampXValue">0.55</output></span>
+            <input id="flareLampX" type="range" min="-1.2" max="1.2" step="0.01" value="0.55" />
+          </label>
+          <label class="flareField" for="flareLampY">
+            <span>Lamp Y position <output id="flareLampYValue">-0.25</output></span>
+            <input id="flareLampY" type="range" min="-1.2" max="1.2" step="0.01" value="-0.25" />
+          </label>
+          <label class="flareField" for="flareDistance">
+            <span>Distance in meters</span>
+            <input id="flareDistance" type="number" min="0.2" max="30" step="0.1" value="3.0" />
+          </label>
+          <label class="flareField" for="flareBrightness">
+            <span>Brightness / intensity <output id="flareBrightnessValue">1.00</output></span>
+            <input id="flareBrightness" type="range" min="0" max="2.5" step="0.01" value="1.00" />
+          </label>
+          <label class="flareField" for="flareKelvin">
+            <span>Color temperature Kelvin</span>
+            <input id="flareKelvin" type="number" min="1600" max="12000" step="50" value="2300" />
+          </label>
+        </section>
+
+        <section class="flareSection">
+          <div class="flareSectionTitle">Flare controls</div>
+          <label class="flareToggle" for="flareEnableGhosts">
+            <input id="flareEnableGhosts" type="checkbox" checked />
+            <span>Enable ghost flares</span>
+          </label>
+          <label class="flareToggle" for="flareEnableVeil">
+            <input id="flareEnableVeil" type="checkbox" checked />
+            <span>Enable veiling flare</span>
+          </label>
+          <label class="flareToggle" for="flareEnableSensorBounce">
+            <input id="flareEnableSensorBounce" type="checkbox" checked />
+            <span>Enable sensor bounce</span>
+          </label>
+          <label class="flareField" for="flareGhostIntensity">
+            <span>Ghost intensity <output id="flareGhostIntensityValue">0.85</output></span>
+            <input id="flareGhostIntensity" type="range" min="0" max="2" step="0.01" value="0.85" />
+          </label>
+          <label class="flareField" for="flareVeilingIntensity">
+            <span>Veiling intensity <output id="flareVeilingIntensityValue">0.75</output></span>
+            <input id="flareVeilingIntensity" type="range" min="0" max="2" step="0.01" value="0.75" />
+          </label>
+          <label class="flareField" for="flareCoatingEfficiency">
+            <span>Coating efficiency <output id="flareCoatingEfficiencyValue">0.75</output></span>
+            <input id="flareCoatingEfficiency" type="range" min="0" max="1" step="0.01" value="0.75" />
+          </label>
+          <label class="flareField" for="flareBlackingQuality">
+            <span>Internal blacking quality <output id="flareBlackingQualityValue">0.65</output></span>
+            <input id="flareBlackingQuality" type="range" min="0" max="1" step="0.01" value="0.65" />
+          </label>
+          <label class="flareField" for="flareDiffusion">
+            <span>Diffusion / glow <output id="flareDiffusionValue">0.45</output></span>
+            <input id="flareDiffusion" type="range" min="0" max="1.5" step="0.01" value="0.45" />
+          </label>
+          <label class="flareField" for="flareTStop">
+            <span>T-stop / aperture <output id="flareTStopValue">T2.0</output></span>
+            <input id="flareTStop" type="range" min="0.7" max="16" step="0.05" value="2.0" />
+          </label>
+          <label class="flareField" for="flareIrisBlades">
+            <span>Iris blades <output id="flareIrisBladesValue">9</output></span>
+            <input id="flareIrisBlades" type="range" min="3" max="16" step="1" value="9" />
+          </label>
+        </section>
+
+        <section class="flareSection">
+          <div class="flareSectionTitle">Preview controls</div>
+          <label class="flareToggle" for="flareShowBackground">
+            <input id="flareShowBackground" type="checkbox" checked />
+            <span>Show background</span>
+          </label>
+          <label class="flareToggle" for="flareOnly">
+            <input id="flareOnly" type="checkbox" />
+            <span>Show flare only</span>
+          </label>
+          <label class="flareToggle" for="flareShowMarkers">
+            <input id="flareShowMarkers" type="checkbox" />
+            <span>Show ghost path markers</span>
+          </label>
+          <label class="flareToggle" for="flareShowOverlay">
+            <input id="flareShowOverlay" type="checkbox" checked />
+            <span>Show info overlay</span>
+          </label>
+        </section>
+
+        <section class="flareSection">
+          <div class="flareSectionTitle">Lens influence</div>
+          <div id="flareLensSummary" class="flareSummary">Using safe fallback lens data.</div>
+          <div id="flareRiskSummary" class="flareRisk">Flare risk: —</div>
+        </section>
+      </div>
+    </aside>
+
+    <section class="panel flarePreviewPanel" aria-label="Flare Lab preview">
+      <div class="canvasHeader">
+        <div class="canvasTitle">
+          <div class="h1">Flare Preview</div>
+          <div class="hint">Drag the warm practical lamp. This is an approximate stray-light look tool, not a Zemax solver.</div>
+        </div>
+        <button id="btnFlareBack" class="btn" type="button">Back to Lens Builder</button>
+      </div>
+      <div class="flareCanvasShell">
+        <canvas id="flareCanvas"></canvas>
       </div>
     </section>
   </main>
@@ -1203,5 +1326,6 @@
 
   <div id="toastHost" class="toastHost" aria-live="polite" aria-atomic="true"></div>
   <script src="./script.js"></script>
+  <script src="./flare-lab.js"></script>
 </body>
 </html>

@@ -1,0 +1,686 @@
+/* Flare Lab: local 2D canvas flare preview.
+   This is an approximate cinematography look simulator, not a full non-sequential stray-light solver.
+   It never calls external APIs and never mutates the current Lens Builder prescription. */
+(() => {
+  const $ = (sel) => document.querySelector(sel);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const clamp01 = (v) => clamp(v, 0, 1);
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  const fallbackLensInfo = {
+    surfaceCount: 10,
+    airGlassSurfaceCount: 8,
+    estimatedGroups: 4,
+    apertureIndex: 5,
+    currentTStop: 2.0,
+    imageCircle: 46.3,
+    hasLensData: false,
+  };
+
+  const els = {
+    lensBuilderView: $("#appMain"),
+    flareLabView: $("#flareLabView"),
+    btnLensBuilderTab: $("#btnLensBuilderTab"),
+    btnFlareLabTab: $("#btnFlareLabTab"),
+    btnFlareBack: $("#btnFlareBack"),
+    canvas: $("#flareCanvas"),
+    lensSummary: $("#flareLensSummary"),
+    riskSummary: $("#flareRiskSummary"),
+    lampX: $("#flareLampX"),
+    lampXValue: $("#flareLampXValue"),
+    lampY: $("#flareLampY"),
+    lampYValue: $("#flareLampYValue"),
+    distance: $("#flareDistance"),
+    brightness: $("#flareBrightness"),
+    brightnessValue: $("#flareBrightnessValue"),
+    kelvin: $("#flareKelvin"),
+    enableGhosts: $("#flareEnableGhosts"),
+    enableVeil: $("#flareEnableVeil"),
+    enableSensorBounce: $("#flareEnableSensorBounce"),
+    ghostIntensity: $("#flareGhostIntensity"),
+    ghostIntensityValue: $("#flareGhostIntensityValue"),
+    veilingIntensity: $("#flareVeilingIntensity"),
+    veilingIntensityValue: $("#flareVeilingIntensityValue"),
+    coatingEfficiency: $("#flareCoatingEfficiency"),
+    coatingEfficiencyValue: $("#flareCoatingEfficiencyValue"),
+    blackingQuality: $("#flareBlackingQuality"),
+    blackingQualityValue: $("#flareBlackingQualityValue"),
+    diffusion: $("#flareDiffusion"),
+    diffusionValue: $("#flareDiffusionValue"),
+    tStop: $("#flareTStop"),
+    tStopValue: $("#flareTStopValue"),
+    irisBlades: $("#flareIrisBlades"),
+    irisBladesValue: $("#flareIrisBladesValue"),
+    showBackground: $("#flareShowBackground"),
+    flareOnly: $("#flareOnly"),
+    showMarkers: $("#flareShowMarkers"),
+    showOverlay: $("#flareShowOverlay"),
+  };
+
+  if (!els.canvas || !els.flareLabView) return;
+
+  const ctx = els.canvas.getContext("2d", { alpha: false });
+  const state = {
+    active: false,
+    dragging: false,
+    dpr: 1,
+    width: 1,
+    height: 1,
+    raf: 0,
+    ghostSignature: "",
+    ghosts: [],
+    lensInfo: fallbackLensInfo,
+    userTStopTouched: false,
+    lastRisk: { score: 0, label: "Low", veil: 0 },
+  };
+
+  function valueOf(el, fallback) {
+    const n = Number(String(el?.value ?? "").replace(",", "."));
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function controls() {
+    return {
+      lampX: valueOf(els.lampX, 0.55),
+      lampY: valueOf(els.lampY, -0.25),
+      distanceM: clamp(valueOf(els.distance, 3), 0.2, 30),
+      brightness: clamp(valueOf(els.brightness, 1), 0, 2.5),
+      kelvin: clamp(valueOf(els.kelvin, 2300), 1600, 12000),
+      enableGhosts: !!els.enableGhosts?.checked,
+      enableVeil: !!els.enableVeil?.checked,
+      enableSensorBounce: !!els.enableSensorBounce?.checked,
+      ghostIntensity: clamp(valueOf(els.ghostIntensity, 0.85), 0, 2),
+      veilingIntensity: clamp(valueOf(els.veilingIntensity, 0.75), 0, 2),
+      coatingEfficiency: clamp01(valueOf(els.coatingEfficiency, 0.75)),
+      blackingQuality: clamp01(valueOf(els.blackingQuality, 0.65)),
+      diffusion: clamp(valueOf(els.diffusion, 0.45), 0, 1.5),
+      tStop: clamp(valueOf(els.tStop, 2), 0.7, 16),
+      irisBlades: Math.round(clamp(valueOf(els.irisBlades, 9), 3, 16)),
+      showBackground: !!els.showBackground?.checked,
+      flareOnly: !!els.flareOnly?.checked,
+      showMarkers: !!els.showMarkers?.checked,
+      showOverlay: !!els.showOverlay?.checked,
+    };
+  }
+
+  function syncOutputs(c) {
+    if (els.lampXValue) els.lampXValue.textContent = c.lampX.toFixed(2);
+    if (els.lampYValue) els.lampYValue.textContent = c.lampY.toFixed(2);
+    if (els.brightnessValue) els.brightnessValue.textContent = c.brightness.toFixed(2);
+    if (els.ghostIntensityValue) els.ghostIntensityValue.textContent = c.ghostIntensity.toFixed(2);
+    if (els.veilingIntensityValue) els.veilingIntensityValue.textContent = c.veilingIntensity.toFixed(2);
+    if (els.coatingEfficiencyValue) els.coatingEfficiencyValue.textContent = c.coatingEfficiency.toFixed(2);
+    if (els.blackingQualityValue) els.blackingQualityValue.textContent = c.blackingQuality.toFixed(2);
+    if (els.diffusionValue) els.diffusionValue.textContent = c.diffusion.toFixed(2);
+    if (els.tStopValue) els.tStopValue.textContent = `T${c.tStop.toFixed(1)}`;
+    if (els.irisBladesValue) els.irisBladesValue.textContent = String(c.irisBlades);
+  }
+
+  function showView(view) {
+    const flare = view === "flare";
+    state.active = flare;
+    els.flareLabView.classList.toggle("hidden", !flare);
+    els.lensBuilderView?.classList.toggle("hidden", flare);
+    els.btnFlareLabTab?.classList.toggle("btnPrimary", flare);
+    els.btnLensBuilderTab?.classList.toggle("btnPrimary", !flare);
+    els.btnFlareLabTab?.setAttribute("aria-pressed", flare ? "true" : "false");
+    els.btnLensBuilderTab?.setAttribute("aria-pressed", flare ? "false" : "true");
+    if (flare) {
+      readLensInfo();
+      scheduleDraw(true);
+    }
+  }
+
+  function readLensInfo() {
+    const getter = window.getLensBuilderFlareInfo;
+    const info = typeof getter === "function" ? getter() : null;
+    applyLensInfo(info || fallbackLensInfo);
+  }
+
+  function applyLensInfo(info) {
+    const next = {
+      ...fallbackLensInfo,
+      ...(info && typeof info === "object" ? info : {}),
+    };
+    next.surfaceCount = Math.max(0, Number(next.surfaceCount) || fallbackLensInfo.surfaceCount);
+    next.airGlassSurfaceCount = Math.max(0, Number(next.airGlassSurfaceCount) || fallbackLensInfo.airGlassSurfaceCount);
+    next.estimatedGroups = Math.max(1, Number(next.estimatedGroups) || fallbackLensInfo.estimatedGroups);
+    next.currentTStop = Math.max(0.7, Number(next.currentTStop) || fallbackLensInfo.currentTStop);
+    next.imageCircle = Math.max(1, Number(next.imageCircle) || fallbackLensInfo.imageCircle);
+    state.lensInfo = next;
+    if (!state.userTStopTouched && els.tStop) els.tStop.value = String(clamp(next.currentTStop, 0.7, 16));
+    state.ghostSignature = "";
+    updateLensSummary();
+  }
+
+  function updateLensSummary() {
+    const info = state.lensInfo;
+    if (!els.lensSummary) return;
+    const source = info.hasLensData ? "Current lens" : "Fallback lens";
+    els.lensSummary.textContent = `${source}: ${info.surfaceCount} surfaces, ${info.airGlassSurfaceCount} air/glass transitions, ${info.estimatedGroups} groups, T${Number(info.currentTStop).toFixed(2)}, IC ${Number(info.imageCircle).toFixed(1)}mm.`;
+  }
+
+  function riskScore(c) {
+    const info = state.lensInfo;
+    const aperture = clamp((3.0 / Math.max(0.7, c.tStop)) * 18, 0, 28);
+    let score = 0;
+    score += clamp(info.airGlassSurfaceCount * 3.2, 0, 30);
+    score += clamp(info.surfaceCount * 0.9, 0, 14);
+    score += (1 - c.coatingEfficiency) * 26;
+    score += (1 - c.blackingQuality) * 22;
+    score += c.diffusion * 10;
+    score += aperture;
+    score += c.enableSensorBounce ? 5 : 0;
+    score += c.enableGhosts ? 4 : 0;
+    score = clamp(Math.round(score), 0, 100);
+    const label = score >= 82 ? "Extreme" : score >= 60 ? "High" : score >= 35 ? "Medium" : "Low";
+    return { score, label };
+  }
+
+  function kelvinToRgb(kelvin) {
+    const t = clamp(kelvin, 1000, 40000) / 100;
+    let r;
+    let g;
+    let b;
+    if (t <= 66) {
+      r = 255;
+      g = 99.4708025861 * Math.log(t) - 161.1195681661;
+      b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+    } else {
+      r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+      g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+      b = 255;
+    }
+    return {
+      r: Math.round(clamp(r, 0, 255)),
+      g: Math.round(clamp(g, 0, 255)),
+      b: Math.round(clamp(b, 0, 255)),
+    };
+  }
+
+  function rgba(rgb, a) {
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${clamp(a, 0, 1)})`;
+  }
+
+  function mixRgb(a, b, t) {
+    return {
+      r: Math.round(lerp(a.r, b.r, t)),
+      g: Math.round(lerp(a.g, b.g, t)),
+      b: Math.round(lerp(a.b, b.b, t)),
+    };
+  }
+
+  function hashString(text) {
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function randomFromSeed(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a += 0x6D2B79F5;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function ghostSignature(c) {
+    const info = state.lensInfo;
+    return [
+      info.surfaceCount,
+      info.airGlassSurfaceCount,
+      info.estimatedGroups,
+      info.apertureIndex,
+      c.irisBlades,
+      c.enableGhosts,
+      c.enableSensorBounce,
+      c.coatingEfficiency.toFixed(2),
+      c.blackingQuality.toFixed(2),
+    ].join("|");
+  }
+
+  function ensureGhosts(c) {
+    const sig = ghostSignature(c);
+    if (sig === state.ghostSignature) return;
+    state.ghostSignature = sig;
+    state.ghosts = generateGhosts(c);
+  }
+
+  function generateGhosts(c) {
+    if (!c.enableGhosts) return [];
+    const info = state.lensInfo;
+    const count = Math.round(clamp(5 + info.airGlassSurfaceCount * 0.42 + (1 - c.coatingEfficiency) * 5, 5, 12));
+    const seed = hashString(`${info.surfaceCount}:${info.airGlassSurfaceCount}:${info.estimatedGroups}:${info.apertureIndex}:${info.imageCircle}`);
+    const rnd = randomFromSeed(seed);
+    const shapes = ["round", "soft", "iris", "clipped"];
+    const ghosts = [];
+    for (let i = 0; i < count; i++) {
+      const layer = i / Math.max(1, count - 1);
+      const opposite = i % 3 !== 1;
+      ghosts.push({
+        id: i + 1,
+        multiplier: (opposite ? -1 : 1) * lerp(0.16, 1.38, layer) + (rnd() - 0.5) * 0.22,
+        centerPull: lerp(0.08, 0.48, rnd()),
+        perp: (rnd() - 0.5) * lerp(0.05, 0.42, layer),
+        radiusNorm: lerp(0.028, 0.14, rnd()) * lerp(1.3, 0.65, layer),
+        opacity: lerp(0.08, 0.34, rnd()) * lerp(1.1, 0.7, layer),
+        blurNorm: lerp(0.004, 0.038, rnd()),
+        tintShift: rnd(),
+        shape: shapes[Math.floor(rnd() * shapes.length)] || "round",
+        label: `S${Math.max(1, Math.round(lerp(1, info.surfaceCount, rnd())))}-S${Math.max(1, Math.round(lerp(1, info.surfaceCount, rnd())))}`,
+      });
+    }
+    return ghosts;
+  }
+
+  function resizeCanvas() {
+    const rect = els.canvas.getBoundingClientRect();
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+    const w = Math.max(320, Math.round(rect.width * dpr));
+    const h = Math.max(240, Math.round(rect.height * dpr));
+    if (els.canvas.width !== w || els.canvas.height !== h) {
+      els.canvas.width = w;
+      els.canvas.height = h;
+    }
+    state.dpr = dpr;
+    state.width = w;
+    state.height = h;
+  }
+
+  function frameGeometry(c) {
+    const w = state.width;
+    const h = state.height;
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    const scale = Math.min(w, h) * 0.42;
+    return {
+      w,
+      h,
+      cx,
+      cy,
+      scale,
+      lampX: cx + c.lampX * scale,
+      lampY: cy + c.lampY * scale,
+    };
+  }
+
+  function scheduleDraw(regenerate = false) {
+    if (regenerate) state.ghostSignature = "";
+    if (state.raf) return;
+    state.raf = requestAnimationFrame(draw);
+  }
+
+  function draw() {
+    state.raf = 0;
+    resizeCanvas();
+    const c = controls();
+    syncOutputs(c);
+    ensureGhosts(c);
+    const g = frameGeometry(c);
+    const lampColor = kelvinToRgb(c.kelvin);
+    const warmGold = { r: 255, g: 183, b: 84 };
+    const ghostColor = mixRgb(lampColor, warmGold, 0.42);
+    const distanceFactor = clamp(Math.pow(3 / Math.max(0.2, c.distanceM), 1.55), 0.08, 5);
+    const apertureFactor = clamp(Math.pow(2 / Math.max(0.7, c.tStop), 0.72), 0.22, 2.2);
+    const offAxis = clamp(Math.hypot(c.lampX, c.lampY) / 1.2, 0, 1.6);
+    const strength = c.brightness * distanceFactor * apertureFactor;
+    const coatingLoss = 1 - c.coatingEfficiency;
+    const blackingLoss = 1 - c.blackingQuality;
+    const risk = riskScore(c);
+    const veilingLevel = c.enableVeil
+      ? clamp(strength * c.veilingIntensity * (0.15 + coatingLoss * 0.85 + blackingLoss * 0.65 + c.diffusion * 0.35) * (0.75 + offAxis * 0.55), 0, 2.8)
+      : 0;
+    state.lastRisk = { ...risk, veil: veilingLevel };
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, g.w, g.h);
+    drawBackground(c, g);
+    drawVeiling(c, g, lampColor, veilingLevel);
+    drawGhosts(c, g, ghostColor, strength, coatingLoss, offAxis);
+    drawSensorBounce(c, g, lampColor, strength, coatingLoss);
+    drawLamp(c, g, lampColor, strength);
+    if (c.showMarkers) drawMarkers(c, g);
+    if (c.showOverlay) drawOverlay(c, g, risk, veilingLevel);
+    updateRiskSummary(risk, veilingLevel);
+  }
+
+  function drawBackground(c, g) {
+    ctx.fillStyle = "#020306";
+    ctx.fillRect(0, 0, g.w, g.h);
+    if (!c.showBackground || c.flareOnly) return;
+    const bg = ctx.createLinearGradient(0, 0, g.w, g.h);
+    bg.addColorStop(0, "#111823");
+    bg.addColorStop(0.52, "#06080d");
+    bg.addColorStop(1, "#15100b");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, g.w, g.h);
+
+    ctx.save();
+    ctx.globalAlpha = 0.23;
+    ctx.strokeStyle = "rgba(255,255,255,.10)";
+    const step = Math.max(42 * state.dpr, Math.min(g.w, g.h) / 12);
+    for (let x = 0; x <= g.w; x += step) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, g.h);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= g.h; y += step) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(g.w, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const vignette = ctx.createRadialGradient(g.cx, g.cy, Math.min(g.w, g.h) * 0.08, g.cx, g.cy, Math.max(g.w, g.h) * 0.72);
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(1, "rgba(0,0,0,.70)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, g.w, g.h);
+  }
+
+  function drawVeiling(c, g, color, level) {
+    if (!c.enableVeil || level <= 0.001) return;
+    const radius = Math.max(g.w, g.h) * lerp(0.55, 1.18, clamp01(level / 2.4));
+    const veil = ctx.createRadialGradient(g.lampX, g.lampY, 0, g.cx, g.cy, radius);
+    veil.addColorStop(0, rgba(color, clamp(0.16 * level, 0, 0.36)));
+    veil.addColorStop(0.38, rgba(color, clamp(0.075 * level, 0, 0.22)));
+    veil.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = veil;
+    ctx.fillRect(0, 0, g.w, g.h);
+    ctx.globalCompositeOperation = "source-over";
+
+    ctx.fillStyle = rgba(mixRgb(color, { r: 255, g: 205, b: 130 }, 0.45), clamp(0.035 * level, 0, 0.13));
+    ctx.fillRect(0, 0, g.w, g.h);
+  }
+
+  function drawGhosts(c, g, baseColor, strength, coatingLoss, offAxis) {
+    if (!c.enableGhosts) return;
+    const vx = g.lampX - g.cx;
+    const vy = g.lampY - g.cy;
+    const len = Math.max(1, Math.hypot(vx, vy));
+    const px = -vy / len;
+    const py = vx / len;
+    const ghostStrength = clamp(strength * c.ghostIntensity * (0.18 + coatingLoss * 1.35) * (0.65 + offAxis * 0.55), 0, 3.5);
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (const ghost of state.ghosts) {
+      const pull = ghost.centerPull;
+      const x = lerp(g.cx, g.cx - vx * ghost.multiplier + px * ghost.perp * g.scale, 1 - pull);
+      const y = lerp(g.cy, g.cy - vy * ghost.multiplier + py * ghost.perp * g.scale, 1 - pull);
+      const r = ghost.radiusNorm * Math.min(g.w, g.h) * lerp(0.82, 1.5, clamp01(2.2 / c.tStop));
+      const blur = ghost.blurNorm * Math.min(g.w, g.h) * (1 + c.diffusion * 0.8);
+      const tint = mixRgb(baseColor, ghost.tintShift > 0.55 ? { r: 255, g: 112, b: 52 } : { r: 255, g: 225, b: 160 }, ghost.tintShift * 0.55);
+      const alpha = clamp(ghost.opacity * ghostStrength, 0, 0.52);
+      drawGhostShape(x, y, r, blur, tint, alpha, ghost.shape, c.irisBlades, c.tStop);
+    }
+    ctx.restore();
+  }
+
+  function drawGhostShape(x, y, radius, blur, color, alpha, shape, blades, tStop) {
+    if (alpha <= 0.002 || radius <= 0) return;
+    if (shape === "round" || shape === "soft") {
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * (shape === "soft" ? 1.8 : 1.15));
+      grad.addColorStop(0, rgba(color, alpha));
+      grad.addColorStop(0.34, rgba(color, alpha * 0.38));
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - radius * 2, y - radius * 2, radius * 4, radius * 4);
+      return;
+    }
+
+    ctx.save();
+    ctx.filter = `blur(${Math.max(0, blur).toFixed(1)}px)`;
+    ctx.fillStyle = rgba(color, alpha * (shape === "clipped" ? 0.72 : 0.9));
+    if (shape === "clipped") {
+      ctx.beginPath();
+      ctx.ellipse(x, y, radius * 1.28, radius * 0.66, -0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = alpha * 0.35;
+      ctx.strokeStyle = rgba(color, 0.7);
+      ctx.lineWidth = Math.max(1, radius * 0.035);
+      ctx.stroke();
+    } else {
+      drawIrisPolygon(x, y, radius, blades, -Math.PI / 2, tStop);
+    }
+    ctx.restore();
+  }
+
+  function drawIrisPolygon(x, y, radius, blades, rotation, tStop) {
+    const defined = clamp01((tStop - 2.0) / 5.5);
+    const innerRound = lerp(0.94, 0.78, defined);
+    ctx.beginPath();
+    for (let i = 0; i < blades; i++) {
+      const a = rotation + (i / blades) * Math.PI * 2;
+      const rr = radius * (i % 2 ? innerRound : 1);
+      const px = x + Math.cos(a) * rr;
+      const py = y + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawSensorBounce(c, g, color, strength, coatingLoss) {
+    if (!c.enableSensorBounce) return;
+    const vx = g.lampX - g.cx;
+    const vy = g.lampY - g.cy;
+    const x = g.cx - vx * 0.62;
+    const y = g.cy - vy * 0.62;
+    const r = Math.min(g.w, g.h) * (0.055 + 0.018 * c.diffusion) * clamp(2.2 / c.tStop, 0.55, 1.55);
+    const alpha = clamp(strength * (0.08 + coatingLoss * 0.38), 0, 0.34);
+    if (alpha <= 0.002) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.translate(x, y);
+    ctx.rotate(0.22);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 1.8);
+    grad.addColorStop(0, rgba(mixRgb(color, { r: 255, g: 120, b: 165 }, 0.25), alpha));
+    grad.addColorStop(0.55, rgba(color, alpha * 0.22));
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(-r * 2, -r * 2, r * 4, r * 4);
+    ctx.strokeStyle = rgba(color, alpha * 0.95);
+    ctx.lineWidth = Math.max(1, r * 0.035);
+    ctx.strokeRect(-r * 0.72, -r * 0.48, r * 1.44, r * 0.96);
+    ctx.restore();
+  }
+
+  function drawLamp(c, g, color, strength) {
+    const glowRadius = Math.min(g.w, g.h) * clamp(0.18 + c.diffusion * 0.12 + strength * 0.025, 0.12, 0.42);
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    const glow = ctx.createRadialGradient(g.lampX, g.lampY, 0, g.lampX, g.lampY, glowRadius);
+    glow.addColorStop(0, rgba({ r: 255, g: 247, b: 210 }, clamp(0.75 * strength, 0.25, 0.95)));
+    glow.addColorStop(0.14, rgba(color, clamp(0.48 * strength, 0.1, 0.78)));
+    glow.addColorStop(0.55, rgba(color, clamp(0.12 * strength, 0.04, 0.28)));
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(g.lampX - glowRadius, g.lampY - glowRadius, glowRadius * 2, glowRadius * 2);
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = "rgba(255,248,220,.98)";
+    ctx.shadowColor = rgba(color, 0.95);
+    ctx.shadowBlur = Math.min(g.w, g.h) * 0.035 * (1 + c.diffusion);
+    ctx.beginPath();
+    ctx.arc(g.lampX, g.lampY, Math.max(5 * state.dpr, Math.min(g.w, g.h) * 0.014), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawMarkers(c, g) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,209,138,.34)";
+    ctx.fillStyle = "rgba(255,209,138,.82)";
+    ctx.setLineDash([6 * state.dpr, 8 * state.dpr]);
+    ctx.beginPath();
+    ctx.moveTo(g.cx, g.cy);
+    ctx.lineTo(g.lampX, g.lampY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = `${11 * state.dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    state.ghosts.forEach((ghost) => {
+      const vx = g.lampX - g.cx;
+      const vy = g.lampY - g.cy;
+      const len = Math.max(1, Math.hypot(vx, vy));
+      const px = -vy / len;
+      const py = vx / len;
+      const x = g.cx - vx * ghost.multiplier + px * ghost.perp * g.scale;
+      const y = g.cy - vy * ghost.multiplier + py * ghost.perp * g.scale;
+      ctx.beginPath();
+      ctx.arc(x, y, 3.2 * state.dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText(ghost.label, x + 7 * state.dpr, y - 7 * state.dpr);
+    });
+    ctx.restore();
+  }
+
+  function drawOverlay(c, g, risk, veilingLevel) {
+    const lines = [
+      `Distance: ${c.distanceM.toFixed(1)}m`,
+      `Kelvin: ${Math.round(c.kelvin)}K`,
+      `Estimated ghost count: ${state.ghosts.length}`,
+      `Estimated flare risk: ${risk.label} (${risk.score}/100)`,
+      `Estimated veiling level: ${veilingLevel.toFixed(2)}`,
+      "Approximate flare preview, not full stray-light simulation.",
+    ];
+    const pad = 12 * state.dpr;
+    const lineH = 17 * state.dpr;
+    const width = 360 * state.dpr;
+    const height = pad * 2 + lineH * lines.length;
+    const x = 18 * state.dpr;
+    const y = 18 * state.dpr;
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,.48)";
+    ctx.strokeStyle = "rgba(255,255,255,.14)";
+    ctx.lineWidth = 1 * state.dpr;
+    roundedRect(x, y, width, height, 12 * state.dpr);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,.86)";
+    ctx.font = `${12 * state.dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    lines.forEach((line, i) => ctx.fillText(line, x + pad, y + pad + (i + 0.82) * lineH));
+    ctx.restore();
+  }
+
+  function roundedRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function updateRiskSummary(risk, veilingLevel) {
+    if (!els.riskSummary) return;
+    els.riskSummary.textContent = `Flare risk: ${risk.label} (${risk.score}/100) - veiling ${veilingLevel.toFixed(2)} - ghosts ${state.ghosts.length}`;
+  }
+
+  function setLampFromEvent(event) {
+    const rect = els.canvas.getBoundingClientRect();
+    const xCss = event.clientX - rect.left;
+    const yCss = event.clientY - rect.top;
+    const scale = Math.min(rect.width, rect.height) * 0.42;
+    const nx = clamp((xCss - rect.width * 0.5) / Math.max(1, scale), -1.2, 1.2);
+    const ny = clamp((yCss - rect.height * 0.5) / Math.max(1, scale), -1.2, 1.2);
+    if (els.lampX) els.lampX.value = nx.toFixed(2);
+    if (els.lampY) els.lampY.value = ny.toFixed(2);
+    scheduleDraw(false);
+  }
+
+  function bindControls() {
+    const redrawOnly = [els.lampX, els.lampY, els.distance, els.brightness, els.kelvin];
+    const regenerate = [
+      els.enableGhosts,
+      els.enableVeil,
+      els.enableSensorBounce,
+      els.ghostIntensity,
+      els.veilingIntensity,
+      els.coatingEfficiency,
+      els.blackingQuality,
+      els.diffusion,
+      els.irisBlades,
+      els.showBackground,
+      els.flareOnly,
+      els.showMarkers,
+      els.showOverlay,
+    ];
+    redrawOnly.forEach((el) => {
+      if (!el) return;
+      el.addEventListener("input", () => scheduleDraw(false));
+      el.addEventListener("change", () => scheduleDraw(false));
+    });
+    regenerate.forEach((el) => {
+      if (!el) return;
+      el.addEventListener("input", () => scheduleDraw(true));
+      el.addEventListener("change", () => scheduleDraw(true));
+    });
+    if (els.tStop) {
+      els.tStop.addEventListener("input", () => {
+        state.userTStopTouched = true;
+        scheduleDraw(false);
+      });
+      els.tStop.addEventListener("change", () => {
+        state.userTStopTouched = true;
+        scheduleDraw(true);
+      });
+    }
+  }
+
+  function bindPointer() {
+    els.canvas.addEventListener("pointerdown", (event) => {
+      state.dragging = true;
+      els.canvas.classList.add("isDragging");
+      els.canvas.setPointerCapture?.(event.pointerId);
+      setLampFromEvent(event);
+    });
+    els.canvas.addEventListener("pointermove", (event) => {
+      if (!state.dragging) return;
+      setLampFromEvent(event);
+    });
+    const stop = (event) => {
+      state.dragging = false;
+      els.canvas.classList.remove("isDragging");
+      try { els.canvas.releasePointerCapture?.(event.pointerId); } catch (_) {}
+    };
+    els.canvas.addEventListener("pointerup", stop);
+    els.canvas.addEventListener("pointercancel", stop);
+    els.canvas.addEventListener("lostpointercapture", () => {
+      state.dragging = false;
+      els.canvas.classList.remove("isDragging");
+    });
+  }
+
+  function init() {
+    els.btnFlareLabTab?.addEventListener("click", () => showView("flare"));
+    els.btnLensBuilderTab?.addEventListener("click", () => showView("lens"));
+    els.btnFlareBack?.addEventListener("click", () => showView("lens"));
+    bindControls();
+    bindPointer();
+    window.addEventListener("resize", () => scheduleDraw(false));
+    window.addEventListener("lensbuilder:flare-info", (event) => {
+      applyLensInfo(event.detail || fallbackLensInfo);
+      scheduleDraw(true);
+    });
+    readLensInfo();
+    scheduleDraw(true);
+  }
+
+  init();
+})();
