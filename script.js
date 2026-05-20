@@ -1609,6 +1609,7 @@ function warnMissingGlass(name) {
         ? Number(preview.usableCircle.diameterMm)
         : fallbackImageCircle,
       efl: Number.isFinite(efl) ? efl : null,
+      lensName: String(lens?.name || lens?.zemaxName || lens?.zemax?.name || ""),
       hasLensData: true,
     };
   }
