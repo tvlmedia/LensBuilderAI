@@ -16,6 +16,13 @@
     imageCircle: 46.3,
     hasLensData: false,
   };
+  const DEFAULT_LAMP = {
+    x: 0.55,
+    y: -0.25,
+    distanceM: 3.0,
+    kelvin: 2300,
+    brightness: 1.0,
+  };
 
   const els = {
     lensBuilderView: $("#appMain"),
@@ -26,35 +33,10 @@
     canvas: $("#flareCanvas"),
     lensSummary: $("#flareLensSummary"),
     riskSummary: $("#flareRiskSummary"),
-    lampX: $("#flareLampX"),
-    lampXValue: $("#flareLampXValue"),
-    lampY: $("#flareLampY"),
-    lampYValue: $("#flareLampYValue"),
-    distance: $("#flareDistance"),
-    brightness: $("#flareBrightness"),
-    brightnessValue: $("#flareBrightnessValue"),
-    kelvin: $("#flareKelvin"),
-    enableGhosts: $("#flareEnableGhosts"),
-    enableVeil: $("#flareEnableVeil"),
-    enableSensorBounce: $("#flareEnableSensorBounce"),
-    ghostIntensity: $("#flareGhostIntensity"),
-    ghostIntensityValue: $("#flareGhostIntensityValue"),
-    veilingIntensity: $("#flareVeilingIntensity"),
-    veilingIntensityValue: $("#flareVeilingIntensityValue"),
-    coatingEfficiency: $("#flareCoatingEfficiency"),
-    coatingEfficiencyValue: $("#flareCoatingEfficiencyValue"),
-    blackingQuality: $("#flareBlackingQuality"),
-    blackingQualityValue: $("#flareBlackingQualityValue"),
-    diffusion: $("#flareDiffusion"),
-    diffusionValue: $("#flareDiffusionValue"),
     tStop: $("#flareTStop"),
     tStopValue: $("#flareTStopValue"),
-    irisBlades: $("#flareIrisBlades"),
-    irisBladesValue: $("#flareIrisBladesValue"),
-    showBackground: $("#flareShowBackground"),
-    flareOnly: $("#flareOnly"),
-    showMarkers: $("#flareShowMarkers"),
     showOverlay: $("#flareShowOverlay"),
+    resetLamp: $("#flareResetLamp"),
   };
 
   if (!els.canvas || !els.flareLabView) return;
@@ -70,6 +52,9 @@
     ghostSignature: "",
     ghosts: [],
     lensInfo: fallbackLensInfo,
+    lampX: DEFAULT_LAMP.x,
+    lampY: DEFAULT_LAMP.y,
+    wideOpenTStop: 2.0,
     userTStopTouched: false,
     lastRisk: { score: 0, label: "Low", veil: 0 },
   };
@@ -80,40 +65,33 @@
   }
 
   function controls() {
+    const model = estimateFlareDefaults(state.lensInfo);
+    const tMin = Math.max(0.7, Number(state.wideOpenTStop) || 2.0);
     return {
-      lampX: valueOf(els.lampX, 0.55),
-      lampY: valueOf(els.lampY, -0.25),
-      distanceM: clamp(valueOf(els.distance, 3), 0.2, 30),
-      brightness: clamp(valueOf(els.brightness, 1), 0, 2.5),
-      kelvin: clamp(valueOf(els.kelvin, 2300), 1600, 12000),
-      enableGhosts: !!els.enableGhosts?.checked,
-      enableVeil: !!els.enableVeil?.checked,
-      enableSensorBounce: !!els.enableSensorBounce?.checked,
-      ghostIntensity: clamp(valueOf(els.ghostIntensity, 0.85), 0, 2),
-      veilingIntensity: clamp(valueOf(els.veilingIntensity, 0.75), 0, 2),
-      coatingEfficiency: clamp01(valueOf(els.coatingEfficiency, 0.75)),
-      blackingQuality: clamp01(valueOf(els.blackingQuality, 0.65)),
-      diffusion: clamp(valueOf(els.diffusion, 0.45), 0, 1.5),
-      tStop: clamp(valueOf(els.tStop, 2), 0.7, 16),
-      irisBlades: Math.round(clamp(valueOf(els.irisBlades, 9), 3, 16)),
-      showBackground: !!els.showBackground?.checked,
-      flareOnly: !!els.flareOnly?.checked,
-      showMarkers: !!els.showMarkers?.checked,
+      lampX: state.lampX,
+      lampY: state.lampY,
+      distanceM: DEFAULT_LAMP.distanceM,
+      brightness: DEFAULT_LAMP.brightness,
+      kelvin: DEFAULT_LAMP.kelvin,
+      enableGhosts: true,
+      enableVeil: true,
+      enableSensorBounce: model.sensorBounce,
+      ghostIntensity: model.ghostIntensity,
+      veilingIntensity: model.veilingIntensity,
+      coatingEfficiency: model.coatingEfficiency,
+      blackingQuality: model.blackingQuality,
+      diffusion: model.diffusion,
+      tStop: clamp(valueOf(els.tStop, tMin), tMin, 22),
+      irisBlades: model.irisBlades,
+      showBackground: true,
+      flareOnly: false,
+      showMarkers: false,
       showOverlay: !!els.showOverlay?.checked,
     };
   }
 
   function syncOutputs(c) {
-    if (els.lampXValue) els.lampXValue.textContent = c.lampX.toFixed(2);
-    if (els.lampYValue) els.lampYValue.textContent = c.lampY.toFixed(2);
-    if (els.brightnessValue) els.brightnessValue.textContent = c.brightness.toFixed(2);
-    if (els.ghostIntensityValue) els.ghostIntensityValue.textContent = c.ghostIntensity.toFixed(2);
-    if (els.veilingIntensityValue) els.veilingIntensityValue.textContent = c.veilingIntensity.toFixed(2);
-    if (els.coatingEfficiencyValue) els.coatingEfficiencyValue.textContent = c.coatingEfficiency.toFixed(2);
-    if (els.blackingQualityValue) els.blackingQualityValue.textContent = c.blackingQuality.toFixed(2);
-    if (els.diffusionValue) els.diffusionValue.textContent = c.diffusion.toFixed(2);
     if (els.tStopValue) els.tStopValue.textContent = `T${c.tStop.toFixed(1)}`;
-    if (els.irisBladesValue) els.irisBladesValue.textContent = String(c.irisBlades);
   }
 
   function showView(view) {
@@ -148,7 +126,17 @@
     next.currentTStop = Math.max(0.7, Number(next.currentTStop) || fallbackLensInfo.currentTStop);
     next.imageCircle = Math.max(1, Number(next.imageCircle) || fallbackLensInfo.imageCircle);
     state.lensInfo = next;
-    if (!state.userTStopTouched && els.tStop) els.tStop.value = String(clamp(next.currentTStop, 0.7, 16));
+    state.wideOpenTStop = clamp(next.currentTStop || 2.0, 0.7, 22);
+    if (els.tStop) {
+      els.tStop.min = String(state.wideOpenTStop);
+      els.tStop.max = "22";
+      const current = valueOf(els.tStop, state.wideOpenTStop);
+      if (!state.userTStopTouched || current < state.wideOpenTStop) {
+        els.tStop.value = String(state.wideOpenTStop);
+      } else {
+        els.tStop.value = String(clamp(current, state.wideOpenTStop, 22));
+      }
+    }
     state.ghostSignature = "";
     updateLensSummary();
   }
@@ -157,7 +145,24 @@
     const info = state.lensInfo;
     if (!els.lensSummary) return;
     const source = info.hasLensData ? "Current lens" : "Fallback lens";
-    els.lensSummary.textContent = `${source}: ${info.surfaceCount} surfaces, ${info.airGlassSurfaceCount} air/glass transitions, ${info.estimatedGroups} groups, T${Number(info.currentTStop).toFixed(2)}, IC ${Number(info.imageCircle).toFixed(1)}mm.`;
+    els.lensSummary.textContent = `${source}: ${info.surfaceCount} surfaces, ${info.airGlassSurfaceCount} air/glass transitions, ${info.estimatedGroups} groups.`;
+  }
+
+  function estimateFlareDefaults(infoInput) {
+    const info = infoInput || fallbackLensInfo;
+    const surfaces = Math.max(0, Number(info.surfaceCount) || fallbackLensInfo.surfaceCount);
+    const transitions = Math.max(0, Number(info.airGlassSurfaceCount) || fallbackLensInfo.airGlassSurfaceCount);
+    const groups = Math.max(1, Number(info.estimatedGroups) || fallbackLensInfo.estimatedGroups);
+    const complexity = clamp01((transitions - 4) / 14);
+    return {
+      coatingEfficiency: clamp(0.86 - complexity * 0.16 - Math.max(0, surfaces - 14) * 0.004, 0.62, 0.9),
+      blackingQuality: clamp(0.74 - complexity * 0.12 - Math.max(0, groups - 5) * 0.025, 0.54, 0.82),
+      diffusion: clamp(0.26 + complexity * 0.36 + Math.max(0, groups - 4) * 0.025, 0.22, 0.72),
+      ghostIntensity: clamp(0.58 + transitions * 0.035 + complexity * 0.25, 0.62, 1.35),
+      veilingIntensity: clamp(0.42 + complexity * 0.42 + Math.max(0, groups - 3) * 0.04, 0.46, 1.18),
+      sensorBounce: true,
+      irisBlades: 9,
+    };
   }
 
   function riskScore(c) {
@@ -428,12 +433,15 @@
   function drawGhostShape(x, y, radius, blur, color, alpha, shape, blades, tStop) {
     if (alpha <= 0.002 || radius <= 0) return;
     if (shape === "round" || shape === "soft") {
-      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * (shape === "soft" ? 1.8 : 1.15));
+      const fillRadius = radius * (shape === "soft" ? 1.8 : 1.15);
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, fillRadius);
       grad.addColorStop(0, rgba(color, alpha));
       grad.addColorStop(0.34, rgba(color, alpha * 0.38));
       grad.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = grad;
-      ctx.fillRect(x - radius * 2, y - radius * 2, radius * 4, radius * 4);
+      ctx.beginPath();
+      ctx.arc(x, y, fillRadius, 0, Math.PI * 2);
+      ctx.fill();
       return;
     }
 
@@ -441,13 +449,14 @@
     ctx.filter = `blur(${Math.max(0, blur).toFixed(1)}px)`;
     ctx.fillStyle = rgba(color, alpha * (shape === "clipped" ? 0.72 : 0.9));
     if (shape === "clipped") {
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.65);
+      grad.addColorStop(0, rgba(color, alpha * 0.78));
+      grad.addColorStop(0.5, rgba(color, alpha * 0.24));
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.ellipse(x, y, radius * 1.28, radius * 0.66, -0.35, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = alpha * 0.35;
-      ctx.strokeStyle = rgba(color, 0.7);
-      ctx.lineWidth = Math.max(1, radius * 0.035);
-      ctx.stroke();
     } else {
       drawIrisPolygon(x, y, radius, blades, -Math.PI / 2, tStop);
     }
@@ -488,10 +497,9 @@
     grad.addColorStop(0.55, rgba(color, alpha * 0.22));
     grad.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = grad;
-    ctx.fillRect(-r * 2, -r * 2, r * 4, r * 4);
-    ctx.strokeStyle = rgba(color, alpha * 0.95);
-    ctx.lineWidth = Math.max(1, r * 0.035);
-    ctx.strokeRect(-r * 0.72, -r * 0.48, r * 1.44, r * 0.96);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 1.85, r * 1.05, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -549,10 +557,10 @@
     const lines = [
       `Distance: ${c.distanceM.toFixed(1)}m`,
       `Kelvin: ${Math.round(c.kelvin)}K`,
-      `Estimated ghost count: ${state.ghosts.length}`,
-      `Estimated flare risk: ${risk.label} (${risk.score}/100)`,
-      `Estimated veiling level: ${veilingLevel.toFixed(2)}`,
-      "Approximate flare preview, not full stray-light simulation.",
+      `T-stop: T${c.tStop.toFixed(1)}`,
+      `Estimated ghosts: ${state.ghosts.length}`,
+      `Flare risk: ${risk.label}`,
+      "Approximate preview, not full stray-light simulation.",
     ];
     const pad = 12 * state.dpr;
     const lineH = 17 * state.dpr;
@@ -588,8 +596,20 @@
   }
 
   function updateRiskSummary(risk, veilingLevel) {
+    const c = controls();
+    if (els.lensSummary) {
+      const info = state.lensInfo;
+      const source = info.hasLensData ? "Current lens" : "Fallback lens";
+      els.lensSummary.innerHTML = [
+        `<div><strong>${source}</strong></div>`,
+        `<div>Surfaces: ${Math.round(info.surfaceCount)}</div>`,
+        `<div>Air/glass transitions: ${Math.round(info.airGlassSurfaceCount)}</div>`,
+        `<div>Estimated groups: ${Math.round(info.estimatedGroups)}</div>`,
+        `<div>Current selected T-stop: T${c.tStop.toFixed(1)}</div>`,
+      ].join("");
+    }
     if (!els.riskSummary) return;
-    els.riskSummary.textContent = `Flare risk: ${risk.label} (${risk.score}/100) - veiling ${veilingLevel.toFixed(2)} - ghosts ${state.ghosts.length}`;
+    els.riskSummary.textContent = `Estimated flare risk: ${risk.label} (${risk.score}/100)`;
   }
 
   function setLampFromEvent(event) {
@@ -599,37 +619,16 @@
     const scale = Math.min(rect.width, rect.height) * 0.42;
     const nx = clamp((xCss - rect.width * 0.5) / Math.max(1, scale), -1.2, 1.2);
     const ny = clamp((yCss - rect.height * 0.5) / Math.max(1, scale), -1.2, 1.2);
-    if (els.lampX) els.lampX.value = nx.toFixed(2);
-    if (els.lampY) els.lampY.value = ny.toFixed(2);
+    state.lampX = nx;
+    state.lampY = ny;
     scheduleDraw(false);
   }
 
   function bindControls() {
-    const redrawOnly = [els.lampX, els.lampY, els.distance, els.brightness, els.kelvin];
-    const regenerate = [
-      els.enableGhosts,
-      els.enableVeil,
-      els.enableSensorBounce,
-      els.ghostIntensity,
-      els.veilingIntensity,
-      els.coatingEfficiency,
-      els.blackingQuality,
-      els.diffusion,
-      els.irisBlades,
-      els.showBackground,
-      els.flareOnly,
-      els.showMarkers,
-      els.showOverlay,
-    ];
-    redrawOnly.forEach((el) => {
+    [els.showOverlay].forEach((el) => {
       if (!el) return;
       el.addEventListener("input", () => scheduleDraw(false));
       el.addEventListener("change", () => scheduleDraw(false));
-    });
-    regenerate.forEach((el) => {
-      if (!el) return;
-      el.addEventListener("input", () => scheduleDraw(true));
-      el.addEventListener("change", () => scheduleDraw(true));
     });
     if (els.tStop) {
       els.tStop.addEventListener("input", () => {
@@ -639,6 +638,13 @@
       els.tStop.addEventListener("change", () => {
         state.userTStopTouched = true;
         scheduleDraw(true);
+      });
+    }
+    if (els.resetLamp) {
+      els.resetLamp.addEventListener("click", () => {
+        state.lampX = DEFAULT_LAMP.x;
+        state.lampY = DEFAULT_LAMP.y;
+        scheduleDraw(false);
       });
     }
   }
