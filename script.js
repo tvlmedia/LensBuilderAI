@@ -1660,6 +1660,20 @@ function warnMissingGlass(name) {
     const tStop = Number.isFinite(efl) ? estimateTStopApprox(efl, surfaces, wavePreset) : null;
     const { w: sensorW, h: sensorH } = getSensorWH();
     const fallbackImageCircle = Math.hypot(sensorW, sensorH);
+    const readonlySurfaces = surfaces.map((s, index) => ({
+      index,
+      type: String(s?.type || ""),
+      surfaceLabel: String(s?.surfaceLabel || s?.label || s?.type || `S${index}`),
+      R: finiteOrNull(s?.R),
+      t: finiteOrNull(s?.t),
+      ap: finiteOrNull(s?.ap),
+      ap_optical: finiteOrNull(s?.ap_optical ?? s?.ap),
+      glass: String(s?.glass || "AIR"),
+      originalGlass: s?.originalGlass != null ? String(s.originalGlass) : null,
+      nd: finiteOrNull(s?.nd ?? s?.glass_nd),
+      vd: finiteOrNull(s?.vd ?? s?.glass_vd),
+      stop: !!s?.stop,
+    }));
     return {
       surfaceCount: physical.length,
       airGlassSurfaceCount,
@@ -1670,6 +1684,11 @@ function warnMissingGlass(name) {
         ? Number(preview.usableCircle.diameterMm)
         : fallbackImageCircle,
       efl: Number.isFinite(efl) ? efl : null,
+      bfl: Number.isFinite(Number(parax?.bfl)) ? Number(parax.bfl) : null,
+      sensorWidthMm: sensorW,
+      sensorHeightMm: sensorH,
+      wavePreset,
+      surfaces: readonlySurfaces,
       lensName: String(lens?.name || lens?.zemaxName || lens?.zemax?.name || ""),
       hasLensData: true,
     };
