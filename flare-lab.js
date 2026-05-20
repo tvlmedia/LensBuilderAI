@@ -166,8 +166,8 @@
       coatingEfficiency: clamp(0.91 - complexity * 0.10 - Math.max(0, surfaces - 14) * 0.003, 0.70, 0.93),
       blackingQuality: clamp(0.82 - complexity * 0.09 - Math.max(0, groups - 5) * 0.018, 0.64, 0.86),
       diffusion: clamp(0.18 + complexity * 0.20 + Math.max(0, groups - 4) * 0.018, 0.16, 0.46),
-      ghostIntensity: clamp(0.48 + transitions * 0.026 + complexity * 0.16, 0.52, 1.05),
-      veilingIntensity: clamp(0.28 + complexity * 0.22 + Math.max(0, groups - 3) * 0.025, 0.30, 0.78),
+      ghostIntensity: clamp(0.56 + transitions * 0.030 + complexity * 0.18, 0.62, 1.18),
+      veilingIntensity: clamp(0.24 + complexity * 0.16 + Math.max(0, groups - 3) * 0.018, 0.24, 0.62),
       sensorBounce: true,
       irisBlades: 9,
     };
@@ -199,10 +199,10 @@
       wideOpenT,
       selectedT,
       stopRatio,
-      flareOpenFactor: clamp(1 / Math.sqrt(stopRatio), 0.15, 1),
-      veilFactor: clamp(1 / Math.pow(stopRatio, 0.85), 0.05, 1),
-      ghostSizeFactor: clamp(1 / Math.sqrt(stopRatio), 0.35, 1),
-      irisDefinition: smoothstep(2.8, 8.0, selectedT),
+      flareOpenFactor: clamp(1 / Math.pow(stopRatio, 0.62), 0.10, 1),
+      veilFactor: clamp(1 / Math.pow(stopRatio, 1.0), 0.035, 1),
+      ghostSizeFactor: clamp(1 / Math.pow(stopRatio, 0.55), 0.25, 1),
+      irisDefinition: smoothstep(3.6, 9.0, selectedT),
     };
   }
 
@@ -285,34 +285,35 @@
   function generateGhosts(c) {
     if (!c.enableGhosts) return [];
     const info = state.lensInfo;
-    const count = Math.round(clamp(5 + info.airGlassSurfaceCount * 0.35 + (1 - c.coatingEfficiency) * 3, 6, 12));
+    const count = Math.round(clamp(6 + info.airGlassSurfaceCount * 0.42 + (1 - c.coatingEfficiency) * 4, 8, 14));
     const seed = hashString(`${info.surfaceCount}:${info.airGlassSurfaceCount}:${info.estimatedGroups}:${info.apertureIndex}:${info.imageCircle}:${info.lensName}`);
     const rnd = randomFromSeed(seed);
     const multipliers = [-0.90, -0.55, -0.25, 0.15, 0.38, 0.70, -1.18, 0.98, -0.08, 0.52, -0.72, 0.26];
+    const typePattern = ["orb", "disc", "point", "disc", "point", "iris", "disc", "point", "orb", "disc", "point", "iris", "disc", "point"];
     const ghosts = [];
     for (let i = 0; i < count; i++) {
       const layer = i / Math.max(1, count - 1);
-      const type = i === 0 ? "orb" : (i % 5 === 0 ? "point" : (i % 4 === 0 ? "iris" : "disc"));
+      const type = typePattern[i % typePattern.length];
       ghosts.push({
         id: i + 1,
         type,
         multiplier: (multipliers[i % multipliers.length] || 0.2) + (rnd() - 0.5) * 0.055,
         perp: (rnd() - 0.5) * lerp(0.035, 0.28, layer),
         radiusNorm: type === "orb"
-          ? lerp(0.17, 0.24, rnd())
+          ? lerp(0.135, 0.210, rnd())
           : type === "point"
-            ? lerp(0.006, 0.014, rnd())
+            ? lerp(0.008, 0.018, rnd())
             : type === "iris"
-              ? lerp(0.040, 0.080, rnd())
-              : lerp(0.030, 0.105, rnd()),
+              ? lerp(0.035, 0.074, rnd())
+              : lerp(0.026, 0.086, rnd()),
         opacity: type === "orb"
-          ? lerp(0.060, 0.125, rnd())
+          ? lerp(0.10, 0.18, rnd())
           : type === "point"
-            ? lerp(0.16, 0.30, rnd())
+            ? lerp(0.28, 0.52, rnd())
             : type === "iris"
-              ? lerp(0.075, 0.18, rnd())
-              : lerp(0.095, 0.24, rnd()),
-        blurNorm: type === "point" ? lerp(0.001, 0.003, rnd()) : lerp(0.002, 0.020, rnd()),
+              ? lerp(0.12, 0.24, rnd())
+              : lerp(0.18, 0.34, rnd()),
+        blurNorm: type === "point" ? lerp(0.0008, 0.0024, rnd()) : lerp(0.0015, 0.014, rnd()),
         ring: lerp(0.25, 0.58, rnd()),
         tintShift: rnd(),
         label: `S${Math.max(1, Math.round(lerp(1, info.surfaceCount, rnd())))}-S${Math.max(1, Math.round(lerp(1, info.surfaceCount, rnd())))}`,
@@ -361,6 +362,23 @@
     return nearEdge ? "edge" : "inside frame";
   }
 
+  function ghostVisibilityModel(risk, response, offAxis, edgePressure, lampStatus) {
+    const riskNorm = clamp01((Number(risk?.score) || 0) / 100);
+    const edgeFactor = clamp01((edgePressure - 0.72) / 0.58);
+    const offFrameFactor = lampStatus === "off-frame" ? 1 : 0;
+    const edgeOrOff = Math.max(edgeFactor, offFrameFactor * 0.85);
+    const offAxisFactor = clamp01(offAxis / 1.55);
+    const baseBoost = 1.0 + riskNorm * 0.80 + offAxisFactor * 0.38 + edgeFactor * 0.55 + offFrameFactor * 0.36;
+    return {
+      boost: clamp(baseBoost * response.flareOpenFactor, 0.20, 2.45),
+      riskNorm,
+      edgeFactor,
+      offFrameFactor,
+      edgeOrOff,
+      label: baseBoost > 1.38 ? "Boosted" : "Normal",
+    };
+  }
+
   function getLampOverscanBounds(rect) {
     const scale = Math.max(1, Math.min(rect.width, rect.height) * 0.42);
     return {
@@ -398,8 +416,10 @@
     const coatingLoss = 1 - c.coatingEfficiency;
     const blackingLoss = 1 - c.blackingQuality;
     const risk = riskScore(c);
+    const lampStatus = lampPositionStatus(g);
+    const ghostVisibility = ghostVisibilityModel(risk, response, offAxis, edgePressure, lampStatus);
     const veilingLevel = c.enableVeil
-      ? clamp(response.veilFactor * c.veilingIntensity * (0.10 + coatingLoss * 0.52 + blackingLoss * 0.42 + c.diffusion * 0.22) * (0.32 + offAxis * 0.32 + Math.max(0, edgePressure - 0.72) * 0.60), 0, 1.25)
+      ? clamp(response.veilFactor * c.veilingIntensity * (0.08 + coatingLoss * 0.42 + blackingLoss * 0.30 + c.diffusion * 0.16) * (0.34 + offAxis * 0.28 + ghostVisibility.edgeFactor * 0.42 + ghostVisibility.offFrameFactor * 0.18), 0, 0.92)
       : 0;
     state.lastRisk = { ...risk, veil: veilingLevel };
 
@@ -407,12 +427,12 @@
     ctx.clearRect(0, 0, g.w, g.h);
     drawBackground(c, g, veilingLevel);
     drawVeiling(c, g, lampColor, veilingLevel, offAxis, edgePressure, response);
-    drawGhosts(c, g, ghostColor, strength, coatingLoss, offAxis, response);
+    drawGhosts(c, g, ghostColor, strength, coatingLoss, offAxis, response, risk, ghostVisibility);
     drawSensorBounce(c, g, lampColor, strength, coatingLoss, response);
     drawLamp(c, g, lampColor, strength, response);
     drawDither(g, veilingLevel);
     if (c.showMarkers) drawMarkers(c, g);
-    if (c.showOverlay) drawOverlay(c, g, risk, veilingLevel);
+    if (c.showOverlay) drawOverlay(c, g, risk, veilingLevel, ghostVisibility);
     updateRiskSummary(risk, veilingLevel);
   }
 
@@ -515,30 +535,50 @@
     ctx.restore();
   }
 
-  function drawGhosts(c, g, baseColor, strength, coatingLoss, offAxis, response) {
+  function drawGhosts(c, g, baseColor, strength, coatingLoss, offAxis, response, risk, visibility) {
     if (!c.enableGhosts) return;
     const vx = g.lampX - g.cx;
     const vy = g.lampY - g.cy;
     const len = Math.max(1, Math.hypot(vx, vy));
     const px = -vy / len;
     const py = vx / len;
-    const ghostStrength = clamp(strength * c.ghostIntensity * (0.30 + coatingLoss * 1.15) * (0.82 + offAxis * 0.52), 0, 2.8);
+    const riskNorm = visibility?.riskNorm ?? clamp01((Number(risk?.score) || 0) / 100);
+    const edgeFactor = visibility?.edgeFactor || 0;
+    const edgeOrOff = visibility?.edgeOrOff || edgeFactor;
+    const visibilityBoost = visibility?.boost || 1;
+    const ghostStrength = clamp(
+      strength * c.ghostIntensity *
+      (0.55 + coatingLoss * 1.25 + riskNorm * 0.55) *
+      (0.88 + offAxis * 0.38 + edgeOrOff * 0.58) *
+      visibilityBoost,
+      0,
+      4.4
+    );
     ctx.save();
     ctx.globalCompositeOperation = "screen";
     for (const ghost of state.ghosts) {
       const x = g.cx + vx * ghost.multiplier + px * ghost.perp * g.scale;
       const y = g.cy + vy * ghost.multiplier + py * ghost.perp * g.scale;
-      const typeSizeBoost = ghost.type === "orb" ? 1.25 : ghost.type === "point" ? 0.65 : 1;
+      const typeSizeBoost = ghost.type === "orb" ? 1.12 : ghost.type === "point" ? 0.88 : ghost.type === "iris" ? 0.94 : 1;
       const r = ghost.radiusNorm * Math.min(g.w, g.h) * response.ghostSizeFactor * typeSizeBoost;
-      const blur = ghost.blurNorm * Math.min(g.w, g.h) * lerp(1.35, 0.38, response.irisDefinition);
+      const blurType = ghost.type === "orb" ? 0.58 : ghost.type === "disc" ? 0.72 : ghost.type === "point" ? 0.45 : 0.82;
+      const blur = ghost.blurNorm * Math.min(g.w, g.h) * lerp(1.22, 0.32, response.irisDefinition) * blurType;
       const tintTarget = ghost.tintShift > 0.66
         ? { r: 255, g: 218, b: 136 }
         : ghost.tintShift > 0.34
           ? { r: 255, g: 164, b: 102 }
           : { r: 255, g: 236, b: 180 };
-      const tint = mixRgb(baseColor, tintTarget, 0.52);
-      const irisBoost = ghost.type === "iris" ? lerp(0.10, 1.0, response.irisDefinition) : 1;
-      const alpha = clamp(ghost.opacity * ghostStrength * irisBoost, 0, ghost.type === "point" ? 0.46 : 0.38);
+      const tint = mixRgb(baseColor, tintTarget, ghost.type === "point" ? 0.68 : 0.58);
+      const irisBoost = ghost.type === "iris" ? lerp(0.04, 1.05, response.irisDefinition) : 1;
+      const typeAlphaBoost = ghost.type === "point"
+        ? 1.55
+        : ghost.type === "disc"
+          ? 1.28
+          : ghost.type === "orb"
+            ? 1.08
+            : 0.82 + response.irisDefinition * 0.72;
+      const alphaCap = ghost.type === "point" ? 0.72 : ghost.type === "disc" ? 0.58 : ghost.type === "orb" ? 0.42 : 0.50;
+      const alpha = clamp(ghost.opacity * ghostStrength * irisBoost * typeAlphaBoost, 0, alphaCap);
       drawGhostShape(x, y, r, blur, tint, alpha, ghost, c.irisBlades, c.tStop, response);
     }
     ctx.restore();
@@ -549,8 +589,9 @@
     const type = String(ghost?.type || "disc");
     if (type === "point") {
       const grad = ctx.createRadialGradient(x, y, 0, x, y, radius * 2.5);
-      grad.addColorStop(0, "rgba(255,250,224,.72)");
-      grad.addColorStop(0.22, rgba(color, alpha));
+      grad.addColorStop(0, rgba({ r: 255, g: 252, b: 226 }, Math.min(0.92, alpha * 1.35)));
+      grad.addColorStop(0.18, rgba({ r: 255, g: 232, b: 166 }, alpha * 0.92));
+      grad.addColorStop(0.42, rgba(color, alpha * 0.34));
       grad.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = grad;
       ctx.beginPath();
@@ -564,12 +605,12 @@
 
     if (type === "iris") {
       const irisAlpha = alpha * clamp(response.irisDefinition, 0.05, 0.92);
-      ctx.fillStyle = rgba(color, irisAlpha * 0.72);
+      ctx.fillStyle = rgba(color, irisAlpha * 0.62);
       drawIrisPolygon(x, y, radius, blades, -Math.PI / 2, tStop);
       const rim = ctx.createRadialGradient(x, y, radius * 0.20, x, y, radius * 1.18);
       rim.addColorStop(0, "rgba(0,0,0,0)");
-      rim.addColorStop(0.70, rgba(color, irisAlpha * 0.07));
-      rim.addColorStop(0.88, rgba(color, irisAlpha * 0.25));
+      rim.addColorStop(0.58, rgba(color, irisAlpha * 0.08));
+      rim.addColorStop(0.82, rgba({ r: 255, g: 235, b: 178 }, irisAlpha * 0.34));
       rim.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = rim;
       ctx.beginPath();
@@ -581,27 +622,49 @@
 
     if (type === "orb") {
       const grad = ctx.createRadialGradient(x, y, radius * 0.06, x, y, radius * 1.35);
-      grad.addColorStop(0, rgba(color, alpha * 0.025));
-      grad.addColorStop(0.48, rgba(color, alpha * 0.070));
-      grad.addColorStop(0.72, rgba(color, alpha * 0.34));
+      grad.addColorStop(0, rgba(color, alpha * 0.018));
+      grad.addColorStop(0.38, rgba(color, alpha * 0.055));
+      grad.addColorStop(0.62, rgba(color, alpha * 0.16));
+      grad.addColorStop(0.76, rgba({ r: 255, g: 232, b: 170 }, alpha * 0.50));
+      grad.addColorStop(0.88, rgba(color, alpha * 0.22));
       grad.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(x, y, radius * 1.35, 0, Math.PI * 2);
+      ctx.fill();
+      const inner = ctx.createRadialGradient(x, y, radius * 0.26, x, y, radius * 0.82);
+      inner.addColorStop(0, "rgba(0,0,0,0)");
+      inner.addColorStop(0.54, rgba(color, alpha * 0.08));
+      inner.addColorStop(0.68, rgba({ r: 255, g: 243, b: 198 }, alpha * 0.20));
+      inner.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = inner;
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 0.84, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       return;
     }
 
     const grad = ctx.createRadialGradient(x, y, radius * 0.04, x, y, radius * 1.18);
-    grad.addColorStop(0, rgba(color, alpha * 0.20));
-    grad.addColorStop(0.46, rgba(color, alpha * 0.09));
-    grad.addColorStop(0.70, rgba(color, alpha * (0.22 + Number(ghost?.ring || 0.35) * 0.28)));
-    grad.addColorStop(0.86, rgba(color, alpha * 0.12));
+    grad.addColorStop(0, rgba(color, alpha * 0.045));
+    grad.addColorStop(0.30, rgba(color, alpha * 0.12));
+    grad.addColorStop(0.55, rgba(color, alpha * 0.20));
+    grad.addColorStop(0.73, rgba({ r: 255, g: 232, b: 166 }, alpha * (0.42 + Number(ghost?.ring || 0.35) * 0.26)));
+    grad.addColorStop(0.86, rgba(color, alpha * 0.24));
     grad.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.arc(x, y, radius * 1.18, 0, Math.PI * 2);
+    ctx.fill();
+
+    const innerRing = ctx.createRadialGradient(x, y, radius * 0.28, x, y, radius * 0.68);
+    innerRing.addColorStop(0, "rgba(0,0,0,0)");
+    innerRing.addColorStop(0.48, rgba(color, alpha * 0.06));
+    innerRing.addColorStop(0.63, rgba({ r: 255, g: 244, b: 204 }, alpha * 0.18));
+    innerRing.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = innerRing;
+    ctx.beginPath();
+    ctx.arc(x, y, radius * 0.70, 0, Math.PI * 2);
     ctx.fill();
 
     const glint = ctx.createRadialGradient(x - radius * 0.22, y - radius * 0.18, 0, x - radius * 0.22, y - radius * 0.18, radius * 0.45);
@@ -742,7 +805,7 @@
     ctx.restore();
   }
 
-  function drawOverlay(c, g, risk, veilingLevel) {
+  function drawOverlay(c, g, risk, veilingLevel, visibility) {
     const lines = [
       `Distance: ${c.distanceM.toFixed(1)}m`,
       `Kelvin: ${Math.round(c.kelvin)}K`,
@@ -750,6 +813,7 @@
       `Lamp position: ${lampPositionStatus(g)}`,
       `Estimated ghosts: ${state.ghosts.length}`,
       `Flare risk: ${risk.label} (${risk.score}/100)`,
+      `Ghost visibility: ${visibility?.label || "Normal"}`,
       "Approximate preview, not full stray-light simulation.",
     ];
     const pad = 12 * state.dpr;
