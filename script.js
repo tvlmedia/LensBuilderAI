@@ -6895,6 +6895,14 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   const FOCUS_MODE_SET = new Set(["fixed", "manual", "auto"]);
   const FOCUS_MECHANISM_SET = new Set(["move-lens", "move-ims", "move-focus-group"]);
   const FOCUS_SHIFT_FALLBACK_MM = 0;
+  const CORNER_FOCUS_SCAN_DEFAULTS = Object.freeze({
+    minShiftMm: -25,
+    maxShiftMm: 10,
+    coarseStepMm: 0.25,
+    fineStepMm: 0.025,
+    fineWindowMm: 0.5,
+    boundaryEpsilonMm: 0.25,
+  });
 
   const focusRuntime = {
     lastAutoKey: "",
@@ -6910,6 +6918,26 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function normalizeFocusMechanism(raw) {
     const m = String(raw || "move-lens").trim().toLowerCase();
     return FOCUS_MECHANISM_SET.has(m) ? m : "move-lens";
+  }
+
+  function getFocusScanOptions(raw = {}) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    let minShiftMm = Number(src.minShiftMm ?? CORNER_FOCUS_SCAN_DEFAULTS.minShiftMm);
+    let maxShiftMm = Number(src.maxShiftMm ?? CORNER_FOCUS_SCAN_DEFAULTS.maxShiftMm);
+    if (!Number.isFinite(minShiftMm)) minShiftMm = CORNER_FOCUS_SCAN_DEFAULTS.minShiftMm;
+    if (!Number.isFinite(maxShiftMm)) maxShiftMm = CORNER_FOCUS_SCAN_DEFAULTS.maxShiftMm;
+    if (minShiftMm > maxShiftMm) [minShiftMm, maxShiftMm] = [maxShiftMm, minShiftMm];
+
+    let coarseStepMm = Math.abs(Number(src.coarseStepMm ?? CORNER_FOCUS_SCAN_DEFAULTS.coarseStepMm));
+    let fineStepMm = Math.abs(Number(src.fineStepMm ?? CORNER_FOCUS_SCAN_DEFAULTS.fineStepMm));
+    let fineWindowMm = Math.abs(Number(src.fineWindowMm ?? CORNER_FOCUS_SCAN_DEFAULTS.fineWindowMm));
+    let boundaryEpsilonMm = Math.abs(Number(src.boundaryEpsilonMm ?? CORNER_FOCUS_SCAN_DEFAULTS.boundaryEpsilonMm));
+    if (!Number.isFinite(coarseStepMm) || coarseStepMm <= 0) coarseStepMm = CORNER_FOCUS_SCAN_DEFAULTS.coarseStepMm;
+    if (!Number.isFinite(fineStepMm) || fineStepMm <= 0) fineStepMm = CORNER_FOCUS_SCAN_DEFAULTS.fineStepMm;
+    if (!Number.isFinite(fineWindowMm) || fineWindowMm <= 0) fineWindowMm = CORNER_FOCUS_SCAN_DEFAULTS.fineWindowMm;
+    if (!Number.isFinite(boundaryEpsilonMm)) boundaryEpsilonMm = CORNER_FOCUS_SCAN_DEFAULTS.boundaryEpsilonMm;
+
+    return { minShiftMm, maxShiftMm, coarseStepMm, fineStepMm, fineWindowMm, boundaryEpsilonMm };
   }
 
   function getFocusShiftMm() {
@@ -8696,6 +8724,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   }
 
   function finishPreviewRender() {
+    restoreNominalLensVertices();
     _renderPreviewRunning = false;
     clearRuntimeBusy();
     if (_renderAllAfterPreview) {
@@ -8706,6 +8735,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       _renderPreviewQueued = false;
       scheduleRenderPreview();
     }
+  }
+
+  function restoreNominalLensVertices() {
+    if (!Array.isArray(lens?.surfaces)) return;
+    computeVertices(lens.surfaces, 0, 0);
   }
 
   function renderPreview() {
@@ -11549,6 +11583,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
 
   function setTargetTStop() {
     const wavePreset = ui.wavePreset?.value || "d";
+    const focusModeBefore = normalizeFocusMode(ui.focusMode?.value || lens?.focus?.mode || "auto");
+    const focusShiftBefore = getFocusShiftMm();
     const { efl } = estimateEflBflParaxial(lens.surfaces, wavePreset);
     if (!Number.isFinite(efl) || efl <= 0) {
       if (ui.footerWarn) ui.footerWarn.textContent = "Set T: EFL unknown (try Scale→FL or fix geometry).";
@@ -11609,13 +11645,20 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const stopAp = Math.max(loMin, Math.min(bestAp, hiMax));
     lens.surfaces[stopIdx].ap = stopAp;
     lens.surfaces[stopIdx].ap_optical = stopAp;
+    clampSurfaceAp(lens.surfaces[stopIdx]);
 
-    clampAllApertures(lens.surfaces);
+    if (focusModeBefore === "manual") {
+      setFocusShiftMm(focusShiftBefore, { updateStatus: false });
+      if (ui.focusMode) ui.focusMode.value = "manual";
+      if (lens.focus) lens.focus.mode = "manual";
+    }
+    restoreNominalLensVertices();
     buildTable();
     renderAll();
     scheduleRenderPreview();
 
-    if (ui.footerWarn) ui.footerWarn.textContent = `Set T: stop ap → ${lens.surfaces[stopIdx].ap.toFixed(2)}mm (semi-diam) for T${targetT.toFixed(2)} @ EFL ${efl.toFixed(2)}mm.`;
+    const manualNote = focusModeBefore === "manual" ? " Manual focus preserved; only STOP aperture changed." : "";
+    if (ui.footerWarn) ui.footerWarn.textContent = `Set T: stop ap → ${lens.surfaces[stopIdx].ap.toFixed(2)}mm (semi-diam) for T${targetT.toFixed(2)} @ EFL ${efl.toFixed(2)}mm.${manualNote}`;
   }
 
   // -------------------- Auto Tuner --------------------
@@ -11683,6 +11726,13 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function mmText(value, digits = 2) {
     const n = Number(value);
     return Number.isFinite(n) ? `${n.toFixed(digits)}mm` : "—";
+  }
+
+  function signedMmText(value, digits = 2) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    const sign = n > 0 ? "+" : "";
+    return `${sign}${n.toFixed(digits)}mm`;
   }
 
   function tText(value) {
@@ -12147,8 +12197,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return { ok: true, reason: "" };
   }
 
-  function evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null, sensorShift = 0) {
-    computeVertices(surfaces, 0, Number(sensorShift) || 0);
+  function evaluateSpotSpreadAtFocusPose(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null, lensShift = 0, sensorShift = 0) {
+    computeVertices(surfaces, Number(lensShift) || 0, Number(sensorShift) || 0);
     const count = Math.max(5, Math.min(31, Number(rayCount) | 0));
     const finiteObj = Number(objectDistanceMm);
     const objDist = Number.isFinite(finiteObj) && finiteObj > 0.1 ? finiteObj : null;
@@ -12204,6 +12254,23 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     };
   }
 
+  function evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null, sensorShift = 0) {
+    return evaluateSpotSpreadAtFocusPose(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, 0, sensorShift);
+  }
+
+  function evaluateSpotSpreadAtFocusShift(surfaces, wavePreset, fieldAngleDeg, rayCount = 13, objectDistanceMm = null, focusShiftMm = 0, focusMechanism = "move-ims") {
+    const pose = focusPoseFromShift(focusShiftMm, focusMechanism);
+    return evaluateSpotSpreadAtFocusPose(
+      surfaces,
+      wavePreset,
+      fieldAngleDeg,
+      rayCount,
+      objectDistanceMm,
+      pose.lensShift,
+      pose.sensorX
+    );
+  }
+
   function autoTunerSpotScore(spot) {
     const rms = Number(spot?.rmsMm);
     const hitRate = Number(spot?.hitRate || 0);
@@ -12211,36 +12278,58 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return rms * (1 + Math.max(0, 0.9 - hitRate) * 4);
   }
 
-  function findBestFocusShiftAtIMS(surfaces, wavePreset, fieldAngleDeg, objectDistanceMm, startShift = 0, rayCount = 11) {
-    const parax = estimateEflBflParaxial(surfaces, wavePreset);
-    const efl = Number(parax?.efl);
-    const range = Math.max(1.2, Math.min(18, Number.isFinite(efl) && efl > 0 ? efl * 0.16 : 8));
-    const coarseStep = Math.max(0.30, range / 8);
-    const fineStep = Math.max(0.06, coarseStep / 5);
-    let bestShift = Number.isFinite(Number(startShift)) ? Number(startShift) : 0;
-    let bestSpot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, bestShift);
-    let bestScore = autoTunerSpotScore(bestSpot);
+  function findBestFocusShiftAtIMS(surfaces, wavePreset, fieldAngleDeg, objectDistanceMm, startShift = 0, rayCount = 11, options = {}) {
+    const scan = getFocusScanOptions(options?.focusScan || options);
+    const focusMechanism = normalizeFocusMechanism(options?.focusMechanism || "move-ims");
+    let bestShift = null;
+    let bestSpot = null;
+    let bestScore = Infinity;
+    let coarseBestShift = null;
+    let coarseBestScore = Infinity;
+    let iterations = 0;
 
-    for (let x = bestShift - range; x <= bestShift + range + 1e-9; x += coarseStep) {
-      const spot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, x);
+    const evaluateAtShift = (shiftMm) => {
+      iterations++;
+      return evaluateSpotSpreadAtFocusShift(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, shiftMm, focusMechanism);
+    };
+
+    const consider = (shiftMm) => {
+      const spot = evaluateAtShift(shiftMm);
       const score = autoTunerSpotScore(spot);
       if (score < bestScore) {
         bestScore = score;
         bestSpot = spot;
-        bestShift = x;
+        bestShift = shiftMm;
+      }
+      return { spot, score };
+    };
+
+    for (let x = scan.minShiftMm; x <= scan.maxShiftMm + scan.coarseStepMm * 0.5; x += scan.coarseStepMm) {
+      const shift = Math.min(scan.maxShiftMm, x);
+      const ev = consider(shift);
+      if (ev.score < coarseBestScore) {
+        coarseBestScore = ev.score;
+        coarseBestShift = shift;
       }
     }
 
-    for (let x = bestShift - coarseStep; x <= bestShift + coarseStep + 1e-9; x += fineStep) {
-      const spot = evaluateSpotSpreadAtIMS(surfaces, wavePreset, fieldAngleDeg, rayCount, objectDistanceMm, x);
-      const score = autoTunerSpotScore(spot);
-      if (score < bestScore) {
-        bestScore = score;
-        bestSpot = spot;
-        bestShift = x;
-      }
+    const fineCenter = Number.isFinite(Number(coarseBestShift))
+      ? Number(coarseBestShift)
+      : clamp(Number(startShift) || 0, scan.minShiftMm, scan.maxShiftMm);
+    const fineMin = Math.max(scan.minShiftMm, fineCenter - scan.fineWindowMm);
+    const fineMax = Math.min(scan.maxShiftMm, fineCenter + scan.fineWindowMm);
+    for (let x = fineMin; x <= fineMax + scan.fineStepMm * 0.5; x += scan.fineStepMm) {
+      consider(Math.min(fineMax, x));
     }
 
+    if (!Number.isFinite(Number(bestShift))) {
+      bestShift = clamp(Number(startShift) || 0, scan.minShiftMm, scan.maxShiftMm);
+      bestSpot = evaluateAtShift(bestShift);
+      bestScore = autoTunerSpotScore(bestSpot);
+    }
+
+    const nearMin = Math.abs(Number(bestShift) - scan.minShiftMm) <= scan.boundaryEpsilonMm;
+    const nearMax = Math.abs(Number(bestShift) - scan.maxShiftMm) <= scan.boundaryEpsilonMm;
     computeVertices(surfaces, 0, 0);
     return {
       shiftMm: bestShift,
@@ -12248,6 +12337,12 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       spot: bestSpot,
       rmsMm: Number.isFinite(Number(bestSpot?.rmsMm)) ? Number(bestSpot.rmsMm) : null,
       hitRate: Number.isFinite(Number(bestSpot?.hitRate)) ? Number(bestSpot.hitRate) : null,
+      focusMechanism,
+      scan,
+      nearScanBoundary: nearMin || nearMax,
+      nearScanMin: nearMin,
+      nearScanMax: nearMax,
+      iterations,
     };
   }
 
@@ -12280,36 +12375,58 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       ? Number(opts.objectDistanceMm)
       : getFocusChartDistanceMm();
     const rayCount = Math.max(7, Math.min(17, Number(opts.rayCount) || 11));
+    const focusMechanism = normalizeFocusMechanism(opts.focusMechanism || opts.focusContext?.focusMechanism || "move-ims");
+    const focusMode = normalizeFocusMode(opts.focusMode || opts.focusContext?.focusMode || "manual");
+    const currentFocusShiftMm = Number.isFinite(Number(opts.currentFocusShiftMm ?? opts.focusContext?.focusShiftMm))
+      ? Number(opts.currentFocusShiftMm ?? opts.focusContext.focusShiftMm)
+      : 0;
+    const scan = getFocusScanOptions(opts.focusScan || {});
+    const scanOptions = { ...scan, focusMechanism };
 
     const current = {
-      center: evaluateSpotSpreadAtIMS(surfaces, wavePreset, angles.center, rayCount, objectDistanceMm, 0),
-      mid: evaluateSpotSpreadAtIMS(surfaces, wavePreset, angles.mid, rayCount, objectDistanceMm, 0),
-      corner: evaluateSpotSpreadAtIMS(surfaces, wavePreset, angles.corner, rayCount, objectDistanceMm, 0),
+      center: evaluateSpotSpreadAtFocusShift(surfaces, wavePreset, angles.center, rayCount, objectDistanceMm, currentFocusShiftMm, focusMechanism),
+      mid: evaluateSpotSpreadAtFocusShift(surfaces, wavePreset, angles.mid, rayCount, objectDistanceMm, currentFocusShiftMm, focusMechanism),
+      corner: evaluateSpotSpreadAtFocusShift(surfaces, wavePreset, angles.corner, rayCount, objectDistanceMm, currentFocusShiftMm, focusMechanism),
     };
     const focus = {
-      center: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.center, objectDistanceMm, 0, rayCount),
-      mid: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.mid, objectDistanceMm, 0, rayCount),
-      corner: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.corner, objectDistanceMm, 0, rayCount),
+      center: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.center, objectDistanceMm, currentFocusShiftMm, rayCount, scanOptions),
+      mid: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.mid, objectDistanceMm, currentFocusShiftMm, rayCount, scanOptions),
+      corner: findBestFocusShiftAtIMS(surfaces, wavePreset, angles.corner, objectDistanceMm, currentFocusShiftMm, rayCount, scanOptions),
     };
     const centerShift = Number(focus.center?.shiftMm);
+    const midShift = Number(focus.mid?.shiftMm);
     const cornerShift = Number(focus.corner?.shiftMm);
     const delta = Number.isFinite(centerShift) && Number.isFinite(cornerShift) ? (cornerShift - centerShift) : null;
+    const midCornerDelta = Number.isFinite(midShift) && Number.isFinite(cornerShift) ? (cornerShift - midShift) : null;
+    const boundaryWarnings = [];
+    for (const [label, result] of Object.entries(focus)) {
+      if (!result?.nearScanBoundary) continue;
+      const edge = result.nearScanMin ? "minimum" : "maximum";
+      boundaryWarnings.push(`WARNING: ${label} best focus is near scan boundary (${edge}); expand focus scan range.`);
+    }
 
     return {
       angles,
       sensorDiag,
       efl,
+      focusMode,
+      focusMechanism,
+      currentFocusShiftMm,
+      scan,
       current,
       focus,
       centerBestShiftMm: Number.isFinite(centerShift) ? centerShift : null,
+      midBestShiftMm: Number.isFinite(midShift) ? midShift : null,
       cornerBestShiftMm: Number.isFinite(cornerShift) ? cornerShift : null,
       fieldCurvatureDeltaMm: Number.isFinite(delta) ? delta : null,
+      midToCornerDeltaMm: Number.isFinite(midCornerDelta) ? midCornerDelta : null,
       centerBestRmsMm: Number.isFinite(Number(focus.center?.rmsMm)) ? Number(focus.center.rmsMm) : null,
       midBestRmsMm: Number.isFinite(Number(focus.mid?.rmsMm)) ? Number(focus.mid.rmsMm) : null,
       cornerBestRmsMm: Number.isFinite(Number(focus.corner?.rmsMm)) ? Number(focus.corner.rmsMm) : null,
       centerCurrentRmsMm: Number.isFinite(Number(current.center?.rmsMm)) ? Number(current.center.rmsMm) : null,
       midCurrentRmsMm: Number.isFinite(Number(current.mid?.rmsMm)) ? Number(current.mid.rmsMm) : null,
       cornerCurrentRmsMm: Number.isFinite(Number(current.corner?.rmsMm)) ? Number(current.corner.rmsMm) : null,
+      warnings: boundaryWarnings,
     };
   }
 
@@ -12350,15 +12467,30 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function buildCornerFocusReport(lensState = lens) {
     const wavePreset = ui.wavePreset?.value || "d";
     const objectDistanceMm = getFocusChartDistanceMm();
-    const fieldFocus = evaluateFieldFocusMetricsAtIMS(lensState, { wavePreset, objectDistanceMm, rayCount: 13 });
+    const focusContext = getFocusContext({ objectDistanceMm, wavePreset, allowAutoRefocus: false });
+    const focusScan = getFocusScanOptions();
+    const fieldFocus = evaluateFieldFocusMetricsAtIMS(lensState, {
+      wavePreset,
+      objectDistanceMm,
+      rayCount: 13,
+      focusContext,
+      focusScan,
+    });
     const metrics = getAutoTunerMetrics(lensState, { wavePreset, objectDistanceMm, includeFieldFocus: false });
     const notes = summarizeCornerFocusDiagnostic(fieldFocus, metrics);
+    const warnings = [
+      ...((fieldFocus?.warnings || []).filter(Boolean)),
+      ...notes,
+    ];
     return {
       wavePreset,
       objectDistanceMm,
+      focusContext,
+      focusScan,
       fieldFocus,
       metrics,
       notes,
+      warnings,
       createdAt: new Date().toISOString(),
     };
   }
@@ -12392,10 +12524,25 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const primary = report?.notes?.[0] || "Corner focus diagnostic complete.";
     if (ui.cfSummary) ui.cfSummary.textContent = primary;
     if (ui.cfNotes) {
+      const scan = ff.scan || report?.focusScan || getFocusScanOptions();
       const detail = [
-        ...((report?.notes || []).slice(1)),
-        `Center current RMS: ${mmText(ff.centerCurrentRmsMm, 4)}; corner current RMS: ${mmText(ff.cornerCurrentRmsMm, 4)}.`,
-        `Center best RMS: ${mmText(ff.centerBestRmsMm, 4)}; corner best RMS: ${mmText(ff.cornerBestRmsMm, 4)}.`,
+        `Focus scan range: ${signedMmText(scan.minShiftMm, 0)} to ${signedMmText(scan.maxShiftMm, 0)}`,
+        `Coarse step: ${mmText(scan.coarseStepMm, 3)}; fine step: ${mmText(scan.fineStepMm, 3)}`,
+        `Focus mode: ${ff.focusMode || report?.focusContext?.focusMode || "—"}; mechanism: ${ff.focusMechanism || report?.focusContext?.focusMechanism || "—"}`,
+        "",
+        `Center current shift: ${signedMmText(ff.currentFocusShiftMm, 3)}`,
+        `Center best shift: ${signedMmText(ff.centerBestShiftMm, 3)}`,
+        `Mid best shift: ${signedMmText(ff.midBestShiftMm, 3)}`,
+        `Corner best shift: ${signedMmText(ff.cornerBestShiftMm, 3)}`,
+        `Focus delta center→corner: ${signedMmText(ff.fieldCurvatureDeltaMm, 3)}`,
+        `Focus delta mid→corner: ${signedMmText(ff.midToCornerDeltaMm, 3)}`,
+        "",
+        `Center RMS current/best: ${mmText(ff.centerCurrentRmsMm, 4)} / ${mmText(ff.centerBestRmsMm, 4)}`,
+        `Mid RMS current/best: ${mmText(ff.midCurrentRmsMm, 4)} / ${mmText(ff.midBestRmsMm, 4)}`,
+        `Corner RMS current/best: ${mmText(ff.cornerCurrentRmsMm, 4)} / ${mmText(ff.cornerBestRmsMm, 4)}`,
+        "",
+        "Warnings:",
+        ...((report?.warnings || report?.notes || []).map((n) => `- ${n}`)),
       ].filter(Boolean).join("\n");
       ui.cfNotes.textContent = detail;
     }
@@ -12404,25 +12551,86 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   function formatCornerFocusReportText(report) {
     const ff = report?.fieldFocus || {};
     const metrics = report?.metrics || {};
+    const scan = ff.scan || report?.focusScan || getFocusScanOptions();
     const lines = [
       "Corner Focus Test",
       `Wave: ${report?.wavePreset || "—"}`,
+      `Focus scan range: ${signedMmText(scan.minShiftMm, 0)} to ${signedMmText(scan.maxShiftMm, 0)}`,
+      `Coarse step: ${mmText(scan.coarseStepMm, 3)}`,
+      `Fine step: ${mmText(scan.fineStepMm, 3)}`,
       `Image circle: ${mmText(metrics?.imageCircleMm, 1)}; COV: ${metrics?.cov ? "YES" : "NO"}`,
-      `Center best shift: ${mmText(ff.centerBestShiftMm, 3)}`,
-      `Corner best shift: ${mmText(ff.cornerBestShiftMm, 3)}`,
-      `Focus delta: ${mmText(ff.fieldCurvatureDeltaMm, 3)}`,
+      "",
+      `Center current shift: ${signedMmText(ff.currentFocusShiftMm, 3)}`,
+      `Center best shift: ${signedMmText(ff.centerBestShiftMm, 3)}`,
+      `Mid best shift: ${signedMmText(ff.midBestShiftMm, 3)}`,
+      `Corner best shift: ${signedMmText(ff.cornerBestShiftMm, 3)}`,
+      `Focus delta center→corner: ${signedMmText(ff.fieldCurvatureDeltaMm, 3)}`,
+      `Focus delta mid→corner: ${signedMmText(ff.midToCornerDeltaMm, 3)}`,
+      "",
       `Center RMS current/best: ${mmText(ff.centerCurrentRmsMm, 4)} / ${mmText(ff.centerBestRmsMm, 4)}`,
       `Mid RMS current/best: ${mmText(ff.midCurrentRmsMm, 4)} / ${mmText(ff.midBestRmsMm, 4)}`,
       `Corner RMS current/best: ${mmText(ff.cornerCurrentRmsMm, 4)} / ${mmText(ff.cornerBestRmsMm, 4)}`,
       "",
-      ...((report?.notes || []).map((n) => `- ${n}`)),
+      "Warnings:",
+      ...((report?.warnings || report?.notes || []).map((n) => `- ${n}`)),
     ];
     return lines.join("\n");
   }
 
   let lastCornerFocusReport = null;
 
+  function captureCornerFocusState() {
+    return {
+      focusModeValue: ui.focusMode?.value,
+      focusMechanismValue: ui.focusMechanism?.value,
+      lensFocusValue: ui.lensFocus?.value,
+      focusShiftSliderValue: ui.focusShiftSlider?.value,
+      lensFocus: clone(lens?.focus || {}),
+      importAutofocusMode: lens?.import_options?.autofocus_mode,
+      surfaceState: Array.isArray(lens?.surfaces)
+        ? lens.surfaces.map((s) => ({
+            vx: s?.vx,
+            R: s?.R,
+            t: s?.t,
+            ap: s?.ap,
+            ap_optical: s?.ap_optical,
+            glass: s?.glass,
+            type: s?.type,
+            stop: s?.stop,
+          }))
+        : [],
+    };
+  }
+
+  function restoreCornerFocusState(snapshot) {
+    if (!snapshot) return;
+    if (ui.focusMode && snapshot.focusModeValue != null) ui.focusMode.value = snapshot.focusModeValue;
+    if (ui.focusMechanism && snapshot.focusMechanismValue != null) ui.focusMechanism.value = snapshot.focusMechanismValue;
+    if (ui.lensFocus && snapshot.lensFocusValue != null) ui.lensFocus.value = snapshot.lensFocusValue;
+    if (ui.focusShiftSlider && snapshot.focusShiftSliderValue != null) ui.focusShiftSlider.value = snapshot.focusShiftSliderValue;
+    if (lens && typeof lens === "object") {
+      lens.focus = clone(snapshot.lensFocus || {});
+      if (!lens.import_options || typeof lens.import_options !== "object") lens.import_options = {};
+      lens.import_options.autofocus_mode = snapshot.importAutofocusMode;
+      if (Array.isArray(lens.surfaces) && lens.surfaces.length === snapshot.surfaceState.length) {
+        lens.surfaces.forEach((s, i) => {
+          const before = snapshot.surfaceState[i] || {};
+          s.vx = before.vx;
+          s.R = before.R;
+          s.t = before.t;
+          s.ap = before.ap;
+          s.ap_optical = before.ap_optical;
+          s.glass = before.glass;
+          s.type = before.type;
+          s.stop = before.stop;
+        });
+      }
+    }
+    updateFocusShiftStatus();
+  }
+
   function runCornerFocusTest() {
+    const snapshot = captureCornerFocusState();
     try {
       lastCornerFocusReport = buildCornerFocusReport(lens);
       renderCornerFocusReport(lastCornerFocusReport);
@@ -12431,6 +12639,8 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const msg = e?.message || String(e);
       if (ui.cfSummary) ui.cfSummary.textContent = `Corner Focus Test failed: ${msg}`;
       if (ui.footerWarn) ui.footerWarn.textContent = `Corner Focus Test failed: ${msg}`;
+    } finally {
+      restoreCornerFocusState(snapshot);
     }
   }
 
