@@ -753,6 +753,36 @@ canvas{
   line-height:1.45;
   color:rgba(255,255,255,.74);
 }
+.l5SweepCard{
+  width:min(1480px, calc(100vw - 36px));
+}
+.l5SweepControls{
+  display:grid;
+  grid-template-columns:repeat(6, minmax(120px, 1fr));
+  gap:10px;
+  margin-bottom:12px;
+}
+.l5SweepControls .fieldFull{
+  grid-column:span 6;
+}
+.l5SweepControls textarea{
+  min-height:92px;
+  resize:vertical;
+  font-family:var(--mono);
+}
+.l5SweepTableWrap{
+  max-height:48vh;
+}
+.l5SweepTable tr{
+  cursor:pointer;
+}
+.l5SweepTable tr.selected{
+  outline:1px solid var(--accent);
+  background:rgba(70,132,255,.16);
+}
+.l5SweepTable td:last-child{
+  min-width:210px;
+}
 
 .aiAssistantModal{
   justify-content:flex-end;

@@ -189,6 +189,7 @@
     fileLoad: $("#fileLoad"),
     btnAutoFocus: $("#btnAutoFocus"),
     btnCornerFocus: $("#btnCornerFocus"),
+    btnL5Sweep: $("#btnL5Sweep"),
     btnAutoTuner: $("#btnAutoTuner"),
     btnAiAssistant: $("#btnAiAssistant"),
     btnRenderEngine: $("#btnRenderEngine"),
@@ -333,6 +334,21 @@
     cfNotes: $("#cfNotes"),
     cfRun: $("#cfRun"),
     cfCopy: $("#cfCopy"),
+    l5SweepModal: $("#l5SweepModal"),
+    l5SweepClose: $("#l5SweepClose"),
+    l5SweepMode: $("#l5SweepMode"),
+    l5SweepPairs: $("#l5SweepPairs"),
+    l5FrontStart: $("#l5FrontStart"),
+    l5FrontEnd: $("#l5FrontEnd"),
+    l5FrontStep: $("#l5FrontStep"),
+    l5RearStart: $("#l5RearStart"),
+    l5RearEnd: $("#l5RearEnd"),
+    l5RearStep: $("#l5RearStep"),
+    l5SweepSummary: $("#l5SweepSummary"),
+    l5SweepBody: $("#l5SweepBody"),
+    l5SweepRun: $("#l5SweepRun"),
+    l5SweepCopy: $("#l5SweepCopy"),
+    l5SweepApply: $("#l5SweepApply"),
 
     aiAssistantModal: $("#aiAssistantModal"),
     aiClose: $("#aiClose"),
@@ -440,6 +456,55 @@
 
     toastHost: $("#toastHost"),
   };
+
+  const FOCUS_TARGET_DEFAULT_MODE = "center";
+  const FOCUS_TARGET_MODE_SET = new Set([
+    "center",
+    "mid",
+    "corner",
+    "weighted_practical",
+    "average_center_mid",
+  ]);
+  const FOCUS_TARGET_LABELS = {
+    center: "Center",
+    mid: "Mid",
+    corner: "Corner",
+    weighted_practical: "Weighted practical",
+    average_center_mid: "Average center+mid",
+  };
+
+  function normalizeFocusTargetMode(raw) {
+    const m = String(raw || FOCUS_TARGET_DEFAULT_MODE).trim().toLowerCase();
+    if (FOCUS_TARGET_MODE_SET.has(m)) return m;
+    if (m === "chart-center" || m === "scene-center" || m === "center-only") return "center";
+    if (m === "chart-mid" || m === "mid-field" || m === "midfield") return "mid";
+    if (m === "chart-edge" || m === "edge" || m === "corners") return "corner";
+    if (m === "chart-grid" || m === "grid-average" || m === "grid_average") return "weighted_practical";
+    return FOCUS_TARGET_DEFAULT_MODE;
+  }
+
+  function focusTargetModeToPreviewAutofocusMode(mode) {
+    const m = normalizeFocusTargetMode(mode);
+    if (m === "mid") return "chart-mid";
+    if (m === "corner") return "chart-edge";
+    if (m === "weighted_practical" || m === "average_center_mid") return "chart-grid";
+    return "chart-center";
+  }
+
+  function focusTargetLabel(mode) {
+    const m = normalizeFocusTargetMode(mode);
+    return FOCUS_TARGET_LABELS[m] || FOCUS_TARGET_LABELS.center;
+  }
+
+  function getFocusTargetMode() {
+    return normalizeFocusTargetMode(
+      ui.autoFocusMode?.value ??
+      lens?.focus?.focusTargetMode ??
+      lens?.import_options?.focus_target_mode ??
+      lens?.import_options?.autofocus_mode ??
+      FOCUS_TARGET_DEFAULT_MODE
+    );
+  }
 
   function toast(msg, ms = 2200) {
     if (!ui.toastHost) return;
@@ -1419,14 +1484,13 @@ function warnMissingGlass(name) {
   }
 
   function sanitizeLens(obj) {
-  const rawAutofocusMode = String(obj?.import_options?.autofocus_mode || "").trim().toLowerCase();
-  const autofocusMode = (
-    rawAutofocusMode === "chart-mid" ||
-    rawAutofocusMode === "chart-edge" ||
-    rawAutofocusMode === "chart-grid" ||
-    rawAutofocusMode === "scene-center" ||
-    rawAutofocusMode === "chart-center"
-  ) ? rawAutofocusMode : "chart-center";
+  const focusTargetMode = normalizeFocusTargetMode(
+    obj?.focus?.focusTargetMode ??
+    obj?.analysisContext?.focus?.focusTargetMode ??
+    obj?.import_options?.focus_target_mode ??
+    obj?.import_options?.autofocus_mode
+  );
+  const autofocusMode = focusTargetModeToPreviewAutofocusMode(focusTargetMode);
 
   const importOptions = {
     use_same_ap_for_optics_and_mechanics:
@@ -1437,6 +1501,7 @@ function warnMissingGlass(name) {
       obj?.import_options?.use_zemax_fields === true,
     match_zemax_wavelength:
       obj?.import_options?.match_zemax_wavelength === true,
+    focus_target_mode: focusTargetMode,
     autofocus_mode: autofocusMode,
   };
 
@@ -1505,6 +1570,7 @@ function warnMissingGlass(name) {
       mode: focusMode,
       mechanism: focusMechanism,
       shiftMm: focusShiftMm,
+      focusTargetMode,
       autoRefocusOnDistanceChange,
     },
     field: sanitizeFieldStateImport(obj),
@@ -4883,10 +4949,11 @@ function warnMissingGlass(name) {
     if (ui.useZemaxFields) ui.useZemaxFields.checked = !!lens?.import_options?.use_zemax_fields;
     if (ui.verifyMatchZemaxWave) ui.verifyMatchZemaxWave.checked = !!lens?.import_options?.match_zemax_wavelength;
     if (ui.autoFocusMode) {
-      const autofocusRaw = String(lens?.import_options?.autofocus_mode || "").trim().toLowerCase();
-      ui.autoFocusMode.value = PREVIEW_AUTOFOCUS_MODES.has(autofocusRaw)
-        ? autofocusRaw
-        : PREVIEW_AUTOFOCUS_DEFAULT_MODE;
+      ui.autoFocusMode.value = normalizeFocusTargetMode(
+        lens?.focus?.focusTargetMode ??
+        lens?.import_options?.focus_target_mode ??
+        lens?.import_options?.autofocus_mode
+      );
     }
     if (ui.focusMode) ui.focusMode.value = sanitizeFocusModeImport(lens?.focus?.mode);
     if (ui.focusMechanism) ui.focusMechanism.value = sanitizeFocusMechanismImport(lens?.focus?.mechanism);
@@ -7021,13 +7088,12 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   const FOCUS_SHIFT_FALLBACK_MM = 0;
   const CORNER_FOCUS_SCAN_DEFAULTS = Object.freeze({
     minShiftMm: -25,
-    maxShiftMm: 10,
+    maxShiftMm: 20,
     coarseStepMm: 0.25,
     fineStepMm: 0.025,
     fineWindowMm: 0.5,
     boundaryEpsilonMm: 0.25,
   });
-
   const focusRuntime = {
     lastAutoKey: "",
     lastAutoMetric: null,
@@ -7077,7 +7143,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     lens.focus.mechanism = normalizeFocusMechanism(ui.focusMechanism?.value || lens.focus.mechanism || "move-lens");
     const shiftVal = Number(shiftOverride);
     lens.focus.shiftMm = Number.isFinite(shiftVal) ? shiftVal : getFocusShiftMm();
+    lens.focus.focusTargetMode = getFocusTargetMode();
     lens.focus.autoRefocusOnDistanceChange = !!ui.autoRefocusOnDistanceChange?.checked;
+    lens.import_options.focus_target_mode = lens.focus.focusTargetMode;
     lens.import_options.autofocus_mode = getPreviewAutofocusMode();
   }
 
@@ -7807,127 +7875,66 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       const focusMechanism = normalizeFocusMechanism(ui.focusMechanism?.value || "move-lens");
       const wavePreset = ui.wavePreset?.value || "d";
       const objectDistance = getObjectDistanceStateFromUi();
-      const autofocusMode = getPreviewAutofocusMode();
       const currentShiftMm = getFocusShiftMm();
+      const targetMode = getFocusTargetMode();
 
-      if (objectDistance.objectDistanceMode === "infinity") {
-        const af = runInfinityAutofocusForShift({
-          wavePreset,
-          focusMechanism,
-          currentShiftMm,
-        });
-
-        if (!af?.ok) {
-          setStatusWarning("Infinity refocus failed: no valid focus found in scan range.");
-          scheduleRenderAll({ immediate: true });
-          return;
-        }
-        if (!isSafeFocusShift(af.focusShiftMm)) {
-          enterSafeMode(`Autofocus stopped: invalid focus shift ${Number(af.focusShiftMm).toFixed(2)}mm`);
-          return;
-        }
-
-        const nextShiftMm = setFocusShiftMm(af.focusShiftMm, { updateStatus: false });
-        const pose = getFocusPoseForUIShift(nextShiftMm, focusMechanism);
-        const focusedForLog = clone(lens.surfaces);
-        applyFocusShiftToSurfaces(focusedForLog, nextShiftMm, focusMechanism);
-        const sensorPlaneX = getSensorPlaneX(focusedForLog, pose.sensorX);
-        const rmsTxt = Number.isFinite(af?.bestMetricRmsMm) ? af.bestMetricRmsMm.toFixed(4) : "—";
-        const boundaryWarning = af?.nearScanBoundary
-          ? " Warning: best infinity focus is near scan boundary; expand focus scan range."
-          : "";
-
-        logFocusModelUse("refocus-now", { focusMode, focusMechanism, focusShiftMm: nextShiftMm }, { objectDistanceMode: "infinity", objectDistanceMm: null });
-        console.log("[focus:refocus-now:infinity]", {
-          objectDistanceMode: "infinity",
-          focusMode,
-          focusMechanism,
-          mechanismApplied: pose.mechanismApplied,
-          previousFocusShiftMm: currentShiftMm,
-          focusShiftMm: nextShiftMm,
-          sensorPlaneXMm: Number.isFinite(sensorPlaneX) ? sensorPlaneX : null,
-          autofocusBestMetricRmsMm: Number.isFinite(af?.bestMetricRmsMm) ? af.bestMetricRmsMm : null,
-          raysUsed: Number(af?.raysUsed || 0),
-          scan: af?.scan || null,
-          nearScanBoundary: !!af?.nearScanBoundary,
-        });
-        updateFocusShiftStatus(`infinity RMS ${rmsTxt}mm`);
-        if (ui.footerWarn) {
-          ui.footerWarn.textContent =
-            `Infinity refocus complete: focus shift ${nextShiftMm.toFixed(4)}mm, center RMS ${rmsTxt}mm • ${pose.mechanismApplied}.${boundaryWarning}`;
-        }
-        renderAll();
-        scheduleRenderPreview();
-        return;
-      }
-
-      const targetDistance = getFocusChartDistanceMm();
-      if (!(targetDistance > 0.1)) {
+      if (objectDistance.objectDistanceMode === "finite" && !(Number(objectDistance.objectDistanceMm) > 0.1)) {
         setStatusWarning("Auto focus failed: set a valid finite focus distance first.");
         return;
       }
 
-      const af = runAutofocusForShift({
-        objectDistanceMm: targetDistance,
-        wavePreset,
-        focusMechanism,
-        currentShiftMm,
-        autofocusMode,
-      });
-
-      if (!af?.ok) {
-        setStatusWarning(`Refocus failed: ${String(af?.reason || "too few valid chart-center rays").replaceAll("_", " ")}.`);
+      const report = buildCornerFocusReport(lens);
+      lastCornerFocusReport = report;
+      if (isCornerFocusModalOpen()) renderCornerFocusReport(report);
+      const rec = report?.focusRecommendations || report?.fieldFocus?.focusRecommendations || computeFocusRecommendations(report?.fieldFocus, report?.metrics, targetMode);
+      const selectedShift = Number(rec?.selectedRecommendedFocusShiftMm);
+      if (!Number.isFinite(selectedShift)) {
+        setStatusWarning(`${objectDistance.objectDistanceMode === "infinity" ? "Infinity refocus" : "Refocus"} failed: no valid ${focusTargetLabel(targetMode)} focus found in scan range.`);
         scheduleRenderAll({ immediate: true });
         return;
       }
-      if (af?.stoppedByMaxIterations) {
-        setStatusWarning("Autofocus stopped: max iterations reached.");
-      }
-      if (!isSafeFocusShift(af.focusShiftMm)) {
-        enterSafeMode(`Autofocus stopped: invalid focus shift ${Number(af.focusShiftMm).toFixed(2)}mm`);
+      if (!isSafeFocusShift(selectedShift)) {
+        enterSafeMode(`Autofocus stopped: invalid focus shift ${Number(selectedShift).toFixed(2)}mm`);
         return;
       }
 
-      const nextShiftMm = setFocusShiftMm(af.focusShiftMm, { updateStatus: false });
+      const nextShiftMm = setFocusShiftMm(selectedShift, { updateStatus: false });
       const pose = getFocusPoseForUIShift(nextShiftMm, focusMechanism);
       const focusedForLog = clone(lens.surfaces);
       applyFocusShiftToSurfaces(focusedForLog, nextShiftMm, focusMechanism);
       const sensorPlaneX = getSensorPlaneX(focusedForLog, pose.sensorX);
+      const selectedRms = targetMode === "mid"
+        ? report?.fieldFocus?.midBestRmsMm
+        : targetMode === "corner"
+          ? report?.fieldFocus?.cornerBestRmsMm
+          : report?.fieldFocus?.centerBestRmsMm;
+      const rmsTxt = Number.isFinite(Number(selectedRms)) ? Number(selectedRms).toFixed(4) : "—";
+      const boundaryWarning = (report?.fieldFocus?.focus?.[targetMode === "average_center_mid" || targetMode === "weighted_practical" ? "corner" : targetMode]?.nearScanBoundary)
+        ? " Warning: selected field best focus is near scan boundary; expand focus scan range."
+        : "";
 
-      logFocusModelUse("refocus-now", { focusMode, focusMechanism, focusShiftMm: nextShiftMm }, { objectDistanceMode: "finite", objectDistanceMm: targetDistance });
+      logFocusModelUse("refocus-now", { focusMode, focusMechanism, focusShiftMm: nextShiftMm }, {
+        objectDistanceMode: objectDistance.objectDistanceMode,
+        objectDistanceMm: objectDistance.objectDistanceMm,
+      });
       console.log("[focus:refocus-now]", {
-        objectDistanceMm: targetDistance,
+        objectDistanceMode: objectDistance.objectDistanceMode,
+        objectDistanceMm: objectDistance.objectDistanceMm,
         focusMode,
-        mode: autofocusMode,
+        focusTargetMode: targetMode,
+        focusTargetLabel: focusTargetLabel(targetMode),
         focusMechanism,
         mechanismApplied: pose.mechanismApplied,
         previousFocusShiftMm: currentShiftMm,
         focusShiftMm: nextShiftMm,
         sensorPlaneXMm: Number.isFinite(sensorPlaneX) ? sensorPlaneX : null,
-        autofocusBestMetricRmsMm: Number.isFinite(af?.bestMetricRmsMm) ? af.bestMetricRmsMm : null,
-        raysUsed: Number(af?.raysUsed || 0),
+        selectedRecommendedFocusShiftMm: rec?.selectedRecommendedFocusShiftMm ?? null,
+        selectedDeltaFromCurrentMm: rec?.selectedDeltaFromCurrentMm ?? null,
+        focusScan: report?.focusScan || null,
       });
-      const rmsTxt = Number.isFinite(af?.bestMetricRmsMm) ? af.bestMetricRmsMm.toFixed(4) : "—";
-      updateFocusShiftStatus(`auto metric ${rmsTxt}mm`);
+      updateFocusShiftStatus(`${focusTargetLabel(targetMode)} RMS ${rmsTxt}mm`);
       if (ui.footerWarn) ui.footerWarn.textContent =
-        `Refocus: shift=${nextShiftMm.toFixed(3)}mm • RMS=${rmsTxt}mm • d=${targetDistance.toFixed(1)}mm • ${pose.mechanismApplied}`;
-
-      const diagReport = runFiniteDistanceFocusDiagnostics({
-        surfaces: clone(lens.surfaces),
-        wavePreset,
-        lensShift: pose.lensShift,
-        sensorX: pose.sensorX,
-        focusMechanism,
-        autofocusMode,
-        distancesMm: [2000, 20000],
-        targetDistanceMm: targetDistance,
-        printToConsole: true,
-      });
-      if (diagReport && ui.footerWarn && Number.isFinite(diagReport.actualShift2000to20000Mm) && Number.isFinite(diagReport.predictedShift2000to20000Mm)) {
-        const actual = Number(diagReport.actualShift2000to20000Mm).toFixed(3);
-        const thin = Number(diagReport.predictedShift2000to20000Mm).toFixed(3);
-        ui.footerWarn.textContent += ` • Δx(2m→20m)=${actual}mm vs thin=${thin}mm`;
-      }
+        `Refocus complete: target ${focusTargetLabel(targetMode)}, focus shift ${signedMmText(nextShiftMm, 4)} • ${pose.mechanismApplied}.${boundaryWarning}`;
 
       renderAll();
       scheduleRenderPreview();
@@ -10578,12 +10585,9 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
   ];
 
   function getPreviewAutofocusMode() {
-    const raw = String(
-      ui.autoFocusMode?.value ??
-      lens?.import_options?.autofocus_mode ??
-      preview.focusAssist.mode ??
-      PREVIEW_AUTOFOCUS_DEFAULT_MODE
-    ).trim().toLowerCase();
+    const targetMode = getFocusTargetMode();
+    if (targetMode) return focusTargetModeToPreviewAutofocusMode(targetMode);
+    const raw = String(lens?.import_options?.autofocus_mode ?? preview.focusAssist.mode ?? PREVIEW_AUTOFOCUS_DEFAULT_MODE).trim().toLowerCase();
     return PREVIEW_AUTOFOCUS_MODES.has(raw) ? raw : PREVIEW_AUTOFOCUS_DEFAULT_MODE;
   }
 
@@ -13136,6 +13140,82 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     return notes;
   }
 
+  function computeFocusRecommendations(fieldFocus, metrics = null, selectedMode = getFocusTargetMode()) {
+    const center = Number(fieldFocus?.centerBestUIFocusShiftMm ?? fieldFocus?.centerBestShiftMm);
+    const mid = Number(fieldFocus?.midBestUIFocusShiftMm ?? fieldFocus?.midBestShiftMm);
+    const corner = Number(fieldFocus?.cornerBestUIFocusShiftMm ?? fieldFocus?.cornerBestShiftMm);
+    const current = Number(fieldFocus?.currentUIFocusShiftMm ?? fieldFocus?.currentFocusShiftMm ?? getFocusShiftMm());
+    const cornerAtBoundary = !!fieldFocus?.focus?.corner?.nearScanBoundary;
+    const coverageOk = metrics?.cov !== false;
+    const cornerUsableForWeighted = Number.isFinite(corner) && !cornerAtBoundary && coverageOk;
+    const averageCenterMid = (Number.isFinite(center) && Number.isFinite(mid))
+      ? (center + mid) * 0.5
+      : (Number.isFinite(center) ? center : (Number.isFinite(mid) ? mid : null));
+    let weighted = null;
+    let weightedMethod = "center 0.55 + mid 0.35 + corner 0.10";
+    if (Number.isFinite(center) && Number.isFinite(mid)) {
+      if (cornerUsableForWeighted) {
+        weighted = center * 0.55 + mid * 0.35 + corner * 0.10;
+      } else {
+        weighted = center * 0.60 + mid * 0.40;
+        weightedMethod = "center 0.60 + mid 0.40; corner ignored because it hit scan boundary or coverage is limited";
+      }
+    } else if (Number.isFinite(center)) {
+      weighted = center;
+      weightedMethod = "center fallback";
+    } else if (Number.isFinite(mid)) {
+      weighted = mid;
+      weightedMethod = "mid fallback";
+    }
+
+    const mode = normalizeFocusTargetMode(selectedMode);
+    let selected = null;
+    let method = "";
+    if (mode === "mid") {
+      selected = Number.isFinite(mid) ? mid : null;
+      method = "mid best UI focus shift";
+    } else if (mode === "corner") {
+      selected = Number.isFinite(corner) ? corner : null;
+      method = "corner best UI focus shift";
+    } else if (mode === "average_center_mid") {
+      selected = Number.isFinite(averageCenterMid) ? averageCenterMid : null;
+      method = "average of center and mid best UI focus shifts";
+    } else if (mode === "weighted_practical") {
+      selected = Number.isFinite(weighted) ? weighted : null;
+      method = `weighted practical: ${weightedMethod}`;
+    } else {
+      selected = Number.isFinite(center) ? center : null;
+      method = "center best UI focus shift";
+    }
+
+    return {
+      centerFocusShiftMm: Number.isFinite(center) ? center : null,
+      midFocusShiftMm: Number.isFinite(mid) ? mid : null,
+      cornerFocusShiftMm: Number.isFinite(corner) ? corner : null,
+      averageCenterMidFocusShiftMm: Number.isFinite(averageCenterMid) ? averageCenterMid : null,
+      weightedPracticalFocusShiftMm: Number.isFinite(weighted) ? weighted : null,
+      weightedPracticalCornerUsed: cornerUsableForWeighted,
+      selectedFocusTargetMode: mode,
+      selectedFocusTargetLabel: focusTargetLabel(mode),
+      selectedRecommendedFocusShiftMm: Number.isFinite(selected) ? selected : null,
+      selectedDeltaFromCurrentMm: Number.isFinite(selected) && Number.isFinite(current) ? selected - current : null,
+      recommendedFocusMethod: method,
+    };
+  }
+
+  function attachFocusRecommendations(fieldFocus, metrics = null, selectedMode = getFocusTargetMode()) {
+    if (!fieldFocus || typeof fieldFocus !== "object") return null;
+    const rec = computeFocusRecommendations(fieldFocus, metrics, selectedMode);
+    fieldFocus.focusRecommendations = rec;
+    fieldFocus.averageCenterMidFocusShiftMm = rec.averageCenterMidFocusShiftMm;
+    fieldFocus.weightedPracticalFocusShiftMm = rec.weightedPracticalFocusShiftMm;
+    fieldFocus.selectedFocusTargetMode = rec.selectedFocusTargetMode;
+    fieldFocus.selectedRecommendedFocusShiftMm = rec.selectedRecommendedFocusShiftMm;
+    fieldFocus.selectedDeltaFromCurrentMm = rec.selectedDeltaFromCurrentMm;
+    fieldFocus.recommendedFocusMethod = rec.recommendedFocusMethod;
+    return rec;
+  }
+
   function buildCornerFocusReport(lensState = lens) {
     const wavePreset = ui.wavePreset?.value || "d";
     const objectDistance = getObjectDistanceStateFromUi();
@@ -13154,6 +13234,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       focusScan,
     });
     const metrics = getAutoTunerMetrics(lensState, { wavePreset, objectDistanceMm, includeFieldFocus: false });
+    const focusRecommendations = attachFocusRecommendations(fieldFocus, metrics, getFocusTargetMode());
     const tStopLock = tStopLockReportInfo(lensState, wavePreset);
     const notes = summarizeCornerFocusDiagnostic(fieldFocus, metrics);
     const warnings = [
@@ -13169,6 +13250,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       focusContext,
       focusScan,
       fieldFocus,
+      focusRecommendations,
       metrics,
       tStopLock,
       notes,
@@ -13181,6 +13263,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const ff = report?.fieldFocus || {};
     const metrics = report?.metrics || {};
     const tLock = report?.tStopLock || {};
+    const rec = report?.focusRecommendations || ff.focusRecommendations || computeFocusRecommendations(ff, metrics, getFocusTargetMode());
     const row = (label, current, best) => `
       <tr>
         <td>${escapeAttr(label)}</td>
@@ -13213,12 +13296,15 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         `Focus scan range: ${signedMmText(scan.minShiftMm, 0)} to ${signedMmText(scan.maxShiftMm, 0)}`,
         `Coarse step: ${mmText(scan.coarseStepMm, 3)}; fine step: ${mmText(scan.fineStepMm, 3)}`,
         `Focus mode: ${ff.focusMode || report?.focusContext?.focusMode || "—"}; mechanism: ${ff.focusMechanism || report?.focusContext?.focusMechanism || "—"}`,
+        `Focus target: ${focusTargetLabel(rec.selectedFocusTargetMode)}`,
         `T-stop lock: ${tLock.enabled ? "ON" : "OFF"}`,
         ...(tLock.enabled ? [`Target T-stop: T${Number(tLock.targetTStop).toFixed(2)}`] : []),
         `Actual T-stop: ${Number.isFinite(Number(tLock.actualTStop)) ? `T${Number(tLock.actualTStop).toFixed(2)}` : "—"}`,
         ...(Number.isFinite(Number(tLock.stopAp)) ? [`STOP aperture: ${Number(tLock.stopAp).toFixed(4)}mm`] : []),
         "",
         `Current UI focus shift: ${signedMmText(ff.currentUIFocusShiftMm ?? ff.currentFocusShiftMm, 3)}`,
+        `Recommended ${focusTargetLabel(rec.selectedFocusTargetMode).toLowerCase()} focus: ${signedMmText(rec.selectedRecommendedFocusShiftMm, 3)}`,
+        `Delta from current: ${signedMmText(rec.selectedDeltaFromCurrentMm, 3)}`,
         "",
         `Center current RMS: ${mmText(ff.centerCurrentRmsMm, 4)}`,
         `Center best UI focus shift: ${signedMmText(ff.centerBestUIFocusShiftMm ?? ff.centerBestShiftMm, 3)}`,
@@ -13235,6 +13321,13 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         `Mid RMS current/best: ${mmText(ff.midCurrentRmsMm, 4)} / ${mmText(ff.midBestRmsMm, 4)}`,
         `Corner RMS current/best: ${mmText(ff.cornerCurrentRmsMm, 4)} / ${mmText(ff.cornerBestRmsMm, 4)}`,
         "",
+        "Recommended focus:",
+        `- Center: ${signedMmText(rec.centerFocusShiftMm, 3)}`,
+        `- Mid: ${signedMmText(rec.midFocusShiftMm, 3)}`,
+        `- Corner: ${signedMmText(rec.cornerFocusShiftMm, 3)}`,
+        `- Average center+mid: ${signedMmText(rec.averageCenterMidFocusShiftMm, 3)}`,
+        `- Weighted practical: ${signedMmText(rec.weightedPracticalFocusShiftMm, 3)}`,
+        "",
         "Warnings:",
         ...((report?.warnings || report?.notes || []).map((n) => `- ${n}`)),
       ].filter(Boolean).join("\n");
@@ -13247,6 +13340,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const metrics = report?.metrics || {};
     const scan = ff.scan || report?.focusScan || getFocusScanOptions();
     const tLock = report?.tStopLock || {};
+    const rec = report?.focusRecommendations || ff.focusRecommendations || computeFocusRecommendations(ff, metrics, getFocusTargetMode());
     const lines = [
       "Corner Focus Test",
       `Wave: ${report?.wavePreset || "—"}`,
@@ -13255,12 +13349,15 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       `Coarse step: ${mmText(scan.coarseStepMm, 3)}`,
       `Fine step: ${mmText(scan.fineStepMm, 3)}`,
       `Image circle: ${mmText(metrics?.imageCircleMm, 1)}; COV: ${metrics?.cov ? "YES" : "NO"}`,
+      `Focus target: ${focusTargetLabel(rec.selectedFocusTargetMode)}`,
       `T-stop lock: ${tLock.enabled ? "ON" : "OFF"}`,
       ...(tLock.enabled ? [`Target T-stop: T${Number(tLock.targetTStop).toFixed(2)}`] : []),
       `Actual T-stop: ${Number.isFinite(Number(tLock.actualTStop)) ? `T${Number(tLock.actualTStop).toFixed(2)}` : "—"}`,
       ...(Number.isFinite(Number(tLock.stopAp)) ? [`STOP aperture: ${Number(tLock.stopAp).toFixed(4)}mm`] : []),
       "",
       `Current UI focus shift: ${signedMmText(ff.currentUIFocusShiftMm ?? ff.currentFocusShiftMm, 3)}`,
+      `Recommended ${focusTargetLabel(rec.selectedFocusTargetMode).toLowerCase()} focus: ${signedMmText(rec.selectedRecommendedFocusShiftMm, 3)}`,
+      `Delta from current: ${signedMmText(rec.selectedDeltaFromCurrentMm, 3)}`,
       "",
       `Center current RMS: ${mmText(ff.centerCurrentRmsMm, 4)}`,
       `Center best UI focus shift: ${signedMmText(ff.centerBestUIFocusShiftMm ?? ff.centerBestShiftMm, 3)}`,
@@ -13276,6 +13373,13 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       `Center RMS current/best: ${mmText(ff.centerCurrentRmsMm, 4)} / ${mmText(ff.centerBestRmsMm, 4)}`,
       `Mid RMS current/best: ${mmText(ff.midCurrentRmsMm, 4)} / ${mmText(ff.midBestRmsMm, 4)}`,
       `Corner RMS current/best: ${mmText(ff.cornerCurrentRmsMm, 4)} / ${mmText(ff.cornerBestRmsMm, 4)}`,
+      "",
+      "Recommended focus:",
+      `- Center: ${signedMmText(rec.centerFocusShiftMm, 3)}`,
+      `- Mid: ${signedMmText(rec.midFocusShiftMm, 3)}`,
+      `- Corner: ${signedMmText(rec.cornerFocusShiftMm, 3)}`,
+      `- Average center+mid: ${signedMmText(rec.averageCenterMidFocusShiftMm, 3)}`,
+      `- Weighted practical: ${signedMmText(rec.weightedPracticalFocusShiftMm, 3)}`,
       "",
       "Warnings:",
       ...((report?.warnings || report?.notes || []).map((n) => `- ${n}`)),
@@ -13370,6 +13474,346 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       toast("Copied Corner Focus report", 1600);
     } catch (e) {
       if (ui.cfSummary) ui.cfSummary.textContent = `Copy failed: ${e?.message || e}`;
+    }
+  }
+
+  const L5_SWEEP_DEFAULT_PAIRS = Object.freeze([
+    { front: 120, rear: -145 },
+    { front: 110, rear: -130 },
+    { front: 100, rear: -120 },
+    { front: 95, rear: -115 },
+    { front: 90, rear: -110 },
+  ]);
+  let l5SweepState = {
+    results: [],
+    selectedIndex: -1,
+    target: null,
+    l5Indices: null,
+    baseLensName: "",
+  };
+
+  function openL5SweepModal() {
+    if (!ui.l5SweepModal) return;
+    ui.l5SweepModal.classList.remove("hidden");
+    ui.l5SweepModal.setAttribute("aria-hidden", "false");
+    if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "Ready. Run the sweep to compare L5 radius candidates.";
+    renderL5SweepTable();
+  }
+
+  function closeL5SweepModal() {
+    if (!ui.l5SweepModal) return;
+    ui.l5SweepModal.classList.add("hidden");
+    ui.l5SweepModal.setAttribute("aria-hidden", "true");
+  }
+
+  function parseL5SweepPairs(text) {
+    const pairs = [];
+    String(text || "").split(/\n|;/).forEach((line) => {
+      const clean = line.trim();
+      if (!clean) return;
+      const parts = clean.split(/[,\s]+/).map(Number).filter(Number.isFinite);
+      if (parts.length >= 2) pairs.push({ front: parts[0], rear: parts[1] });
+    });
+    return pairs;
+  }
+
+  function sweepRange(start, end, step) {
+    const a = Number(start);
+    const b = Number(end);
+    let s = Number(step);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return [];
+    if (!Number.isFinite(s) || Math.abs(s) < 1e-9) s = b >= a ? 1 : -1;
+    if ((b - a) * s < 0) s *= -1;
+    const out = [];
+    const maxN = 80;
+    for (let v = a, n = 0; n < maxN; v += s, n++) {
+      if ((s > 0 && v > b + Math.abs(s) * 0.25) || (s < 0 && v < b - Math.abs(s) * 0.25)) break;
+      out.push(Number(v.toFixed(6)));
+    }
+    return out;
+  }
+
+  function getL5SweepPairsFromUi() {
+    const mode = String(ui.l5SweepMode?.value || "linked");
+    if (mode === "grid") {
+      const fronts = sweepRange(ui.l5FrontStart?.value, ui.l5FrontEnd?.value, ui.l5FrontStep?.value);
+      const rears = sweepRange(ui.l5RearStart?.value, ui.l5RearEnd?.value, ui.l5RearStep?.value);
+      const pairs = [];
+      fronts.forEach((front) => rears.forEach((rear) => pairs.push({ front, rear })));
+      return pairs.slice(0, 120);
+    }
+    const pairs = parseL5SweepPairs(ui.l5SweepPairs?.value);
+    return pairs.length ? pairs : L5_SWEEP_DEFAULT_PAIRS.map((p) => ({ ...p }));
+  }
+
+  function findL5SurfaceIndices(lensState = lens) {
+    const surfaces = lensState?.surfaces || [];
+    let front = -1;
+    let rear = -1;
+    surfaces.forEach((s, idx) => {
+      const label = String(s?.surfaceLabel || s?.label || s?.type || "").toUpperCase();
+      if (label.includes("FIELD FLATTENER")) return;
+      if (/\bL5\b/.test(label) && label.includes("FRONT")) front = idx;
+      if (/\bL5\b/.test(label) && label.includes("REAR")) rear = idx;
+    });
+    if (front < 0 || rear < 0) {
+      const physical = surfaces
+        .map((s, idx) => ({ s, idx }))
+        .filter(({ s }) => {
+          const t = String(s?.type || "").toUpperCase();
+          return t !== "OBJ" && t !== "IMS" && !s?.stop;
+        });
+      const airRears = physical.filter(({ s }) => isAirSurfaceMedium(s));
+      if (rear < 0 && airRears.length) rear = airRears[airRears.length - 1].idx;
+      if (front < 0 && rear > 0) {
+        for (let i = rear - 1; i >= 0; i--) {
+          const s = surfaces[i];
+          const t = String(s?.type || "").toUpperCase();
+          if (t !== "OBJ" && t !== "IMS" && !s?.stop && !isAirSurfaceMedium(s)) {
+            front = i;
+            break;
+          }
+        }
+      }
+    }
+    return {
+      frontIndex: front,
+      rearIndex: rear,
+      ok: front >= 0 && rear >= 0 && front !== rear,
+      frontLabel: front >= 0 ? getSurfaceDisplayLabel(surfaces[front], front) : null,
+      rearLabel: rear >= 0 ? getSurfaceDisplayLabel(surfaces[rear], rear) : null,
+    };
+  }
+
+  function scoreL5SweepResult(row, baseMetrics = null) {
+    const notes = [];
+    let score = 0;
+    const efl = Number(row.eflMm);
+    const center = Number(row.centerBestRmsMm);
+    const mid = Number(row.midBestRmsMm);
+    const corner = Number(row.cornerBestRmsMm);
+    const ic = Number(row.imageCircleMm);
+    const focusBoundary = !!row.cornerScanHitBoundary;
+
+    if (Number.isFinite(efl)) {
+      score += Math.max(0, 1 - Math.abs(efl - 50) / 8) * 35;
+      if (efl >= 50 && efl <= 52) {
+        score += 10;
+        notes.push("Promising 50mm candidate");
+      } else if (efl > 56) {
+        score -= 12;
+        notes.push("Too long");
+      } else if (baseMetrics?.efl && efl < Number(baseMetrics.efl)) {
+        notes.push("Good direction");
+      }
+    }
+    if (Number.isFinite(center)) {
+      score += Math.max(0, 1 - center / 0.08) * 22;
+      if (center > 0.05) {
+        score -= 12;
+        notes.push("Center too soft");
+      }
+    }
+    if (Number.isFinite(mid)) score += Math.max(0, 1 - mid / 0.12) * 16;
+    if (Number.isFinite(corner)) score += Math.max(0, 1 - corner / 0.35) * 10;
+    if (Number.isFinite(ic)) {
+      score += Math.max(0, Math.min(1, (ic - 24) / 8)) * 12;
+      if (ic < 28) {
+        score -= 15;
+        notes.push("Too much image circle loss");
+      }
+    }
+    if (focusBoundary) {
+      score -= 15;
+      notes.push("Corner scan hit boundary");
+    }
+    if (!row.cov) notes.push("COV NO");
+    if (!notes.length) notes.push("Balanced candidate");
+    return {
+      score: Number(Math.max(0, Math.min(100, score)).toFixed(2)),
+      notes: Array.from(new Set(notes)),
+    };
+  }
+
+  function evaluateL5SweepPair(pair, l5Indices, baseMetrics) {
+    const candidate = clone(lens);
+    candidate.field = { objectDistanceMode: "infinity", objectDistance: "infinity", objectDistanceMm: null };
+    const front = candidate.surfaces?.[l5Indices.frontIndex];
+    const rear = candidate.surfaces?.[l5Indices.rearIndex];
+    if (!front || !rear) throw new Error("L5 FRONT/REAR surfaces not found.");
+    front.R = Number(pair.front);
+    rear.R = Number(pair.rear);
+    recomputeSurfacePositionsForLens(candidate);
+
+    const wavePreset = ui.wavePreset?.value || "d";
+    const lock = readTStopLockOptions(lens);
+    let tLockResult = null;
+    if (lock.enabled && Number.isFinite(Number(lock.targetTStop))) {
+      tLockResult = setStopForTargetT(lock.targetTStop, {
+        lensState: candidate,
+        wavePreset,
+        tolerance: 0.01,
+        maxIterations: 30,
+      });
+    }
+
+    const metrics = getAutoTunerMetrics(candidate, {
+      wavePreset,
+      objectDistanceMm: null,
+      includeFieldFocus: false,
+    });
+    const fieldFocus = evaluateFieldFocusMetricsAtIMS(candidate, {
+      wavePreset,
+      objectDistanceMm: null,
+      rayCount: 13,
+      focusMechanism: ui.focusMechanism?.value || "move-lens",
+      currentFocusShiftMm: getFocusShiftMm(),
+      focusScan: getFocusScanOptions(),
+    });
+    attachFocusRecommendations(fieldFocus, metrics, getFocusTargetMode());
+    const row = {
+      l5FrontR: Number(pair.front),
+      l5RearR: Number(pair.rear),
+      eflMm: finiteOrNull(metrics?.efl),
+      bflMm: finiteOrNull(metrics?.bfl),
+      tStop: finiteOrNull(metrics?.T),
+      imageCircleMm: finiteOrNull(metrics?.imageCircleMm),
+      cov: metrics?.cov === true,
+      centerBestRmsMm: finiteOrNull(fieldFocus?.centerBestRmsMm),
+      midBestRmsMm: finiteOrNull(fieldFocus?.midBestRmsMm),
+      cornerBestRmsMm: finiteOrNull(fieldFocus?.cornerBestRmsMm),
+      centerBestUIFocusShiftMm: finiteOrNull(fieldFocus?.centerBestUIFocusShiftMm),
+      midBestUIFocusShiftMm: finiteOrNull(fieldFocus?.midBestUIFocusShiftMm),
+      cornerBestUIFocusShiftMm: finiteOrNull(fieldFocus?.cornerBestUIFocusShiftMm),
+      focusDeltaCenterToCornerMm: finiteOrNull(fieldFocus?.fieldCurvatureDeltaMm),
+      cornerScanHitBoundary: !!fieldFocus?.focus?.corner?.nearScanBoundary,
+      tLockApplied: !!lock.enabled,
+      tLockOk: lock.enabled ? tLockResult?.ok === true : null,
+    };
+    const scored = scoreL5SweepResult(row, baseMetrics);
+    row.score = scored.score;
+    row.notes = scored.notes;
+    return row;
+  }
+
+  function buildL5SweepExport() {
+    const { w, h } = getSensorWH();
+    const lock = readTStopLockOptions(lens);
+    return {
+      sweepType: "L5 radius linked pair sweep",
+      exportedAt: new Date().toISOString(),
+      target: {
+        eflMm: 50,
+        tStop: finiteOrNull(lock.enabled ? lock.targetTStop : estimateCurrentTStopInfo(lens, ui.wavePreset?.value || "d").tStop),
+        objectDistanceMode: "infinity",
+        sensorWidthMm: finiteOrNull(w),
+        sensorHeightMm: finiteOrNull(h),
+      },
+      baseLensName: l5SweepState.baseLensName || String(lens?.name || "Untitled lens"),
+      l5Surfaces: l5SweepState.l5Indices || findL5SurfaceIndices(lens),
+      results: l5SweepState.results.map((r) => ({ ...r, notes: Array.isArray(r.notes) ? r.notes.slice() : [] })),
+    };
+  }
+
+  function renderL5SweepTable() {
+    if (!ui.l5SweepBody) return;
+    ui.l5SweepBody.innerHTML = (l5SweepState.results || []).map((r, idx) => `
+      <tr data-i="${idx}" class="${idx === l5SweepState.selectedIndex ? "selected" : ""}">
+        <td>${idx + 1}</td>
+        <td>${mmText(r.l5FrontR, 2)}</td>
+        <td>${mmText(r.l5RearR, 2)}</td>
+        <td>${Number.isFinite(Number(r.score)) ? Number(r.score).toFixed(1) : "—"}</td>
+        <td>${mmText(r.eflMm, 2)}</td>
+        <td>${mmText(r.bflMm, 2)}</td>
+        <td>${Number.isFinite(Number(r.tStop)) ? `T${Number(r.tStop).toFixed(2)}` : "—"}</td>
+        <td>${mmText(r.imageCircleMm, 1)}</td>
+        <td>${mmText(r.centerBestRmsMm, 4)}</td>
+        <td>${mmText(r.midBestRmsMm, 4)}</td>
+        <td>${mmText(r.cornerBestRmsMm, 4)}</td>
+        <td>${signedMmText(r.focusDeltaCenterToCornerMm, 3)}</td>
+        <td>${r.cov ? "YES" : "NO"}</td>
+        <td>${escapeAttr((r.notes || []).join("; "))}</td>
+      </tr>
+    `).join("");
+    ui.l5SweepBody.querySelectorAll("tr[data-i]").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        l5SweepState.selectedIndex = Number(tr.dataset.i);
+        if (ui.l5SweepApply) ui.l5SweepApply.disabled = !(l5SweepState.selectedIndex >= 0);
+        renderL5SweepTable();
+      });
+    });
+    if (ui.l5SweepApply) ui.l5SweepApply.disabled = !(l5SweepState.selectedIndex >= 0);
+  }
+
+  function runL5Sweep() {
+    const l5Indices = findL5SurfaceIndices(lens);
+    if (!l5Indices.ok) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "L5 Sweep failed: could not find L5 FRONT and L5 REAR surfaces.";
+      return;
+    }
+    const pairs = getL5SweepPairsFromUi();
+    if (!pairs.length) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "L5 Sweep failed: no valid radius pairs.";
+      return;
+    }
+    const wavePreset = ui.wavePreset?.value || "d";
+    const baseMetrics = getAutoTunerMetrics(lens, { wavePreset, objectDistanceMm: null, includeFieldFocus: false });
+    l5SweepState = {
+      results: [],
+      selectedIndex: -1,
+      target: {
+        eflMm: 50,
+        objectDistanceMode: "infinity",
+      },
+      l5Indices,
+      baseLensName: String(lens?.name || "Untitled lens"),
+    };
+    if (ui.l5SweepSummary) {
+      ui.l5SweepSummary.textContent = `Running ${pairs.length} L5 candidates on clones... L5 FRONT: ${l5Indices.frontLabel}; L5 REAR: ${l5Indices.rearLabel}`;
+    }
+    try {
+      l5SweepState.results = pairs.map((pair) => evaluateL5SweepPair(pair, l5Indices, baseMetrics));
+      if (ui.l5SweepSummary) {
+        const best = l5SweepState.results.reduce((a, b) => (Number(b.score) > Number(a?.score ?? -Infinity) ? b : a), null);
+        ui.l5SweepSummary.textContent = best
+          ? `Sweep complete. Best score ${Number(best.score).toFixed(1)} at L5 ${best.l5FrontR} / ${best.l5RearR}. Current lens was not changed.`
+          : "Sweep complete. Current lens was not changed.";
+      }
+    } catch (e) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = `L5 Sweep failed: ${e?.message || e}`;
+    }
+    renderL5SweepTable();
+  }
+
+  function applySelectedL5SweepResult() {
+    const row = l5SweepState.results?.[l5SweepState.selectedIndex];
+    const l5Indices = l5SweepState.l5Indices || findL5SurfaceIndices(lens);
+    if (!row || !l5Indices?.ok) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "No selected L5 sweep result to apply.";
+      return;
+    }
+    const front = lens.surfaces?.[l5Indices.frontIndex];
+    const rear = lens.surfaces?.[l5Indices.rearIndex];
+    if (!front || !rear) return;
+    front.R = Number(row.l5FrontR);
+    rear.R = Number(row.l5RearR);
+    recomputeSurfacePositionsForLens(lens);
+    buildTable();
+    renderAll();
+    scheduleRenderPreview();
+    if (ui.l5SweepSummary) {
+      ui.l5SweepSummary.textContent = `Applied L5 FRONT ${row.l5FrontR} / L5 REAR ${row.l5RearR}. Only those two radius values were changed.`;
+    }
+    if (ui.footerWarn) ui.footerWarn.textContent = `L5 Sweep applied selected radii: ${row.l5FrontR} / ${row.l5RearR}.`;
+  }
+
+  async function copyL5SweepResultsJson() {
+    try {
+      const text = JSON.stringify(buildL5SweepExport(), null, 2);
+      await copyTextToClipboard(text);
+      toast("Copied L5 Sweep results JSON", 1500);
+    } catch (e) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = `Copy failed: ${e?.message || e}`;
     }
   }
 
@@ -18176,15 +18620,22 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     };
   }
 
-  function getCurrentFocusAnalysisContext() {
+  function getCurrentFocusAnalysisContext(report = null) {
     const mode = normalizeFocusMode(ui.focusMode?.value || lens?.focus?.mode || "auto");
     const mechanism = normalizeFocusMechanism(ui.focusMechanism?.value || lens?.focus?.mechanism || "move-lens");
+    const focusTargetMode = getFocusTargetMode();
+    const rec = report
+      ? (report?.focusRecommendations || report?.fieldFocus?.focusRecommendations || computeFocusRecommendations(report?.fieldFocus, report?.metrics, focusTargetMode))
+      : null;
     return {
       mode,
       mechanism,
       shiftMm: finiteOrNull(getFocusShiftMm()),
       currentUIFocusShiftMm: finiteOrNull(getFocusShiftMm()),
       focusShiftDefinition: FOCUS_SHIFT_DEFINITION,
+      focusTargetMode,
+      recommendedFocusShiftMm: finiteOrNull(rec?.selectedRecommendedFocusShiftMm),
+      recommendedFocusMethod: rec?.recommendedFocusMethod || null,
       autoRefocusOnDistanceChange: !!ui.autoRefocusOnDistanceChange?.checked,
     };
   }
@@ -18258,6 +18709,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     const scan = ff.scan || report?.focusScan || getFocusScanOptions();
     const sensor = getCurrentSensorAnalysisContext();
     const tLock = report?.tStopLock || {};
+    const rec = report?.focusRecommendations || ff.focusRecommendations || computeFocusRecommendations(ff, metrics, getFocusTargetMode());
     const inferredObjectDistanceMm = finiteOrNull(report?.objectDistanceMm ?? report?.objectDistance);
     const objectDistanceMode = normalizeObjectDistanceMode(report?.objectDistanceMode || (report?.objectDistance === "infinity" || inferredObjectDistanceMm == null ? "infinity" : "finite"));
     const objectDistanceMm = objectDistanceMode === "finite"
@@ -18298,6 +18750,11 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
         centerBestShiftMm: finiteOrNull(ff.centerBestShiftMm),
         midBestShiftMm: finiteOrNull(ff.midBestShiftMm),
         cornerBestShiftMm: finiteOrNull(ff.cornerBestShiftMm),
+        averageCenterMidFocusShiftMm: finiteOrNull(rec.averageCenterMidFocusShiftMm),
+        weightedPracticalFocusShiftMm: finiteOrNull(rec.weightedPracticalFocusShiftMm),
+        selectedFocusTargetMode: rec.selectedFocusTargetMode || null,
+        selectedRecommendedFocusShiftMm: finiteOrNull(rec.selectedRecommendedFocusShiftMm),
+        selectedDeltaFromCurrentMm: finiteOrNull(rec.selectedDeltaFromCurrentMm),
         focusDeltaCenterToCornerMm: finiteOrNull(ff.fieldCurvatureDeltaMm),
         focusDeltaMidToCornerMm: finiteOrNull(ff.midToCornerDeltaMm),
       },
@@ -18329,11 +18786,6 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
       objectDistanceMode: objectDistance.objectDistanceMode,
       objectDistanceMm: objectDistance.objectDistanceMm,
     };
-    out.focus = {
-      ...(out.focus || {}),
-      ...getCurrentFocusAnalysisContext(),
-    };
-
     const metrics = getAutoTunerMetrics(out, {
       wavePreset,
       objectDistanceMm: objectDistance.objectDistanceMm,
@@ -18341,16 +18793,21 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     });
     const aperture = getCurrentApertureAnalysisContext(out, wavePreset);
     let cornerFocusTest = null;
+    let cornerFocusReport = null;
 
     const state = captureCornerFocusState();
     try {
-      const report = buildCornerFocusReport(out);
-      cornerFocusTest = serializeCornerFocusReportForExport(report);
+      cornerFocusReport = buildCornerFocusReport(out);
+      cornerFocusTest = serializeCornerFocusReportForExport(cornerFocusReport);
     } catch (e) {
       cornerFocusTest = serializeCornerFocusReportForExport({ createdAt: new Date().toISOString() }, e);
     } finally {
       restoreCornerFocusState(state);
     }
+    out.focus = {
+      ...(out.focus || {}),
+      ...getCurrentFocusAnalysisContext(cornerFocusReport),
+    };
 
     out.exportMetadata = {
       exportedAt,
@@ -18362,7 +18819,7 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     out.lensSummary = buildLensSummaryForExport(out, metrics, aperture);
     out.analysisContext = {
       sensor: getCurrentSensorAnalysisContext(),
-      focus: getCurrentFocusAnalysisContext(),
+      focus: getCurrentFocusAnalysisContext(cornerFocusReport),
       aperture,
       wavelength: getCurrentWavelengthAnalysisContext(),
       field: getCurrentFieldAnalysisContext(),
@@ -18536,6 +18993,10 @@ function wireUI() {
   if (ui.autoFocusMode) {
     ui.autoFocusMode.addEventListener("change", () => {
       if (!lens.import_options || typeof lens.import_options !== "object") lens.import_options = {};
+      if (!lens.focus || typeof lens.focus !== "object") lens.focus = {};
+      const targetMode = getFocusTargetMode();
+      lens.focus.focusTargetMode = targetMode;
+      lens.import_options.focus_target_mode = targetMode;
       lens.import_options.autofocus_mode = getPreviewAutofocusMode();
       scheduleRenderAll();
       scheduleRenderPreview();
@@ -18565,6 +19026,7 @@ function wireUI() {
   on("#btnPasteJson", "click", openJsonPasteModal);
   on("#btnPasteZmx", "click", openZmxPasteModal);
   on("#btnCornerFocus", "click", openCornerFocusModal);
+  on("#btnL5Sweep", "click", openL5SweepModal);
   on("#btnAddFieldFlattener", "click", addWeakRearFieldFlattener);
 
   on("#btnAdd", "click", addSurface);
@@ -18696,6 +19158,35 @@ function wireUI() {
   if (ui.cornerFocusModal) {
     ui.cornerFocusModal.addEventListener("mousedown", (e) => {
       if (e.target === ui.cornerFocusModal) closeCornerFocusModal();
+    });
+  }
+  if (ui.l5SweepRun) {
+    ui.l5SweepRun.addEventListener("click", (e) => {
+      e.preventDefault();
+      runL5Sweep();
+    });
+  }
+  if (ui.l5SweepCopy) {
+    ui.l5SweepCopy.addEventListener("click", (e) => {
+      e.preventDefault();
+      copyL5SweepResultsJson();
+    });
+  }
+  if (ui.l5SweepApply) {
+    ui.l5SweepApply.addEventListener("click", (e) => {
+      e.preventDefault();
+      applySelectedL5SweepResult();
+    });
+  }
+  if (ui.l5SweepClose) {
+    ui.l5SweepClose.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeL5SweepModal();
+    });
+  }
+  if (ui.l5SweepModal) {
+    ui.l5SweepModal.addEventListener("mousedown", (e) => {
+      if (e.target === ui.l5SweepModal) closeL5SweepModal();
     });
   }
 

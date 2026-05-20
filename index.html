@@ -67,6 +67,7 @@
       </div>
       <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
       <button id="btnCornerFocus" class="btn" type="button">Corner Focus Test</button>
+      <button id="btnL5Sweep" class="btn" type="button">L5 Sweep</button>
       <button id="btnAutoTuner" class="btn" type="button">Auto Tuner</button>
       <button id="btnAiAssistant" class="btn" type="button">AI Assistant</button>
       <button id="btnRenderEngine" class="btn btnPrimary" type="button" aria-pressed="true">Preview: ON</button>
@@ -183,12 +184,13 @@
             </div>
 
             <div class="ctrl">
-              <label for="autoFocusMode">Refocus target</label>
+              <label for="autoFocusMode">Focus target</label>
               <select id="autoFocusMode">
-                <option value="chart-center" selected>Center</option>
-                <option value="chart-mid">Mid-field</option>
-                <option value="chart-edge">Edge / corners</option>
-                <option value="chart-grid">Grid average</option>
+                <option value="center" selected>Center</option>
+                <option value="mid">Mid</option>
+                <option value="corner">Corner</option>
+                <option value="weighted_practical">Weighted practical</option>
+                <option value="average_center_mid">Average center+mid</option>
               </select>
             </div>
 
@@ -1218,6 +1220,89 @@
       <div class="modalBottom zmxPasteBottom">
         <button id="cfCopy" class="btn" type="button">Copy report</button>
         <button id="cfRun" class="btn btnPrimary" type="button">Run test</button>
+      </div>
+    </div>
+  </div>
+  <div id="l5SweepModal" class="modal hidden" aria-hidden="true">
+    <div class="modalCard l5SweepCard" role="dialog" aria-modal="true" aria-labelledby="l5SweepTitle">
+      <div class="modalTop">
+        <div>
+          <div id="l5SweepTitle" class="modalTitle">L5 Sweep</div>
+          <div class="modalSub">Tests L5 FRONT / L5 REAR radius pairs on cloned lenses. Nothing is applied until you choose a result.</div>
+        </div>
+        <button id="l5SweepClose" class="modalX" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modalScroll">
+        <div class="l5SweepControls">
+          <div class="field">
+            <label for="l5SweepMode">Sweep mode</label>
+            <select id="l5SweepMode">
+              <option value="linked" selected>Linked radius pairs</option>
+              <option value="grid">Front/rear grid</option>
+            </select>
+          </div>
+          <div class="field fieldFull">
+            <label for="l5SweepPairs">Linked pairs: front,rear</label>
+            <textarea id="l5SweepPairs" rows="5">120,-145
+110,-130
+100,-120
+95,-115
+90,-110</textarea>
+          </div>
+          <div class="field">
+            <label for="l5FrontStart">L5 front start</label>
+            <input id="l5FrontStart" type="number" step="0.01" value="120" />
+          </div>
+          <div class="field">
+            <label for="l5FrontEnd">L5 front end</label>
+            <input id="l5FrontEnd" type="number" step="0.01" value="90" />
+          </div>
+          <div class="field">
+            <label for="l5FrontStep">L5 front step</label>
+            <input id="l5FrontStep" type="number" step="0.01" value="-10" />
+          </div>
+          <div class="field">
+            <label for="l5RearStart">L5 rear start</label>
+            <input id="l5RearStart" type="number" step="0.01" value="-145" />
+          </div>
+          <div class="field">
+            <label for="l5RearEnd">L5 rear end</label>
+            <input id="l5RearEnd" type="number" step="0.01" value="-110" />
+          </div>
+          <div class="field">
+            <label for="l5RearStep">L5 rear step</label>
+            <input id="l5RearStep" type="number" step="0.01" value="10" />
+          </div>
+        </div>
+        <div id="l5SweepSummary" class="cornerFocusSummary">Ready. Run the sweep to compare L5 radius candidates.</div>
+        <div class="atHistoryWrap l5SweepTableWrap">
+          <table class="atHistory l5SweepTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>L5 front</th>
+                <th>L5 rear</th>
+                <th>Score</th>
+                <th>EFL</th>
+                <th>BFL</th>
+                <th>T</th>
+                <th>IC</th>
+                <th>Center RMS</th>
+                <th>Mid RMS</th>
+                <th>Corner RMS</th>
+                <th>Focus Δ</th>
+                <th>COV</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody id="l5SweepBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modalBottom zmxPasteBottom">
+        <button id="l5SweepCopy" class="btn" type="button">Copy Sweep Results JSON</button>
+        <button id="l5SweepApply" class="btn" type="button" disabled>Apply selected result</button>
+        <button id="l5SweepRun" class="btn btnPrimary" type="button">Run L5 Sweep</button>
       </div>
     </div>
   </div>
