@@ -1082,13 +1082,20 @@
               <input id="seStockOnly" type="checkbox" checked>
               <span>Only stock / available elements</span>
             </label>
+            <label class="aiToggle stockOnlyToggle">
+              <input id="seDiagnosticMode" type="checkbox" checked>
+              <span>Diagnostic mode / show near misses</span>
+            </label>
           </div>
           <div class="stockExplorerActions">
             <button id="seStart" class="btn btnPrimary" type="button">Start search</button>
             <button id="seCancel" class="btn" type="button" disabled>Cancel</button>
             <button id="seExportResults" class="btn" type="button" disabled>Export results JSON</button>
+            <button id="seExportRejectReport" class="btn" type="button" disabled>Export rejection report JSON</button>
           </div>
           <div id="seProgress" class="stockSummary">Idle.</div>
+          <div id="seRejectSummary" class="stockSummary">Reject diagnostics will appear here.</div>
+          <div id="seDebugPanel" class="stockSummary">Seed self-tests will appear here.</div>
         </section>
         <section class="stockPanel">
           <div class="atSectionTitle">Top candidates</div>

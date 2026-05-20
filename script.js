@@ -410,10 +410,14 @@
     seMaxElements: $("#seMaxElements"),
     seMinDiameter: $("#seMinDiameter"),
     seStockOnly: $("#seStockOnly"),
+    seDiagnosticMode: $("#seDiagnosticMode"),
     seStart: $("#seStart"),
     seCancel: $("#seCancel"),
     seExportResults: $("#seExportResults"),
+    seExportRejectReport: $("#seExportRejectReport"),
     seProgress: $("#seProgress"),
+    seRejectSummary: $("#seRejectSummary"),
+    seDebugPanel: $("#seDebugPanel"),
     seResults: $("#seResults"),
 
     verifyPanel: $("#verifyPanel"),
@@ -3132,11 +3136,57 @@ function warnMissingGlass(name) {
   // -------------------- deterministic stock design explorer --------------------
   const STOCK_EXPLORER_GAPS_FULL = [0.5, 1, 2, 3, 5, 8, 12, 16, 24, 35, 50];
   const STOCK_EXPLORER_GAPS_QUICK = [1, 3, 8, 16, 35];
+  const STOCK_EXPLORER_REJECT_LABELS = {
+    efl: "EFL outside tolerance",
+    bfl: "BFL below minimum",
+    rear_clear: "rear clear below minimum",
+    vignetting: "vignetting above maximum",
+    tstop: "T-stop failed",
+    ims_hits: "IMS hits too low",
+    cov: "COV failed",
+    focus: "invalid focus shift",
+    invalid: "invalid raytrace / NaN",
+    length: "lens length too long",
+    clipping: "element clipping",
+    availability: "unavailable / stock filter",
+    generation: "candidate generation error",
+    unknown: "unknown reject",
+  };
+  const STOCK_EXPLORER_REJECT_ORDER = [
+    "generation",
+    "availability",
+    "invalid",
+    "efl",
+    "tstop",
+    "bfl",
+    "rear_clear",
+    "ims_hits",
+    "vignetting",
+    "clipping",
+    "focus",
+    "length",
+    "cov",
+    "unknown",
+  ];
+  const STOCK_EXPLORER_KNOWN_QUICK_CODES = [
+    "AC508-100-A",
+    "AC508-150-A",
+    "ACT508-250-A",
+    "ACT508-300-A",
+    "ACT508-400-A",
+    "ACT508-500-A",
+    "ACT508-750-A",
+    "ACT508-1000-A",
+  ];
   const stockExplorerState = {
     running: false,
     cancel: false,
     plans: [],
     results: [],
+    nearMisses: [],
+    seedResults: [],
+    rejectionCounts: {},
+    rejectionSamples: [],
     evaluated: 0,
     rejected: 0,
     invalid: 0,
@@ -3203,6 +3253,7 @@ function warnMissingGlass(name) {
       maxElements: Math.max(2, Math.min(5, Math.round(num(ui.seMaxElements?.value, 4)))),
       minDiameter: Math.max(1, num(ui.seMinDiameter?.value, 25.4)),
       stockOnly: !!ui.seStockOnly?.checked,
+      diagnosticMode: !!ui.seDiagnosticMode?.checked,
       wavePreset: ui.wavePreset?.value || "d",
     };
   }
@@ -3217,6 +3268,45 @@ function warnMissingGlass(name) {
   function stockExplorerAvailabilityOk(element, settings) {
     if (!settings.stockOnly) return true;
     return element.availability === "stock" || element.availability === "limited_stock";
+  }
+
+  function stockExplorerCatalogByCode(code) {
+    const wanted = String(code || "").trim().toUpperCase();
+    if (!wanted) return null;
+    return (stockLibraryState.elements || [])
+      .map(normalizeStockElement)
+      .find((e) => String(e.code || "").trim().toUpperCase() === wanted || String(e.id || "").trim().toUpperCase() === wanted) || null;
+  }
+
+  function stockExplorerPushUnique(list, element) {
+    if (!element) return list;
+    const id = String(element.id || `${element.supplier}-${element.code}`);
+    if (list.some((item) => String(item.id || `${item.supplier}-${item.code}`) === id)) return list;
+    list.push(element);
+    return list;
+  }
+
+  function stockExplorerEnsureKnownQuickCandidates(list, elements, settings, role) {
+    if (settings.mode === "deep") return list;
+    const known = [];
+    for (const code of STOCK_EXPLORER_KNOWN_QUICK_CODES) {
+      const item = elements.find((e) => String(e.code || "").trim().toUpperCase() === code);
+      if (item && stockExplorerAvailabilityOk(item, settings)) stockExplorerPushUnique(known, item);
+    }
+    if (role === "P" || role === "C") {
+      elements
+        .filter((e) =>
+          /shalom/i.test(String(e.supplier || e.store || "")) &&
+          e.type === "plano-convex" &&
+          Math.abs(Number(e.diameter_mm) - 50.8) < 0.15 &&
+          stockExplorerAvailabilityOk(e, settings)
+        )
+        .forEach((e) => stockExplorerPushUnique(known, e));
+    }
+    const merged = [];
+    known.forEach((e) => stockExplorerPushUnique(merged, e));
+    list.forEach((e) => stockExplorerPushUnique(merged, e));
+    return merged;
   }
 
   function stockExplorerIsPositive(element) {
@@ -3271,15 +3361,17 @@ function warnMissingGlass(name) {
       .filter((e) => e.type === "plano-convex" || Math.abs(Number(e.efl_mm) || 0) >= settings.targetEfl * 1.4)
       .sort((a, b) => stockExplorerPoolScore(b, settings, "C") - stockExplorerPoolScore(a, settings, "C"));
     const quick = settings.mode !== "deep";
-    const posLimit = quick ? 7 : 13;
+    const posLimit = quick ? 22 : 13;
     const negLimit = quick ? 5 : 9;
-    const corLimit = quick ? 5 : 9;
+    const corLimit = quick ? 16 : 9;
+    const positivePool = stockExplorerEnsureKnownQuickCandidates(positives, elements, settings, "P");
+    const correctorPool = stockExplorerEnsureKnownQuickCandidates(correctors, elements, settings, "C");
     return {
-      P: positives.slice(0, posLimit),
-      PSTRONG: positives.filter((e) => Math.abs(Number(e.efl_mm) || 9999) <= settings.targetEfl * 2.2).slice(0, posLimit),
-      PWEAK: positives.filter((e) => Math.abs(Number(e.efl_mm) || 0) >= settings.targetEfl * 1.1).slice(0, posLimit),
+      P: positivePool.slice(0, posLimit),
+      PSTRONG: positivePool.filter((e) => Math.abs(Number(e.efl_mm) || 9999) <= settings.targetEfl * 2.2).slice(0, posLimit),
+      PWEAK: positivePool.filter((e) => Math.abs(Number(e.efl_mm) || 0) >= settings.targetEfl * 1.1).slice(0, posLimit),
       N: negatives.slice(0, negLimit),
-      C: correctors.slice(0, corLimit),
+      C: correctorPool.slice(0, corLimit),
     };
   }
 
@@ -3287,8 +3379,10 @@ function warnMissingGlass(name) {
     const max = Number(settings.maxElements) || 4;
     const all = [
       { name: "A: 2-group positive-positive", slots: ["P", "STOP", "P"] },
+      { name: "A2: P normal -> STOP -> P flipped", slots: ["P", "STOP", "P"], forcedOrientations: [STOCK_ORIENTATION_PUBLISHED, null, STOCK_ORIENTATION_FLIPPED] },
       { name: "B: 3-group positive-positive-positive", slots: ["P", "STOP", "P", "P"] },
       { name: "C: positive-negative-positive", slots: ["P", "STOP", "N", "P"] },
+      { name: "C2: P -> N -> STOP -> P", slots: ["P", "N", "STOP", "P"] },
       { name: "D: positive-negative-stop-negative-positive", slots: ["P", "N", "STOP", "N", "P"] },
       { name: "E: Petzval-ish", slots: ["PSTRONG", "STOP", "PWEAK", "C"] },
       { name: "F1: 4-group mixed", slots: ["P", "STOP", "P", "N", "P"] },
@@ -3313,6 +3407,47 @@ function warnMissingGlass(name) {
     return eflScore + diameterPenalty * 0.5;
   }
 
+  function stockExplorerPlanSignature(plan) {
+    const elementSig = (plan?.tokens || []).map((token) => {
+      if (!token.element) return "STOP";
+      return `${token.element.id || token.element.code}:${normalizeStockOrientation(token.orientation)}`;
+    }).join("|");
+    const gapSig = (plan?.gaps || []).map((g) => Number(g).toFixed(3)).join(",");
+    return `${plan?.family || ""}::${elementSig}::${gapSig}`;
+  }
+
+  function stockExplorerSeedPlans(settings) {
+    const ac100 = stockExplorerCatalogByCode("AC508-100-A");
+    const act500 = stockExplorerCatalogByCode("ACT508-500-A");
+    const seeds = [];
+    const seedPlan = (name, tokens, gaps) => {
+      if (tokens.some((token) => token.element && (!stockRaytraceability(token.element).ok || !stockExplorerAvailabilityOk(token.element, settings)))) return;
+      seeds.push({
+        id: `seed_${seeds.length + 1}`,
+        family: name,
+        seed: true,
+        tokens,
+        gaps,
+        approxScore: -1000 + seeds.length,
+      });
+    };
+    if (ac100) {
+      seedPlan("Seed: AC508-100-A normal -> STOP -> AC508-100-A flipped", [
+        { role: "P", element: ac100, orientation: STOCK_ORIENTATION_PUBLISHED },
+        { role: "STOP", element: null },
+        { role: "P", element: ac100, orientation: STOCK_ORIENTATION_FLIPPED },
+      ], [1, 1, Math.max(0.1, Number(settings.minBfl) || 20)]);
+    }
+    if (ac100 && act500) {
+      seedPlan("Seed: AC508-100-A normal -> STOP -> ACT508-500-A normal", [
+        { role: "P", element: ac100, orientation: STOCK_ORIENTATION_PUBLISHED },
+        { role: "STOP", element: null },
+        { role: "P", element: act500, orientation: STOCK_ORIENTATION_PUBLISHED },
+      ], [5, 3, Math.max(0.1, Number(settings.minBfl) || 20)]);
+    }
+    return seeds;
+  }
+
   function stockExplorerBuildPlans(settings) {
     const pools = stockExplorerPools(settings);
     const families = stockExplorerFamilies(settings);
@@ -3335,12 +3470,14 @@ function warnMissingGlass(name) {
       }
     };
 
-    const buildOrientationCombos = (tokens, idx, acc, cb) => {
+    const buildOrientationCombos = (tokens, idx, acc, cb, forcedOrientations = []) => {
       if (idx >= tokens.length) return cb(acc);
       const token = tokens[idx];
-      if (!token.element) return buildOrientationCombos(tokens, idx + 1, [...acc, token], cb);
-      for (const orientation of [STOCK_ORIENTATION_PUBLISHED, STOCK_ORIENTATION_FLIPPED]) {
-        buildOrientationCombos(tokens, idx + 1, [...acc, { ...token, orientation }], cb);
+      if (!token.element) return buildOrientationCombos(tokens, idx + 1, [...acc, token], cb, forcedOrientations);
+      const forced = forcedOrientations[idx];
+      const orientations = forced ? [forced] : [STOCK_ORIENTATION_PUBLISHED, STOCK_ORIENTATION_FLIPPED];
+      for (const orientation of orientations) {
+        buildOrientationCombos(tokens, idx + 1, [...acc, { ...token, orientation }], cb, forcedOrientations);
       }
     };
 
@@ -3364,12 +3501,22 @@ function warnMissingGlass(name) {
               approxScore: stockExplorerPlanApproxScore(tokens.filter((t) => t.element), settings),
             });
           });
-        });
+        }, family.forcedOrientations || []);
       });
       if (rawPlans.length >= maxPlans * 3) break;
     }
-    return rawPlans
-      .sort((a, b) => a.approxScore - b.approxScore)
+    const seeds = stockExplorerSeedPlans(settings);
+    const seen = new Set();
+    const ordered = [
+      ...seeds,
+      ...rawPlans.sort((a, b) => a.approxScore - b.approxScore),
+    ].filter((plan) => {
+      const sig = stockExplorerPlanSignature(plan);
+      if (seen.has(sig)) return false;
+      seen.add(sig);
+      return true;
+    });
+    return ordered
       .slice(0, maxPlans)
       .map((plan, index) => ({ ...plan, id: `se_${index + 1}` }));
   }
@@ -3571,6 +3718,7 @@ function warnMissingGlass(name) {
     score += Number.isFinite(centerRms) ? centerRms * 90 : 120;
     score += Number.isFinite(efl) ? Math.abs(efl - settings.targetEfl) * 4 : 300;
     score += Number.isFinite(t) ? Math.abs(t - settings.targetT) * 20 : 80;
+    score += metrics?.cov === false ? 80 : 0;
     score += Number.isFinite(bfl) ? Math.max(0, settings.minBfl - bfl) * 25 : 300;
     score += Number.isFinite(rear) ? Math.max(0, settings.minRearClear - rear) * 30 : 200;
     score += Math.max(0, vig - settings.maxVignettingPct) * 18;
@@ -3581,13 +3729,32 @@ function warnMissingGlass(name) {
     return score;
   }
 
+  function stockExplorerReject(code, reason, detail = {}) {
+    const normalized = STOCK_EXPLORER_REJECT_LABELS[code] ? code : "unknown";
+    return {
+      code: normalized,
+      label: STOCK_EXPLORER_REJECT_LABELS[normalized],
+      reason: reason || STOCK_EXPLORER_REJECT_LABELS[normalized],
+      detail,
+    };
+  }
+
+  function stockExplorerPrimaryReject(rejects) {
+    const list = Array.isArray(rejects) ? rejects : [];
+    for (const code of STOCK_EXPLORER_REJECT_ORDER) {
+      const found = list.find((r) => r?.code === code);
+      if (found) return found;
+    }
+    return list[0] || stockExplorerReject("unknown");
+  }
+
   function stockExplorerEvaluatePlan(plan, settings, opts = {}) {
     try {
       const built = stockExplorerBuildLens(plan, settings);
       const lensJson = built.lensJson;
-      stockExplorerSetTargetTStop(lensJson, settings.targetT, settings.wavePreset);
-      stockExplorerRefocusCandidate(lensJson, settings);
-      stockExplorerSetTargetTStop(lensJson, settings.targetT, settings.wavePreset);
+      const firstTStop = stockExplorerSetTargetTStop(lensJson, settings.targetT, settings.wavePreset);
+      const refocus = stockExplorerRefocusCandidate(lensJson, settings);
+      const finalTStop = stockExplorerSetTargetTStop(lensJson, settings.targetT, settings.wavePreset);
       const metrics = getAutoTunerMetrics(lensJson, {
         wavePreset: settings.wavePreset,
         includeFieldFocus: opts.includeFieldFocus !== false,
@@ -3598,25 +3765,58 @@ function warnMissingGlass(name) {
       const warnings = stockExplorerWarnings(plan, metrics, settings);
       const clipping = stockExplorerClippingDiagnostics(lensJson, settings, metrics);
       warnings.push(...clipping.warnings);
-      const rejectReasons = [];
+      const rejects = [];
       const efl = Number(metrics.efl);
       const t = Number(metrics.T);
-      if (!Number.isFinite(efl)) rejectReasons.push("EFL unavailable");
-      else if (Math.abs(efl - settings.targetEfl) > settings.eflTolerance) rejectReasons.push(`EFL ${efl.toFixed(2)} outside target`);
-      if (!Number.isFinite(t) || Math.abs(t - settings.targetT) > Math.max(0.35, settings.targetT * 0.18)) rejectReasons.push("T-stop cannot be achieved");
-      if (!Number.isFinite(Number(metrics.bfl)) || Number(metrics.bfl) < settings.minBfl) rejectReasons.push("BFL below minimum");
-      if (!Number.isFinite(Number(metrics.rearClearance)) || Number(metrics.rearClearance) < settings.minRearClear) rejectReasons.push("rear intrusion / clearance below minimum");
-      if (vignettingPct > settings.maxVignettingPct) rejectReasons.push("vignetting above maximum");
-      if (!Number.isFinite(Number(metrics.compactLength)) || Number(metrics.compactLength) > settings.maxLength) rejectReasons.push("physical length above maximum");
-      if (Number(metrics.centerSpot?.hitRate || 0) <= 0 || Number(metrics.cornerSpot?.hitRate || 0) <= 0) rejectReasons.push("no IMS hits");
-      if (!clipping.ok) rejectReasons.push("element physically clips ray bundle");
-      if (!Number.isFinite(Number(fieldFocus?.fieldCurvatureDeltaMm))) rejectReasons.push("impossible focus shift");
-      if ([metrics.efl, metrics.bfl, metrics.T, metrics.imageCircleMm].some((v) => !Number.isFinite(Number(v)))) rejectReasons.push("NaN/invalid raytrace");
-      const valid = rejectReasons.length === 0;
+      const bfl = Number(metrics.bfl);
+      const rearClear = Number(metrics.rearClearance);
+      const compactLength = Number(metrics.compactLength);
+      const centerHit = Number(metrics.centerSpot?.hitRate);
+      const midHit = Number(metrics.midSpot?.hitRate);
+      const cornerHit = Number(metrics.cornerSpot?.hitRate);
+      const minHit = Math.min(
+        Number.isFinite(centerHit) ? centerHit : 0,
+        Number.isFinite(midHit) ? midHit : 0,
+        Number.isFinite(cornerHit) ? cornerHit : 0
+      );
+      const hasInvalidMetrics = [metrics.efl, metrics.bfl, metrics.T, metrics.imageCircleMm].some((v) => !Number.isFinite(Number(v)));
+      if (hasInvalidMetrics) rejects.push(stockExplorerReject("invalid", "NaN/invalid raytrace", { efl: metrics.efl, bfl: metrics.bfl, T: metrics.T, imageCircleMm: metrics.imageCircleMm }));
+      if (!Number.isFinite(efl)) rejects.push(stockExplorerReject("efl", "EFL unavailable"));
+      else if (Math.abs(efl - settings.targetEfl) > settings.eflTolerance) {
+        rejects.push(stockExplorerReject("efl", `EFL ${efl.toFixed(2)} outside ${settings.targetEfl} ±${settings.eflTolerance}`, { efl, target: settings.targetEfl, tolerance: settings.eflTolerance }));
+      }
+      if (!firstTStop.ok && !finalTStop.ok) {
+        rejects.push(stockExplorerReject("tstop", finalTStop.reason || firstTStop.reason || "T-stop cannot be achieved"));
+      } else if (!Number.isFinite(t) || Math.abs(t - settings.targetT) > Math.max(0.35, settings.targetT * 0.18)) {
+        rejects.push(stockExplorerReject("tstop", Number.isFinite(t) ? `T${t.toFixed(2)} outside target T${settings.targetT}` : "T-stop cannot be achieved", { T: t, target: settings.targetT }));
+      }
+      if (!refocus.ok) warnings.push("Refocus did not converge before final metric read.");
+      if (!Number.isFinite(bfl) || bfl < settings.minBfl) rejects.push(stockExplorerReject("bfl", "BFL below minimum", { bfl, minBfl: settings.minBfl }));
+      if (!Number.isFinite(rearClear) || rearClear < settings.minRearClear) {
+        rejects.push(stockExplorerReject("rear_clear", "rear clear below minimum", { rearClearance: rearClear, minRearClear: settings.minRearClear }));
+      }
+      if (minHit <= 0.001) rejects.push(stockExplorerReject("ims_hits", "IMS hits too low", { centerHit, midHit, cornerHit }));
+      if (vignettingPct > settings.maxVignettingPct) {
+        rejects.push(stockExplorerReject("vignetting", "vignetting above maximum", { vignettingPct, maxVignettingPct: settings.maxVignettingPct }));
+      }
+      if (!Number.isFinite(compactLength) || compactLength > settings.maxLength) {
+        rejects.push(stockExplorerReject("length", "lens length too long", { compactLength, maxLength: settings.maxLength }));
+      }
+      if (!clipping.ok) rejects.push(stockExplorerReject("clipping", "element clipping", { warnings: clipping.warnings }));
+      if (!Number.isFinite(Number(fieldFocus?.fieldCurvatureDeltaMm))) {
+        const focusReject = stockExplorerReject("focus", "invalid focus shift");
+        if (settings.diagnosticMode) warnings.push(focusReject.reason);
+        else rejects.push(focusReject);
+      }
+      if (metrics.cov === false) warnings.push("COV NO: kept as warning/score penalty, not a hard reject.");
+      const primaryReject = stockExplorerPrimaryReject(rejects);
+      const rejectReasons = rejects.map((r) => r.reason);
+      const valid = rejects.length === 0;
       const score = stockExplorerScore(metrics, fieldFocus, settings, plan);
       return {
         id: plan.id,
         valid,
+        seed: !!plan.seed,
         score,
         family: plan.family,
         plan: clone(plan),
@@ -3629,12 +3829,16 @@ function warnMissingGlass(name) {
         orientations: plan.tokens.filter((t) => t.element).map((t) => stockOrientationLabel(t.orientation)),
         totalCost: stockExplorerCost(plan),
         warnings,
+        rejects,
+        primaryReject: valid ? null : primaryReject,
         rejectReasons,
       };
     } catch (err) {
+      const generationReject = stockExplorerReject("generation", err?.message || String(err));
       return {
         id: plan.id,
         valid: false,
+        seed: !!plan.seed,
         score: AUTO_TUNER_INVALID_SCORE,
         family: plan.family,
         plan: clone(plan),
@@ -3647,7 +3851,9 @@ function warnMissingGlass(name) {
         orientations: [],
         totalCost: stockExplorerCost(plan),
         warnings: [],
-        rejectReasons: [err?.message || String(err)],
+        rejects: [generationReject],
+        primaryReject: generationReject,
+        rejectReasons: [generationReject.reason],
       };
     }
   }
@@ -3666,8 +3872,10 @@ function warnMissingGlass(name) {
     const ar = Number(a.metrics?.rearClearance);
     const br = Number(b.metrics?.rearClearance);
     if (Number.isFinite(ar) && Number.isFinite(br) && Math.abs(ar - br) > 1e-9) return br - ar;
-    if (Math.abs(a.vignettingPct - b.vignettingPct) > 1e-9) return a.vignettingPct - b.vignettingPct;
-    return a.totalCost - b.totalCost;
+    const av = Number(a.vignettingPct);
+    const bv = Number(b.vignettingPct);
+    if (Number.isFinite(av) && Number.isFinite(bv) && Math.abs(av - bv) > 1e-9) return av - bv;
+    return (Number(a.totalCost) || 0) - (Number(b.totalCost) || 0);
   }
 
   function stockExplorerKeepResult(result) {
@@ -3677,65 +3885,202 @@ function warnMissingGlass(name) {
     stockExplorerState.results = stockExplorerState.results.slice(0, 50);
   }
 
+  function stockExplorerKeepNearMiss(result) {
+    if (!stockExplorerState.settings?.diagnosticMode || result.valid || !result.lensJson) return;
+    stockExplorerState.nearMisses.push(result);
+    stockExplorerState.nearMisses.sort(stockExplorerResultSort);
+    stockExplorerState.nearMisses = stockExplorerState.nearMisses.slice(0, 100);
+  }
+
+  function stockExplorerCompactResult(result, includeLens = false) {
+    const m = result?.metrics || {};
+    const ff = result?.fieldFocus || {};
+    const compact = {
+      id: result?.id,
+      seed: !!result?.seed,
+      valid: !!result?.valid,
+      score: Number.isFinite(Number(result?.score)) ? Number(result.score) : null,
+      family: result?.family || "",
+      primaryReject: result?.primaryReject?.label || null,
+      primaryRejectCode: result?.primaryReject?.code || null,
+      rejectReasons: result?.rejectReasons || [],
+      metrics: {
+        efl: finiteOrNull(m.efl),
+        bfl: finiteOrNull(m.bfl),
+        T: finiteOrNull(m.T),
+        rearClearance: finiteOrNull(m.rearClearance),
+        imageCircleMm: finiteOrNull(m.imageCircleMm),
+        cov: m.cov === true,
+        compactLength: finiteOrNull(m.compactLength),
+        centerHitRate: finiteOrNull(m.centerSpot?.hitRate),
+        midHitRate: finiteOrNull(m.midSpot?.hitRate),
+        cornerHitRate: finiteOrNull(m.cornerSpot?.hitRate),
+      },
+      fieldFocus: {
+        fieldCurvatureDeltaMm: finiteOrNull(ff.fieldCurvatureDeltaMm),
+        centerBestRmsMm: finiteOrNull(ff.centerBestRmsMm),
+        midBestRmsMm: finiteOrNull(ff.midBestRmsMm),
+        cornerBestRmsMm: finiteOrNull(ff.cornerBestRmsMm),
+      },
+      vignettingPct: finiteOrNull(result?.vignettingPct),
+      elements: result?.elements || [],
+      spacings: result?.spacings || [],
+      orientations: result?.orientations || [],
+      totalCost: finiteOrNull(result?.totalCost),
+      warnings: result?.warnings || [],
+    };
+    if (includeLens) compact.lensJson = result?.lensJson || null;
+    return compact;
+  }
+
+  function stockExplorerTrackRejectedResult(result) {
+    const primary = result?.primaryReject || stockExplorerPrimaryReject(result?.rejects);
+    const code = primary?.code || "unknown";
+    stockExplorerState.rejectionCounts[code] = (stockExplorerState.rejectionCounts[code] || 0) + 1;
+    if (code === "invalid" || code === "generation") stockExplorerState.invalid++;
+    else stockExplorerState.rejected++;
+    if (stockExplorerState.rejectionSamples.length < 250 || result?.seed) {
+      stockExplorerState.rejectionSamples.push(stockExplorerCompactResult(result));
+      if (stockExplorerState.rejectionSamples.length > 300) stockExplorerState.rejectionSamples = stockExplorerState.rejectionSamples.slice(-300);
+    }
+    stockExplorerKeepNearMiss(result);
+  }
+
+  function stockExplorerCovText(result) {
+    if (!result?.metrics) return "—";
+    return result.metrics.cov ? "YES" : "NO";
+  }
+
+  function stockExplorerHitText(result) {
+    const rates = [
+      Number(result?.metrics?.centerSpot?.hitRate),
+      Number(result?.metrics?.midSpot?.hitRate),
+      Number(result?.metrics?.cornerSpot?.hitRate),
+    ].map((v) => Number.isFinite(v) ? `${Math.round(v * 100)}%` : "—");
+    return rates.join(" / ");
+  }
+
+  function renderStockExplorerDiagnostics() {
+    if (!ui.seRejectSummary) return;
+    const totalRejected = Object.values(stockExplorerState.rejectionCounts || {}).reduce((sum, v) => sum + Number(v || 0), 0);
+    const parts = STOCK_EXPLORER_REJECT_ORDER.map((code) => {
+      const count = Number(stockExplorerState.rejectionCounts?.[code] || 0);
+      return `${STOCK_EXPLORER_REJECT_LABELS[code]}: ${count}`;
+    });
+    ui.seRejectSummary.textContent = totalRejected
+      ? `Reject diagnostics (${totalRejected} total): ${parts.join(" • ")}`
+      : "Reject diagnostics: no rejected candidates yet.";
+    if (ui.seExportRejectReport) {
+      ui.seExportRejectReport.disabled = !totalRejected && !stockExplorerState.seedResults.length && !stockExplorerState.nearMisses.length;
+    }
+  }
+
+  function renderStockExplorerSeedDebug() {
+    if (!ui.seDebugPanel) return;
+    const seeds = stockExplorerState.seedResults || [];
+    if (!seeds.length) {
+      ui.seDebugPanel.textContent = "Seed self-tests: not evaluated yet.";
+      return;
+    }
+    ui.seDebugPanel.innerHTML = seeds.map((r) => {
+      const m = r.metrics || {};
+      const ff = r.fieldFocus || {};
+      const status = r.valid ? "PASS" : `REJECTED: ${r.primaryReject?.label || "unknown"}`;
+      return `<div class="stockExplorerDebugLine">
+        <strong>${escapeAttr(r.family || r.id)}</strong> — ${escapeAttr(status)} •
+        EFL ${escapeAttr(mmText(m.efl, 2))} • BFL ${escapeAttr(mmText(m.bfl, 2))} • ${escapeAttr(tText(m.T))} •
+        rear ${escapeAttr(mmText(m.rearClearance, 2))} • vig ${Number.isFinite(Number(r.vignettingPct)) ? Number(r.vignettingPct).toFixed(1) : "—"}% •
+        COV ${escapeAttr(stockExplorerCovText(r))} • IMS ${escapeAttr(stockExplorerHitText(r))} •
+        focus Δ ${escapeAttr(mmText(ff.fieldCurvatureDeltaMm, 3))} • corner ${escapeAttr(mmText(ff.cornerBestRmsMm ?? m.cornerSpot?.rmsMm, 4))}
+      </div>`;
+    }).join("");
+  }
+
   function stockExplorerProgressText(done = stockExplorerState.evaluated, total = stockExplorerState.plans.length) {
     const valid = stockExplorerState.results.length;
+    const near = stockExplorerState.nearMisses.length;
     const elapsed = stockExplorerState.startedAt ? ((Date.now() - stockExplorerState.startedAt) / 1000).toFixed(1) : "0.0";
     const best = stockExplorerState.results[0];
     const bestTxt = best
       ? `best ${mmText(best.metrics?.efl)} ${tText(best.metrics?.T)} corner ${mmText(best.fieldFocus?.cornerBestRmsMm, 4)}`
       : "no valid candidate yet";
-    return `${stockExplorerState.running ? "Running" : "Idle"} • ${done}/${total} tested • valid ${valid} • rejected ${stockExplorerState.rejected} • invalid ${stockExplorerState.invalid} • ${bestTxt} • ${elapsed}s`;
+    const topReject = STOCK_EXPLORER_REJECT_ORDER
+      .map((code) => ({ code, count: Number(stockExplorerState.rejectionCounts?.[code] || 0) }))
+      .sort((a, b) => b.count - a.count)
+      .find((item) => item.count > 0);
+    const rejectTxt = topReject ? `top reject ${STOCK_EXPLORER_REJECT_LABELS[topReject.code]} ${topReject.count}` : "no rejects yet";
+    return `${stockExplorerState.running ? "Running" : "Idle"} • ${done}/${total} tested • valid ${valid} • near misses ${near} • rejected ${stockExplorerState.rejected} • invalid ${stockExplorerState.invalid} • ${rejectTxt} • ${bestTxt} • ${elapsed}s`;
   }
 
   function renderStockExplorerResults() {
     if (!ui.seResults) return;
     const results = stockExplorerState.results || [];
+    const nearMisses = stockExplorerState.nearMisses || [];
+    const showNearMisses = !!stockExplorerState.settings?.diagnosticMode;
     if (ui.seProgress) ui.seProgress.textContent = stockExplorerProgressText();
     if (ui.seExportResults) ui.seExportResults.disabled = !results.length;
-    if (!results.length) {
-      ui.seResults.innerHTML = `<div class="stockEmpty">No valid candidates yet.</div>`;
+    renderStockExplorerDiagnostics();
+    renderStockExplorerSeedDebug();
+    const display = results.length ? results : (showNearMisses ? nearMisses : []);
+    if (!display.length) {
+      ui.seResults.innerHTML = `<div class="stockEmpty">${showNearMisses ? "No valid candidates or near misses yet." : "No valid candidates yet."}</div>`;
       return;
     }
-    const rows = results.map((r, idx) => {
+    const caption = results.length
+      ? `Top ${results.length} valid candidates${nearMisses.length ? ` • ${nearMisses.length} near misses retained` : ""}`
+      : `No valid candidates yet. Showing best ${nearMisses.length} rejected near-misses with primary reject reasons.`;
+    const buildRows = (items, kind) => items.map((r, idx) => {
       const m = r.metrics || {};
       const ff = r.fieldFocus || {};
-      const warn = [...(r.warnings || []), ...(r.rejectReasons || [])].slice(0, 3).join(" • ");
+      const warn = [...(r.warnings || []), ...(r.rejectReasons || [])].slice(0, 4).join(" • ");
+      const reason = r.valid ? "valid" : (r.primaryReject?.label || r.rejectReasons?.[0] || "rejected");
+      const actions = r.lensJson
+        ? `<button class="miniBtn seResultAction" data-kind="${kind}" data-action="load" data-i="${idx}" type="button">Load candidate</button>
+           <button class="miniBtn seResultAction" data-kind="${kind}" data-action="save" data-i="${idx}" type="button">Save JSON</button>
+           <button class="miniBtn seResultAction" data-kind="${kind}" data-action="bom" data-i="${idx}" type="button">Export BOM</button>
+           <button class="miniBtn seResultAction" data-kind="${kind}" data-action="duplicate" data-i="${idx}" type="button">Duplicate</button>
+           ${r.valid ? `<button class="miniBtn seResultAction" data-kind="${kind}" data-action="fine" data-i="${idx}" type="button">Fine optimize</button>` : ""}`
+        : "—";
       return `
         <tr>
           <td>${idx + 1}</td>
-          <td>${r.score.toFixed(2)}</td>
+          <td>${escapeAttr(reason)}</td>
+          <td>${Number.isFinite(Number(r.score)) ? Number(r.score).toFixed(2) : "—"}</td>
           <td>${escapeAttr(mmText(m.efl, 2))}</td>
           <td>${escapeAttr(mmText(m.bfl, 2))}</td>
           <td>${escapeAttr(tText(m.T))}</td>
           <td>${escapeAttr(mmText(m.rearClearance, 2))}</td>
-          <td>${r.vignettingPct.toFixed(1)}%</td>
+          <td>${Number.isFinite(Number(r.vignettingPct)) ? `${Number(r.vignettingPct).toFixed(1)}%` : "—"}</td>
+          <td>${escapeAttr(stockExplorerCovText(r))}</td>
+          <td>${escapeAttr(stockExplorerHitText(r))}</td>
           <td>${escapeAttr(mmText(ff.fieldCurvatureDeltaMm, 3))}</td>
           <td>${escapeAttr(mmText(ff.centerBestRmsMm, 4))} / ${escapeAttr(mmText(ff.midBestRmsMm, 4))} / ${escapeAttr(mmText(ff.cornerBestRmsMm, 4))}</td>
           <td>${escapeAttr(r.elements.join(" -> "))}</td>
           <td>${escapeAttr(r.spacings.map((g) => Number(g).toFixed(2)).join(", "))}</td>
-          <td>$${r.totalCost.toFixed(2)}</td>
+          <td>${escapeAttr((r.orientations || []).join(", "))}</td>
+          <td>${Number.isFinite(Number(r.totalCost)) ? `$${Number(r.totalCost).toFixed(2)}` : "—"}</td>
           <td class="stockExplorerWarn">${escapeAttr(warn || "—")}</td>
-          <td class="stockExplorerActionsCell">
-            <button class="miniBtn seResultAction" data-action="load" data-i="${idx}" type="button">Load candidate</button>
-            <button class="miniBtn seResultAction" data-action="save" data-i="${idx}" type="button">Save JSON</button>
-            <button class="miniBtn seResultAction" data-action="bom" data-i="${idx}" type="button">Export BOM</button>
-            <button class="miniBtn seResultAction" data-action="duplicate" data-i="${idx}" type="button">Duplicate</button>
-            <button class="miniBtn seResultAction" data-action="fine" data-i="${idx}" type="button">Fine optimize</button>
-          </td>
+          <td class="stockExplorerActionsCell">${actions}</td>
         </tr>
       `;
     }).join("");
+    const tableHead = `<thead><tr><th>#</th><th>Status / reject</th><th>Score</th><th>EFL</th><th>BFL</th><th>T</th><th>Rear clear</th><th>Vig</th><th>COV</th><th>IMS hits C/M/K</th><th>Focus delta</th><th>RMS C/M/K</th><th>Elements</th><th>Spacings</th><th>Orientations</th><th>Cost</th><th>Warnings</th><th>Actions</th></tr></thead>`;
+    const primaryRows = buildRows(display, results.length ? "valid" : "near");
+    const nearMissSection = results.length && showNearMisses && nearMisses.length
+      ? `<div class="stockExplorerCaption">Best ${nearMisses.length} rejected near-misses</div>
+         <table class="stockExplorerTable">${tableHead}<tbody>${buildRows(nearMisses, "near")}</tbody></table>`
+      : "";
     ui.seResults.innerHTML = `
-      <table class="stockExplorerTable">
-        <thead><tr><th>#</th><th>Score</th><th>EFL</th><th>BFL</th><th>T</th><th>Rear clear</th><th>Vig</th><th>Focus delta</th><th>RMS C/M/K</th><th>Elements</th><th>Spacings</th><th>Cost</th><th>Warnings</th><th>Actions</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+      <div class="stockExplorerCaption">${escapeAttr(caption)}</div>
+      <table class="stockExplorerTable">${tableHead}<tbody>${primaryRows}</tbody></table>
+      ${nearMissSection}
     `;
     ui.seResults.querySelectorAll(".seResultAction").forEach((button) => {
       button.addEventListener("click", (e) => {
         const idx = Number(e.currentTarget.dataset.i);
+        const kind = e.currentTarget.dataset.kind || "valid";
         const action = e.currentTarget.dataset.action;
-        handleStockExplorerResultAction(action, idx);
+        handleStockExplorerResultAction(action, idx, kind);
       });
     });
   }
@@ -3779,8 +4124,9 @@ function warnMissingGlass(name) {
     return `stock-explorer-${mmText(result?.metrics?.efl, 0).replace(/[^\d.]+/g, "")}mm-${codes || "candidate"}.${suffix}`;
   }
 
-  function handleStockExplorerResultAction(action, idx) {
-    const result = stockExplorerState.results[idx];
+  function handleStockExplorerResultAction(action, idx, kind = "valid") {
+    const source = kind === "near" ? stockExplorerState.nearMisses : stockExplorerState.results;
+    const result = source[idx];
     if (!result) return;
     if (action === "load" || action === "duplicate") {
       const L = clone(result.lensJson);
@@ -3800,6 +4146,10 @@ function warnMissingGlass(name) {
       return;
     }
     if (action === "fine") {
+      if (!result.valid) {
+        toast("Fine optimize is only available for valid candidates.");
+        return;
+      }
       fineOptimizeStockExplorerResult(idx);
     }
   }
@@ -3847,7 +4197,11 @@ function warnMissingGlass(name) {
           nextGaps[gi] = Math.max(0.1, base + delta);
           const candidate = stockExplorerEvaluatePlan(stockExplorerCandidatePlanWithGaps(best.plan, nextGaps), settings, { includeFieldFocus: true });
           stockExplorerState.evaluated++;
-          if (candidate.valid && stockExplorerResultSort(candidate, best) < 0) best = candidate;
+          if (candidate.valid) {
+            if (stockExplorerResultSort(candidate, best) < 0) best = candidate;
+          } else {
+            stockExplorerTrackRejectedResult(candidate);
+          }
         }
         if (ui.seProgress) ui.seProgress.textContent = `${progressPrefix} gap ${gi + 1}/${adjustable} • ${stockExplorerProgressText()}`;
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3884,6 +4238,10 @@ function warnMissingGlass(name) {
     applySensorToIMS({ force: true });
     stockExplorerState.cancel = false;
     stockExplorerState.results = [];
+    stockExplorerState.nearMisses = [];
+    stockExplorerState.seedResults = [];
+    stockExplorerState.rejectionCounts = {};
+    stockExplorerState.rejectionSamples = [];
     stockExplorerState.evaluated = 0;
     stockExplorerState.rejected = 0;
     stockExplorerState.invalid = 0;
@@ -3903,9 +4261,9 @@ function warnMissingGlass(name) {
         if (stockExplorerState.cancel) break;
         const result = stockExplorerEvaluatePlan(stockExplorerState.plans[i], settings, { includeFieldFocus: true });
         stockExplorerState.evaluated++;
+        if (result.seed) stockExplorerState.seedResults.push(result);
         if (result.valid) stockExplorerKeepResult(result);
-        else if (result.score >= AUTO_TUNER_INVALID_SCORE) stockExplorerState.invalid++;
-        else stockExplorerState.rejected++;
+        else stockExplorerTrackRejectedResult(result);
         if (i % chunkSize === chunkSize - 1) {
           renderStockExplorerResults();
           await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3943,6 +4301,13 @@ function warnMissingGlass(name) {
     const payload = {
       generatedAt: new Date().toISOString(),
       settings: stockExplorerState.settings,
+      totals: {
+        evaluated: stockExplorerState.evaluated,
+        valid: stockExplorerState.results.length,
+        rejected: stockExplorerState.rejected,
+        invalid: stockExplorerState.invalid,
+        nearMisses: stockExplorerState.nearMisses.length,
+      },
       results: stockExplorerState.results.map((r) => ({
         score: r.score,
         family: r.family,
@@ -3956,8 +4321,33 @@ function warnMissingGlass(name) {
         warnings: r.warnings,
         lensJson: r.lensJson,
       })),
+      nearMisses: stockExplorerState.nearMisses.map((r) => stockExplorerCompactResult(r)),
     };
     downloadTextFile("stock-design-explorer-results.json", JSON.stringify(payload, null, 2), "application/json");
+  }
+
+  function exportStockExplorerRejectionReport() {
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      settings: stockExplorerState.settings,
+      totals: {
+        evaluated: stockExplorerState.evaluated,
+        valid: stockExplorerState.results.length,
+        rejected: stockExplorerState.rejected,
+        invalid: stockExplorerState.invalid,
+        nearMisses: stockExplorerState.nearMisses.length,
+      },
+      rejectionCounts: STOCK_EXPLORER_REJECT_ORDER.reduce((acc, code) => {
+        acc[STOCK_EXPLORER_REJECT_LABELS[code]] = Number(stockExplorerState.rejectionCounts?.[code] || 0);
+        return acc;
+      }, {}),
+      rejectionCountsByCode: { ...(stockExplorerState.rejectionCounts || {}) },
+      seedSelfTests: stockExplorerState.seedResults.map((r) => stockExplorerCompactResult(r)),
+      bestValid: stockExplorerState.results.slice(0, 20).map((r) => stockExplorerCompactResult(r)),
+      bestNearMisses: stockExplorerState.nearMisses.slice(0, 100).map((r) => stockExplorerCompactResult(r)),
+      rejectionSamples: stockExplorerState.rejectionSamples || [],
+    };
+    downloadTextFile("stock-design-explorer-rejection-report.json", JSON.stringify(payload, null, 2), "application/json");
   }
 
   function wireStockLibraryUI() {
@@ -4006,6 +4396,7 @@ function warnMissingGlass(name) {
     if (ui.seStart) ui.seStart.addEventListener("click", startStockDesignExplorer);
     if (ui.seCancel) ui.seCancel.addEventListener("click", cancelStockDesignExplorer);
     if (ui.seExportResults) ui.seExportResults.addEventListener("click", exportStockExplorerResults);
+    if (ui.seExportRejectReport) ui.seExportRejectReport.addEventListener("click", exportStockExplorerRejectionReport);
     loadStockElementLibrary().then(() => {
       renderStockLibraryFilters();
       updateStockPrototypeUi();

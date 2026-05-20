@@ -1095,6 +1095,15 @@ canvas{
   overflow:auto;
   max-height:58vh;
 }
+.stockExplorerCaption{
+  margin:0 0 8px;
+  color:rgba(255,255,255,.68);
+  font-size:12px;
+  line-height:1.35;
+}
+.stockExplorerDebugLine{
+  margin:3px 0;
+}
 .stockExplorerTable{
   width:100%;
   border-collapse:separate;
