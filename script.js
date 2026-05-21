@@ -190,6 +190,7 @@
     btnAutoFocus: $("#btnAutoFocus"),
     btnCornerFocus: $("#btnCornerFocus"),
     btnL5Sweep: $("#btnL5Sweep"),
+    btnParameterSweep: $("#btnParameterSweep"),
     btnAutoTuner: $("#btnAutoTuner"),
     btnAiAssistant: $("#btnAiAssistant"),
     btnRenderEngine: $("#btnRenderEngine"),
@@ -338,6 +339,20 @@
     l5SweepClose: $("#l5SweepClose"),
     l5SweepMode: $("#l5SweepMode"),
     l5SweepPairs: $("#l5SweepPairs"),
+    psSurfaceA: $("#psSurfaceA"),
+    psPropA: $("#psPropA"),
+    psSurfaceB: $("#psSurfaceB"),
+    psPropB: $("#psPropB"),
+    psValues: $("#psValues"),
+    psAllowStopAdvanced: $("#psAllowStopAdvanced"),
+    psTargetEfl: $("#psTargetEfl"),
+    psTargetT: $("#psTargetT"),
+    psMinBfl: $("#psMinBfl"),
+    psIgnoreCoverage: $("#psIgnoreCoverage"),
+    psPresetL5: $("#psPresetL5"),
+    psPresetL4L5Gap: $("#psPresetL4L5Gap"),
+    psPresetRearGroup: $("#psPresetRearGroup"),
+    psClearResults: $("#psClearResults"),
     l5FrontStart: $("#l5FrontStart"),
     l5FrontEnd: $("#l5FrontEnd"),
     l5FrontStep: $("#l5FrontStep"),
@@ -13817,6 +13832,543 @@ function traceRayForward(ray, surfaces, wavePreset, opts = {}) {
     }
   }
 
+  const PARAM_SWEEP_L5_RADIUS_PAIRS = Object.freeze([
+    { a: 50, b: -70 },
+    { a: 52.5, b: -72.5 },
+    { a: 55, b: -75 },
+    { a: 57.5, b: -77.5 },
+    { a: 60, b: -80 },
+    { a: 62.5, b: -82.5 },
+    { a: 65, b: -85 },
+  ]);
+
+  function formatParameterSweepPairs(pairs) {
+    return (pairs || []).map((p) => `${p.a},${p.b}`).join("\n");
+  }
+
+  function parseParameterSweepValues(text) {
+    const values = [];
+    String(text || "").split(/\n|;/).forEach((line) => {
+      const clean = line.trim();
+      if (!clean) return;
+      const value = Number(clean.replace(",", "."));
+      if (Number.isFinite(value)) values.push(value);
+    });
+    return values;
+  }
+
+  function parameterSweepSurfaceLabel(lensState, idx) {
+    const surface = lensState?.surfaces?.[idx];
+    return `${idx} — ${getSurfaceDisplayLabel(surface, idx)}`;
+  }
+
+  function isParameterSweepSurfaceListed(surface, idx) {
+    if (!surface || idx == null) return false;
+    const type = String(surface.type || "").toUpperCase();
+    if (type === "OBJ" || type === "IMS") return false;
+    if (isStockLockedSurface(surface) && !isStockRearAirSurface(surface)) return false;
+    return true;
+  }
+
+  function parameterSweepAllowedProperties(surface, allowStopAdvanced = false) {
+    if (!surface) return [];
+    const type = String(surface.type || "").toUpperCase();
+    if (type === "OBJ" || type === "IMS") return [];
+    if (isStockLockedSurface(surface)) return isStockRearAirSurface(surface) ? ["t"] : [];
+    if (surface.stop || type === "STOP") return allowStopAdvanced ? ["R", "t", "ap", "ap_optical"] : ["ap", "ap_optical"];
+    return ["R", "t", "ap", "ap_optical"];
+  }
+
+  function isParameterSweepEditAllowed(lensState, surfaceIndex, prop, allowStopAdvanced = false) {
+    const s = lensState?.surfaces?.[surfaceIndex];
+    return parameterSweepAllowedProperties(s, allowStopAdvanced).includes(prop);
+  }
+
+  function populateParameterSweepSelect(select, selectedValue = null) {
+    if (!select) return;
+    const prev = selectedValue != null ? String(selectedValue) : select.value;
+    const options = (lens?.surfaces || [])
+      .map((s, idx) => ({ s, idx }))
+      .filter(({ s, idx }) => isParameterSweepSurfaceListed(s, idx));
+    select.innerHTML = options.map(({ idx }) => (
+      `<option value="${idx}">${escapeAttr(parameterSweepSurfaceLabel(lens, idx))}</option>`
+    )).join("");
+    const hasPrev = Array.from(select.options).some((opt) => opt.value === String(prev));
+    if (hasPrev) select.value = String(prev);
+    else if (select.options.length) select.value = select.options[0].value;
+  }
+
+  function populateParameterSweepPropertySelect(select, surfaceSelect) {
+    if (!select || !surfaceSelect) return;
+    const idx = Number(surfaceSelect.value);
+    const props = parameterSweepAllowedProperties(lens?.surfaces?.[idx], !!ui.psAllowStopAdvanced?.checked);
+    const prev = select.value;
+    select.innerHTML = props.map((p) => `<option value="${p}">${escapeAttr(p)}</option>`).join("");
+    if (props.includes(prev)) select.value = prev;
+    else if (props.length) select.value = props[0];
+  }
+
+  function populateParameterSweepSurfaceControls() {
+    generateSurfaceLabels(lens.surfaces);
+    populateParameterSweepSelect(ui.psSurfaceA);
+    populateParameterSweepSelect(ui.psSurfaceB, ui.psSurfaceB?.value || ui.psSurfaceA?.value);
+    populateParameterSweepPropertySelect(ui.psPropA, ui.psSurfaceA);
+    populateParameterSweepPropertySelect(ui.psPropB, ui.psSurfaceB);
+  }
+
+  function setParameterSweepDefaultTargets() {
+    const wavePreset = ui.wavePreset?.value || "d";
+    const objectDistance = getObjectDistanceStateFromUi();
+    let metrics = null;
+    try {
+      metrics = getAutoTunerMetrics(lens, { wavePreset, objectDistanceMm: objectDistance.objectDistanceMm, includeFieldFocus: false });
+    } catch (_) {
+      metrics = null;
+    }
+    const lock = readTStopLockOptions(lens);
+    const tInfo = estimateCurrentTStopInfo(lens, wavePreset);
+    const efl = finiteOrNull(metrics?.efl ?? tInfo?.efl);
+    const t = finiteOrNull(metrics?.T ?? (lock.enabled ? lock.targetTStop : tInfo?.tStop));
+    if (ui.psTargetEfl && Number.isFinite(Number(efl))) ui.psTargetEfl.value = Number(efl).toFixed(2);
+    if (ui.psTargetT && Number.isFinite(Number(t))) ui.psTargetT.value = Number(t).toFixed(2);
+    if (ui.psMinBfl && !Number.isFinite(Number(ui.psMinBfl.value))) ui.psMinBfl.value = "18";
+  }
+
+  function setParameterSweepSurface(select, idx) {
+    if (!select || !Number.isFinite(Number(idx))) return;
+    const value = String(Number(idx));
+    if (Array.from(select.options).some((opt) => opt.value === value)) select.value = value;
+  }
+
+  function setParameterSweepProp(select, prop) {
+    if (!select || !prop) return;
+    if (Array.from(select.options).some((opt) => opt.value === prop)) select.value = prop;
+  }
+
+  function findSurfaceIndexByLabel(patterns) {
+    const list = Array.isArray(patterns) ? patterns : [patterns];
+    const surfaces = lens?.surfaces || [];
+    for (let idx = 0; idx < surfaces.length; idx++) {
+      const label = String(getSurfaceDisplayLabel(surfaces[idx], idx)).toUpperCase();
+      if (list.every((p) => label.includes(String(p).toUpperCase()))) return idx;
+    }
+    return -1;
+  }
+
+  function findRearGroupRadiusPair() {
+    const candidates = (lens?.surfaces || [])
+      .map((s, idx) => ({ s, idx }))
+      .filter(({ s, idx }) => (
+        isParameterSweepSurfaceListed(s, idx) &&
+        !s?.stop &&
+        !isAirSurfaceMedium(s) &&
+        parameterSweepAllowedProperties(s, false).includes("R")
+      ));
+    const rear = candidates.slice(-2);
+    return rear.length >= 2 ? { a: rear[0].idx, b: rear[1].idx } : null;
+  }
+
+  function loadParameterSweepPreset(name, options = {}) {
+    populateParameterSweepSurfaceControls();
+    if (!options.keepResults) {
+      l5SweepState.results = [];
+      l5SweepState.selectedIndex = -1;
+    }
+    l5SweepState.preset = name || null;
+    if (name === "l5-radius") {
+      const l5 = findL5SurfaceIndices(lens);
+      if (l5.ok) {
+        setParameterSweepSurface(ui.psSurfaceA, l5.frontIndex);
+        setParameterSweepSurface(ui.psSurfaceB, l5.rearIndex);
+      }
+      populateParameterSweepPropertySelect(ui.psPropA, ui.psSurfaceA);
+      populateParameterSweepPropertySelect(ui.psPropB, ui.psSurfaceB);
+      setParameterSweepProp(ui.psPropA, "R");
+      setParameterSweepProp(ui.psPropB, "R");
+      if (ui.l5SweepMode) ui.l5SweepMode.value = "linked_pairs";
+      if (ui.l5SweepPairs) ui.l5SweepPairs.value = formatParameterSweepPairs(PARAM_SWEEP_L5_RADIUS_PAIRS);
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = l5.ok
+        ? `L5 Radius Pair Sweep loaded: ${l5.frontLabel} / ${l5.rearLabel}.`
+        : "L5 preset loaded, but L5 FRONT/REAR surfaces were not found. Choose surfaces manually.";
+    } else if (name === "l4-l5-gap") {
+      const l4Rear = findSurfaceIndexByLabel(["L4", "REAR"]);
+      if (l4Rear >= 0) setParameterSweepSurface(ui.psSurfaceA, l4Rear);
+      populateParameterSweepPropertySelect(ui.psPropA, ui.psSurfaceA);
+      setParameterSweepProp(ui.psPropA, "t");
+      if (ui.l5SweepMode) ui.l5SweepMode.value = "single_list";
+      if (ui.psValues) ui.psValues.value = "7\n8\n9\n10\n11\n12\n13";
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = l4Rear >= 0
+        ? `L4-L5 Air Gap Sweep loaded: ${parameterSweepSurfaceLabel(lens, l4Rear)} / t.`
+        : "L4-L5 Air Gap preset loaded, but L4 REAR was not found. Choose the air-gap surface manually.";
+    } else if (name === "rear-group-radius") {
+      const pair = findRearGroupRadiusPair();
+      if (pair) {
+        setParameterSweepSurface(ui.psSurfaceA, pair.a);
+        setParameterSweepSurface(ui.psSurfaceB, pair.b);
+      }
+      populateParameterSweepPropertySelect(ui.psPropA, ui.psSurfaceA);
+      populateParameterSweepPropertySelect(ui.psPropB, ui.psSurfaceB);
+      setParameterSweepProp(ui.psPropA, "R");
+      setParameterSweepProp(ui.psPropB, "R");
+      const a0 = Number(lens?.surfaces?.[Number(ui.psSurfaceA?.value)]?.R);
+      const b0 = Number(lens?.surfaces?.[Number(ui.psSurfaceB?.value)]?.R);
+      const offsets = [-10, -5, 0, 5, 10];
+      const pairs = offsets.map((d) => ({
+        a: Number.isFinite(a0) ? Number((a0 + d).toFixed(3)) : d,
+        b: Number.isFinite(b0) ? Number((b0 - d).toFixed(3)) : -d,
+      }));
+      if (ui.l5SweepMode) ui.l5SweepMode.value = "linked_pairs";
+      if (ui.l5SweepPairs) ui.l5SweepPairs.value = formatParameterSweepPairs(pairs);
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = pair
+        ? `Rear Group Radius Sweep loaded: ${parameterSweepSurfaceLabel(lens, pair.a)} / ${parameterSweepSurfaceLabel(lens, pair.b)}.`
+        : "Rear Group Radius preset loaded, but rear group surfaces were not found. Choose surfaces manually.";
+    }
+    renderL5SweepTable();
+  }
+
+  function getParameterSweepConfigFromUi() {
+    return {
+      mode: String(ui.l5SweepMode?.value || "linked_pairs"),
+      surfaceA: Number(ui.psSurfaceA?.value),
+      propA: String(ui.psPropA?.value || "R"),
+      surfaceB: Number(ui.psSurfaceB?.value),
+      propB: String(ui.psPropB?.value || "R"),
+      targetEflMm: finiteOrNull(ui.psTargetEfl?.value),
+      targetTStop: finiteOrNull(ui.psTargetT?.value),
+      minBflMm: finiteOrNull(ui.psMinBfl?.value) ?? 18,
+      ignoreCoverage: ui.psIgnoreCoverage?.checked !== false,
+      allowStopAdvanced: !!ui.psAllowStopAdvanced?.checked,
+      objectDistance: getObjectDistanceStateFromUi(),
+      wavePreset: ui.wavePreset?.value || "d",
+    };
+  }
+
+  function parameterSweepChangeLabel(change) {
+    return `${parameterSweepSurfaceLabel(lens, change.surfaceIndex)} / ${change.prop}`;
+  }
+
+  function buildParameterSweepCandidates(config) {
+    const makeOne = (valueA, valueB = null) => {
+      const changes = [{ surfaceIndex: config.surfaceA, prop: config.propA, value: Number(valueA) }];
+      if (valueB != null) changes.push({ surfaceIndex: config.surfaceB, prop: config.propB, value: Number(valueB) });
+      return { changes, valueA: Number(valueA), valueB: valueB == null ? null : Number(valueB) };
+    };
+    const candidates = [];
+    if (config.mode === "single_list") {
+      parseParameterSweepValues(ui.psValues?.value).forEach((v) => candidates.push(makeOne(v)));
+    } else if (config.mode === "single_range") {
+      sweepRange(ui.l5FrontStart?.value, ui.l5FrontEnd?.value, ui.l5FrontStep?.value).forEach((v) => candidates.push(makeOne(v)));
+    } else if (config.mode === "grid_pairs") {
+      const valuesA = sweepRange(ui.l5FrontStart?.value, ui.l5FrontEnd?.value, ui.l5FrontStep?.value);
+      const valuesB = sweepRange(ui.l5RearStart?.value, ui.l5RearEnd?.value, ui.l5RearStep?.value);
+      valuesA.forEach((a) => valuesB.forEach((b) => candidates.push(makeOne(a, b))));
+    } else {
+      parseL5SweepPairs(ui.l5SweepPairs?.value).forEach((p) => candidates.push(makeOne(p.front, p.rear)));
+    }
+    return candidates.slice(0, 600);
+  }
+
+  function setParameterSweepSurfaceProperty(lensState, change, allowStopAdvanced = false) {
+    const idx = Number(change.surfaceIndex);
+    const prop = String(change.prop || "");
+    const value = Number(change.value);
+    const s = lensState?.surfaces?.[idx];
+    if (!s) throw new Error(`Surface ${idx} not found`);
+    if (!isParameterSweepEditAllowed(lensState, idx, prop, allowStopAdvanced)) {
+      throw new Error(`${parameterSweepSurfaceLabel(lensState, idx)} / ${prop} is locked or not sweepable`);
+    }
+    if (!Number.isFinite(value)) throw new Error(`Invalid numeric value for ${prop}`);
+    if (prop === "t" && value < 0) throw new Error("t cannot be negative");
+    if ((prop === "ap" || prop === "ap_optical") && value <= 0) throw new Error(`${prop} must be positive`);
+    if (prop === "R") s.R = value;
+    else if (prop === "t") s.t = value;
+    else if (prop === "ap") s.ap = value;
+    else if (prop === "ap_optical") s.ap_optical = value;
+    else throw new Error(`Unsupported property ${prop}`);
+  }
+
+  function scoreParameterSweepResult(row, config) {
+    const notes = [];
+    let score = 100;
+    const efl = Number(row.eflMm);
+    const targetEfl = Number(config.targetEflMm);
+    if (Number.isFinite(efl) && Number.isFinite(targetEfl) && targetEfl > 0) {
+      const err = Math.abs(efl - targetEfl);
+      score -= Math.min(28, (err / Math.max(1, targetEfl)) * 180);
+      if (err <= 1) notes.push("EFL on target");
+      else if (efl > targetEfl) notes.push("EFL high");
+      else notes.push("EFL low");
+    }
+    const t = Number(row.tStop);
+    const targetT = Number(config.targetTStop);
+    if (Number.isFinite(t) && Number.isFinite(targetT) && targetT > 0) {
+      const err = Math.abs(t - targetT);
+      score -= Math.min(16, (err / targetT) * 70);
+      if (err > 0.08) notes.push("T-stop drift");
+    }
+    const center = Number(row.centerBestRmsMm);
+    const mid = Number(row.midBestRmsMm);
+    const corner = Number(row.cornerBestRmsMm);
+    const focusDelta = Math.abs(Number(row.focusDeltaCenterToCornerMm));
+    if (Number.isFinite(center)) score -= Math.min(18, center / 0.08 * 18);
+    if (Number.isFinite(mid)) score -= Math.min(14, mid / 0.14 * 14);
+    if (Number.isFinite(corner)) score -= Math.min(12, corner / 0.40 * 12);
+    if (Number.isFinite(focusDelta)) score -= Math.min(12, focusDelta / 8 * 12);
+    const bfl = Number(row.bflMm);
+    const minBfl = Number(config.minBflMm);
+    if (Number.isFinite(bfl) && Number.isFinite(minBfl)) {
+      if (bfl < minBfl) {
+        score -= Math.min(18, (minBfl - bfl) * 1.4);
+        notes.push("BFL below minimum");
+      } else if (bfl < minBfl + 4) {
+        notes.push("BFL close");
+      }
+    }
+    if (row.focusScanHitBoundary) {
+      score -= 10;
+      notes.push("Focus scan hit boundary");
+    }
+    if (row.error) {
+      score = 0;
+      notes.push(row.error);
+    }
+    if (!config.ignoreCoverage && row.cov === false) {
+      score -= 8;
+      notes.push("COV NO");
+    } else if (row.cov === false) {
+      notes.push("COV NO (ignored)");
+    }
+    if (row.tLockApplied && row.tLockOk === false) notes.push("T-lock not reached");
+    if (!notes.length) notes.push("Balanced candidate");
+    return { score: Number(Math.max(0, Math.min(100, score)).toFixed(2)), notes: Array.from(new Set(notes)) };
+  }
+
+  function evaluateParameterSweepCandidate(candidateDef, config) {
+    const row = {
+      changes: candidateDef.changes.map((c) => ({ ...c })),
+      changeSummary: candidateDef.changes.map(parameterSweepChangeLabel).join(" + "),
+      valueA: finiteOrNull(candidateDef.valueA),
+      valueB: finiteOrNull(candidateDef.valueB),
+      cov: false,
+      notes: [],
+    };
+    try {
+      const candidate = clone(lens);
+      candidate.field = { ...config.objectDistance };
+      for (const change of candidateDef.changes) setParameterSweepSurfaceProperty(candidate, change, config.allowStopAdvanced);
+      recomputeSurfacePositionsForLens(candidate);
+
+      const lock = readTStopLockOptions(lens);
+      let tLockResult = null;
+      if (lock.enabled && Number.isFinite(Number(lock.targetTStop))) {
+        tLockResult = setStopForTargetT(lock.targetTStop, {
+          lensState: candidate,
+          wavePreset: config.wavePreset,
+          tolerance: 0.01,
+          maxIterations: 30,
+        });
+      }
+
+      const metrics = getAutoTunerMetrics(candidate, {
+        wavePreset: config.wavePreset,
+        objectDistanceMm: config.objectDistance.objectDistanceMm,
+        includeFieldFocus: false,
+      });
+      const fieldFocus = evaluateFieldFocusMetricsAtIMS(candidate, {
+        wavePreset: config.wavePreset,
+        objectDistanceMm: config.objectDistance.objectDistanceMm,
+        rayCount: 13,
+        focusMechanism: ui.focusMechanism?.value || "move-lens",
+        currentFocusShiftMm: getFocusShiftMm(),
+        focusScan: getFocusScanOptions(),
+      });
+      attachFocusRecommendations(fieldFocus, metrics, getFocusTargetMode());
+      Object.assign(row, {
+        eflMm: finiteOrNull(metrics?.efl),
+        bflMm: finiteOrNull(metrics?.bfl),
+        tStop: finiteOrNull(metrics?.T),
+        imageCircleMm: finiteOrNull(metrics?.imageCircleMm),
+        cov: metrics?.cov === true,
+        centerBestRmsMm: finiteOrNull(fieldFocus?.centerBestRmsMm),
+        midBestRmsMm: finiteOrNull(fieldFocus?.midBestRmsMm),
+        cornerBestRmsMm: finiteOrNull(fieldFocus?.cornerBestRmsMm),
+        centerBestUIFocusShiftMm: finiteOrNull(fieldFocus?.centerBestUIFocusShiftMm),
+        midBestUIFocusShiftMm: finiteOrNull(fieldFocus?.midBestUIFocusShiftMm),
+        cornerBestUIFocusShiftMm: finiteOrNull(fieldFocus?.cornerBestUIFocusShiftMm),
+        focusDeltaCenterToCornerMm: finiteOrNull(fieldFocus?.fieldCurvatureDeltaMm),
+        focusScanHitBoundary: !!(fieldFocus?.focus?.center?.nearScanBoundary || fieldFocus?.focus?.mid?.nearScanBoundary || fieldFocus?.focus?.corner?.nearScanBoundary),
+        tLockApplied: !!lock.enabled,
+        tLockOk: lock.enabled ? tLockResult?.ok === true : null,
+      });
+    } catch (e) {
+      row.error = e?.message || String(e);
+    }
+    const scored = scoreParameterSweepResult(row, config);
+    row.score = scored.score;
+    row.notes = scored.notes;
+    const l5 = findL5SurfaceIndices(lens);
+    if (l5.ok && row.changes.length === 2 && row.changes[0].surfaceIndex === l5.frontIndex && row.changes[1].surfaceIndex === l5.rearIndex && row.changes[0].prop === "R" && row.changes[1].prop === "R") {
+      row.l5FrontR = row.valueA;
+      row.l5RearR = row.valueB;
+    }
+    return row;
+  }
+
+  function buildL5SweepExport() {
+    const { w, h } = getSensorWH();
+    const config = l5SweepState.config || getParameterSweepConfigFromUi();
+    return {
+      sweepType: "parameter sweep",
+      preset: l5SweepState.preset || null,
+      exportedAt: new Date().toISOString(),
+      target: {
+        eflMm: finiteOrNull(config.targetEflMm),
+        tStop: finiteOrNull(config.targetTStop),
+        minimumBflMm: finiteOrNull(config.minBflMm),
+        objectDistanceMode: config.objectDistance?.objectDistanceMode || getObjectDistanceMode(),
+        objectDistanceMm: config.objectDistance?.objectDistanceMm ?? null,
+        sensorWidthMm: finiteOrNull(w),
+        sensorHeightMm: finiteOrNull(h),
+        ignoreCoverageInScore: config.ignoreCoverage !== false,
+      },
+      config: {
+        mode: config.mode,
+        surfaceA: Number.isFinite(config.surfaceA) ? parameterSweepSurfaceLabel(lens, config.surfaceA) : null,
+        propertyA: config.propA,
+        surfaceB: Number.isFinite(config.surfaceB) ? parameterSweepSurfaceLabel(lens, config.surfaceB) : null,
+        propertyB: config.propB,
+      },
+      baseLensName: l5SweepState.baseLensName || String(lens?.name || "Untitled lens"),
+      results: l5SweepState.results.map((r) => ({ ...r, notes: Array.isArray(r.notes) ? r.notes.slice() : [] })),
+    };
+  }
+
+  function renderL5SweepTable() {
+    if (!ui.l5SweepBody) return;
+    ui.l5SweepBody.innerHTML = (l5SweepState.results || []).map((r, idx) => `
+      <tr data-i="${idx}" class="${idx === l5SweepState.selectedIndex ? "selected" : ""}">
+        <td>${idx + 1}</td>
+        <td>${escapeAttr(r.changeSummary || "—")}</td>
+        <td>${mmText(r.valueA, 3)}</td>
+        <td>${r.valueB == null ? "—" : mmText(r.valueB, 3)}</td>
+        <td>${Number.isFinite(Number(r.score)) ? Number(r.score).toFixed(1) : "—"}</td>
+        <td>${mmText(r.eflMm, 2)}</td>
+        <td>${mmText(r.bflMm, 2)}</td>
+        <td>${Number.isFinite(Number(r.tStop)) ? `T${Number(r.tStop).toFixed(2)}` : "—"}</td>
+        <td>${mmText(r.imageCircleMm, 1)}</td>
+        <td>${mmText(r.centerBestRmsMm, 4)}</td>
+        <td>${mmText(r.midBestRmsMm, 4)}</td>
+        <td>${mmText(r.cornerBestRmsMm, 4)}</td>
+        <td>${signedMmText(r.focusDeltaCenterToCornerMm, 3)}</td>
+        <td>${r.cov ? "YES" : "NO"}</td>
+        <td>${escapeAttr((r.notes || []).join("; "))}</td>
+      </tr>
+    `).join("");
+    ui.l5SweepBody.querySelectorAll("tr[data-i]").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        l5SweepState.selectedIndex = Number(tr.dataset.i);
+        if (ui.l5SweepApply) ui.l5SweepApply.disabled = !(l5SweepState.selectedIndex >= 0);
+        renderL5SweepTable();
+      });
+    });
+    if (ui.l5SweepApply) ui.l5SweepApply.disabled = !(l5SweepState.selectedIndex >= 0);
+  }
+
+  function openParameterSweepModal(options = {}) {
+    if (!ui.l5SweepModal) return;
+    populateParameterSweepSurfaceControls();
+    setParameterSweepDefaultTargets();
+    if (options.preset) loadParameterSweepPreset(options.preset, { keepResults: true });
+    ui.l5SweepModal.classList.remove("hidden");
+    ui.l5SweepModal.setAttribute("aria-hidden", "false");
+    if (ui.l5SweepSummary && !options.preset) {
+      ui.l5SweepSummary.textContent = "Ready. Choose a sweep mode or preset. Candidates run on clones only.";
+    }
+    renderL5SweepTable();
+  }
+
+  function openL5SweepModal() {
+    openParameterSweepModal({ preset: "l5-radius" });
+  }
+
+  function runParameterSweep() {
+    populateParameterSweepSurfaceControls();
+    const config = getParameterSweepConfigFromUi();
+    const candidates = buildParameterSweepCandidates(config);
+    if (!candidates.length) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "Parameter Sweep failed: no valid candidates from the current input.";
+      return;
+    }
+    if (!isParameterSweepEditAllowed(lens, config.surfaceA, config.propA, config.allowStopAdvanced)) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "Parameter Sweep failed: Surface A / Property A is locked or not sweepable.";
+      return;
+    }
+    if ((config.mode === "linked_pairs" || config.mode === "grid_pairs") && !isParameterSweepEditAllowed(lens, config.surfaceB, config.propB, config.allowStopAdvanced)) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "Parameter Sweep failed: Surface B / Property B is locked or not sweepable.";
+      return;
+    }
+    l5SweepState = {
+      results: [],
+      selectedIndex: -1,
+      config,
+      preset: l5SweepState.preset || null,
+      baseLensName: String(lens?.name || "Untitled lens"),
+    };
+    if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = `Running ${candidates.length} parameter candidates on cloned lenses...`;
+    const rows = candidates.map((candidateDef) => evaluateParameterSweepCandidate(candidateDef, config));
+    rows.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+    l5SweepState.results = rows;
+    const best = rows[0] || null;
+    if (ui.l5SweepSummary) {
+      ui.l5SweepSummary.textContent = best
+        ? `Sweep complete. Best score ${Number(best.score).toFixed(1)}: ${best.changeSummary} = ${mmText(best.valueA, 3)}${best.valueB == null ? "" : ` / ${mmText(best.valueB, 3)}`}. Current lens was not changed.`
+        : "Sweep complete. Current lens was not changed.";
+    }
+    renderL5SweepTable();
+  }
+
+  function runL5Sweep() {
+    runParameterSweep();
+  }
+
+  function applySelectedL5SweepResult() {
+    const row = l5SweepState.results?.[l5SweepState.selectedIndex];
+    const config = l5SweepState.config || getParameterSweepConfigFromUi();
+    if (!row?.changes?.length) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "No selected sweep result to apply.";
+      return;
+    }
+    try {
+      for (const change of row.changes) setParameterSweepSurfaceProperty(lens, change, config.allowStopAdvanced);
+      recomputeSurfacePositionsForLens(lens);
+      buildTable();
+      renderAll();
+      if (isTStopLockActive()) applyTStopLockCorrection("Parameter Sweep applied result", { rebuild: true, render: true });
+      else scheduleRenderPreview();
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = `Applied selected sweep result: ${row.changeSummary}. Only selected parameter value(s) were changed.`;
+      if (ui.footerWarn) ui.footerWarn.textContent = `Parameter Sweep applied: ${row.changeSummary}.`;
+    } catch (e) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = `Apply failed: ${e?.message || e}`;
+    }
+  }
+
+  async function copyL5SweepResultsJson() {
+    try {
+      const text = JSON.stringify(buildL5SweepExport(), null, 2);
+      await copyTextToClipboard(text);
+      toast("Copied Parameter Sweep results JSON", 1500);
+    } catch (e) {
+      if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = `Copy failed: ${e?.message || e}`;
+    }
+  }
+
+  function clearParameterSweepResults() {
+    l5SweepState.results = [];
+    l5SweepState.selectedIndex = -1;
+    if (ui.l5SweepSummary) ui.l5SweepSummary.textContent = "Sweep results cleared.";
+    renderL5SweepTable();
+  }
+
   function getAutoTunerCompactLength(surfaces) {
     computeVertices(surfaces, 0, 0);
     const front = firstPhysicalVertexX(surfaces);
@@ -19027,6 +19579,7 @@ function wireUI() {
   on("#btnPasteZmx", "click", openZmxPasteModal);
   on("#btnCornerFocus", "click", openCornerFocusModal);
   on("#btnL5Sweep", "click", openL5SweepModal);
+  on("#btnParameterSweep", "click", () => openParameterSweepModal());
   on("#btnAddFieldFlattener", "click", addWeakRearFieldFlattener);
 
   on("#btnAdd", "click", addSurface);
@@ -19164,6 +19717,37 @@ function wireUI() {
     ui.l5SweepRun.addEventListener("click", (e) => {
       e.preventDefault();
       runL5Sweep();
+    });
+  }
+  [ui.psSurfaceA, ui.psSurfaceB, ui.psAllowStopAdvanced].forEach((el) => {
+    if (!el) return;
+    el.addEventListener("change", () => {
+      populateParameterSweepPropertySelect(ui.psPropA, ui.psSurfaceA);
+      populateParameterSweepPropertySelect(ui.psPropB, ui.psSurfaceB);
+    });
+  });
+  if (ui.psPresetL5) {
+    ui.psPresetL5.addEventListener("click", (e) => {
+      e.preventDefault();
+      loadParameterSweepPreset("l5-radius");
+    });
+  }
+  if (ui.psPresetL4L5Gap) {
+    ui.psPresetL4L5Gap.addEventListener("click", (e) => {
+      e.preventDefault();
+      loadParameterSweepPreset("l4-l5-gap");
+    });
+  }
+  if (ui.psPresetRearGroup) {
+    ui.psPresetRearGroup.addEventListener("click", (e) => {
+      e.preventDefault();
+      loadParameterSweepPreset("rear-group-radius");
+    });
+  }
+  if (ui.psClearResults) {
+    ui.psClearResults.addEventListener("click", (e) => {
+      e.preventDefault();
+      clearParameterSweepResults();
     });
   }
   if (ui.l5SweepCopy) {

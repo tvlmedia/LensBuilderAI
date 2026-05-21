@@ -68,6 +68,7 @@
       <button id="btnAutoFocus" class="btn" type="button">Refocus now</button>
       <button id="btnCornerFocus" class="btn" type="button">Corner Focus Test</button>
       <button id="btnL5Sweep" class="btn" type="button">L5 Sweep</button>
+      <button id="btnParameterSweep" class="btn" type="button">Parameter Sweep</button>
       <button id="btnAutoTuner" class="btn" type="button">Auto Tuner</button>
       <button id="btnAiAssistant" class="btn" type="button">AI Assistant</button>
       <button id="btnRenderEngine" class="btn btnPrimary" type="button" aria-pressed="true">Preview: ON</button>
@@ -1227,61 +1228,116 @@
     <div class="modalCard l5SweepCard" role="dialog" aria-modal="true" aria-labelledby="l5SweepTitle">
       <div class="modalTop">
         <div>
-          <div id="l5SweepTitle" class="modalTitle">L5 Sweep</div>
-          <div class="modalSub">Tests L5 FRONT / L5 REAR radius pairs on cloned lenses. Nothing is applied until you choose a result.</div>
+          <div id="l5SweepTitle" class="modalTitle">Parameter Sweep</div>
+          <div class="modalSub">Tests cloned lens candidates by changing selected surface parameters. Nothing is applied until you choose a result.</div>
         </div>
         <button id="l5SweepClose" class="modalX" type="button" aria-label="Close">✕</button>
       </div>
       <div class="modalScroll">
+        <div class="presetRow sweepPresetRow">
+          <button id="psPresetL5" class="btn" type="button">L5 Radius Pair Sweep</button>
+          <button id="psPresetL4L5Gap" class="btn" type="button">L4-L5 Air Gap Sweep</button>
+          <button id="psPresetRearGroup" class="btn" type="button">Rear Group Radius Sweep</button>
+          <button id="psClearResults" class="btn" type="button">Clear Results</button>
+        </div>
         <div class="l5SweepControls">
           <div class="field">
             <label for="l5SweepMode">Sweep mode</label>
             <select id="l5SweepMode">
-              <option value="linked" selected>Linked radius pairs</option>
-              <option value="grid">Front/rear grid</option>
+              <option value="single_list">Single parameter list</option>
+              <option value="single_range">Single parameter range</option>
+              <option value="linked_pairs" selected>Linked parameter pairs</option>
+              <option value="grid_pairs">Grid parameter pairs</option>
             </select>
           </div>
-          <div class="field fieldFull">
-            <label for="l5SweepPairs">Linked pairs: front,rear</label>
-            <textarea id="l5SweepPairs" rows="5">120,-145
-110,-130
-100,-120
-95,-115
-90,-110</textarea>
+          <div class="field">
+            <label for="psSurfaceA">Surface A</label>
+            <select id="psSurfaceA"></select>
           </div>
           <div class="field">
-            <label for="l5FrontStart">L5 front start</label>
+            <label for="psPropA">Property A</label>
+            <select id="psPropA"></select>
+          </div>
+          <div class="field">
+            <label for="psSurfaceB">Surface B</label>
+            <select id="psSurfaceB"></select>
+          </div>
+          <div class="field">
+            <label for="psPropB">Property B</label>
+            <select id="psPropB"></select>
+          </div>
+          <label class="field inlineCheck">
+            <span>Advanced</span>
+            <span><input id="psAllowStopAdvanced" type="checkbox" /> allow STOP R/t</span>
+          </label>
+          <div class="field fieldFull">
+            <label for="psValues">Single values, one per line</label>
+            <textarea id="psValues" rows="4">7
+8
+9
+10
+11</textarea>
+          </div>
+          <div class="field">
+            <label for="l5FrontStart">Start A</label>
             <input id="l5FrontStart" type="number" step="0.01" value="120" />
           </div>
           <div class="field">
-            <label for="l5FrontEnd">L5 front end</label>
+            <label for="l5FrontEnd">End A</label>
             <input id="l5FrontEnd" type="number" step="0.01" value="90" />
           </div>
           <div class="field">
-            <label for="l5FrontStep">L5 front step</label>
+            <label for="l5FrontStep">Step A</label>
             <input id="l5FrontStep" type="number" step="0.01" value="-10" />
           </div>
           <div class="field">
-            <label for="l5RearStart">L5 rear start</label>
+            <label for="l5RearStart">Start B</label>
             <input id="l5RearStart" type="number" step="0.01" value="-145" />
           </div>
           <div class="field">
-            <label for="l5RearEnd">L5 rear end</label>
+            <label for="l5RearEnd">End B</label>
             <input id="l5RearEnd" type="number" step="0.01" value="-110" />
           </div>
           <div class="field">
-            <label for="l5RearStep">L5 rear step</label>
+            <label for="l5RearStep">Step B</label>
             <input id="l5RearStep" type="number" step="0.01" value="10" />
           </div>
+          <div class="field fieldFull">
+            <label for="l5SweepPairs">Linked pairs: valueA,valueB</label>
+            <textarea id="l5SweepPairs" rows="5">50,-70
+52.5,-72.5
+55,-75
+57.5,-77.5
+60,-80
+62.5,-82.5
+65,-85</textarea>
+          </div>
+          <div class="field">
+            <label for="psTargetEfl">Target EFL</label>
+            <input id="psTargetEfl" type="number" step="0.01" value="50" />
+          </div>
+          <div class="field">
+            <label for="psTargetT">Target T-stop</label>
+            <input id="psTargetT" type="number" step="0.01" value="2.3" />
+          </div>
+          <div class="field">
+            <label for="psMinBfl">Minimum BFL</label>
+            <input id="psMinBfl" type="number" step="0.01" value="18" />
+          </div>
+          <label class="field inlineCheck">
+            <span>Scoring</span>
+            <span><input id="psIgnoreCoverage" type="checkbox" checked /> ignore coverage in score</span>
+          </label>
         </div>
-        <div id="l5SweepSummary" class="cornerFocusSummary">Ready. Run the sweep to compare L5 radius candidates.</div>
+        <div id="l5SweepSummary" class="cornerFocusSummary">Ready. Choose a sweep mode or use the L5 preset. Candidates run on clones only.</div>
         <div class="atHistoryWrap l5SweepTableWrap">
           <table class="atHistory l5SweepTable">
             <thead>
               <tr>
                 <th>#</th>
-                <th>L5 front</th>
-                <th>L5 rear</th>
+                <th>Changed</th>
+                <th>Value A</th>
+                <th>Value B</th>
                 <th>Score</th>
                 <th>EFL</th>
                 <th>BFL</th>
@@ -1302,7 +1358,7 @@
       <div class="modalBottom zmxPasteBottom">
         <button id="l5SweepCopy" class="btn" type="button">Copy Sweep Results JSON</button>
         <button id="l5SweepApply" class="btn" type="button" disabled>Apply selected result</button>
-        <button id="l5SweepRun" class="btn btnPrimary" type="button">Run L5 Sweep</button>
+        <button id="l5SweepRun" class="btn btnPrimary" type="button">Run Parameter Sweep</button>
       </div>
     </div>
   </div>

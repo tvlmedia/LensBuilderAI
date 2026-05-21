@@ -762,6 +762,22 @@ canvas{
   gap:10px;
   margin-bottom:12px;
 }
+.sweepPresetRow{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-bottom:12px;
+}
+.l5SweepControls .inlineCheck{
+  justify-content:space-between;
+  gap:6px;
+}
+.l5SweepControls .inlineCheck span:last-child{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:rgba(255,255,255,.76);
+}
 .l5SweepControls .fieldFull{
   grid-column:span 6;
 }
@@ -782,6 +798,9 @@ canvas{
 }
 .l5SweepTable td:last-child{
   min-width:210px;
+}
+.l5SweepTable td:nth-child(2){
+  min-width:260px;
 }
 
 .aiAssistantModal{
